@@ -16,18 +16,6 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# 更新系统包 (Debian/Ubuntu/CentOS)
-if command -v apt-get &> /dev/null; then
-    apt-get update -y && apt-get install -y wget gzip curl openssl base64 iproute2 net-tools
-elif command -v yum &> /dev/null; then
-    yum update -y && yum install -y wget gzip curl openssl base64 iproute2 net-tools
-elif command -v dnf &> /dev/null; then
-    dnf check-update && dnf install -y wget gzip curl openssl base64 iproute2 net-tools
-else
-    echo -e "${RED}⚠️ 错误: 不支持的包管理器。请手动安装 wget、gzip、curl、openssl、base64、iproute2 和 net-tools。${NC}"
-    exit 1
-fi
-
 # 变量定义
 VERSION="v1.19.13"
 DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/${VERSION}/mihomo-linux-amd64-${VERSION}.gz"
@@ -37,7 +25,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 WORK_DIR="/var/lib/mihomo"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 SCRIPT_PATH="/usr/local/bin/mieru-easy"
-REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/Lanlan13-14/Meiru-Easy/main/mieru.sh"
+REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/Lanlan13-14/Mieru-Easy/main/mieru.sh"
 
 # 函数: 检查端口是否被占用
 check_port() {
@@ -97,10 +85,35 @@ recommend_port_range() {
 # 函数: 安装 mihomo
 install_mihomo() {
     echo -e "${YELLOW}🚀 安装 mihomo ${VERSION}...${NC}"
+
+    # 安装依赖
+    echo -e "${YELLOW}安装依赖...${NC}"
+    if command -v apt-get &> /dev/null; then
+        apt-get update -y && apt-get install -y wget gzip curl openssl coreutils iproute2 net-tools vim || {
+            echo -e "${RED}⚠️ 依赖安装失败！请检查网络或软件源。${NC}"
+            exit 1
+        }
+    elif command -v yum &> /dev/null; then
+        yum update -y && yum install -y wget gzip curl openssl coreutils iproute2 net-tools vim-enhanced || {
+            echo -e "${RED}⚠️ 依赖安装失败！请检查网络或软件源。${NC}"
+            exit 1
+        }
+    elif command -v dnf &> /dev/null; then
+        dnf check-update && dnf install -y wget gzip curl openssl coreutils iproute2 net-tools vim-enhanced || {
+            echo -e "${RED}⚠️ 依赖安装失败！请检查网络或软件源。${NC}"
+            exit 1
+        }
+    else
+        echo -e "${RED}⚠️ 不支持的包管理器。请手动安装 wget、gzip、curl、openssl、coreutils、iproute2、net-tools 和 vim。${NC}"
+        exit 1
+    fi
+
+    # 创建目录
     mkdir -p "${CONFIG_DIR}" "${WORK_DIR}"
     chown -R root:root "${CONFIG_DIR}" "${WORK_DIR}"
     chmod 755 "${CONFIG_DIR}" "${WORK_DIR}"
 
+    # 下载并安装 mihomo
     cd /tmp
     wget -O mihomo.gz "${DOWNLOAD_URL}" || {
         echo -e "${RED}⚠️ 下载失败，请检查网络或版本。${NC}"
@@ -319,7 +332,7 @@ EOF
     fi
 
     # 查找当前 mieru-in 数量
-    current_count=$(grep -c "name: mieru-in-" "${CONFIG_FILE}")
+    current_count=$(grep -c "name: mieru-in-" "${CONFIG_FILE}" || echo 0)
     inbound_num=$((current_count + 1))
 
     while true; do
@@ -399,7 +412,7 @@ EOF
                 fi
             done
             port_config="port: $start_port"
-            port_range_config="port-range: $port_range"
+            port_range_config="\n    port-range: $port_range"
         else
             while true; do
                 read -p "输入 port (回车自动生成 10000-30000 内端口): " port
@@ -426,7 +439,7 @@ EOF
         fi
 
         # 追加到 listeners 部分
-        sed -i '/listeners:/a\  - name: '"$inbound_name"'\n    type: mieru\n    '"$port_config"'\n    listen: '"$listen"'\n    users:\n      - name: '"$username"'\n        pass: '"$password"'\n    multiplexing: '"$multiplexing"'\n    network: tcp'"$port_range_config" "${CONFIG_FILE}"
+        sed -i "/listeners:/a\  - name: $inbound_name\n    type: mieru\n    $port_config$port_range_config\n    listen: $listen\n    users:\n      - name: $username\n        pass: $password\n    multiplexing: $multiplexing" "${CONFIG_FILE}"
 
         echo -e "${GREEN}✅ 添加了 $inbound_name${NC}"
         echo -e "${YELLOW}自定义值: listen=$listen, username=$username, password=$password, multiplexing=$multiplexing${NC}"
@@ -459,20 +472,20 @@ delete_config() {
     echo -e "${YELLOW}🚀 删除配置文件...${NC}"
     if [[ -f "${CONFIG_FILE}" ]]; then
         rm -f "${CONFIG_FILE}"
-        echo -e "${GREEN}✅ 配置文件已删除！${NC}"
+        echo -e "${GREEN}✅ 配置文件 ${CONFIG_FILE} 已删除！${NC}"
         if systemctl is-active --quiet mihomo; then
             restart_mihomo
         fi
     else
-        echo -e "${RED}⚠️ 配置文件不存在！${NC}"
+        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在！${NC}"
     fi
 }
 
 # 函数: 修改配置
 modify_config() {
-    echo -e "${YELLOW}🚀 修改配置文件...${NC}"
+    echo -e "${YELLOW}🚀 修改配置文件 ${CONFIG_FILE}...${NC}"
     if [[ ! -f "${CONFIG_FILE}" ]]; then
-        echo -e "${RED}⚠️ 配置文件不存在，请先生成！${NC}"
+        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在，请先生成！${NC}"
         return
     fi
 
@@ -480,15 +493,24 @@ modify_config() {
     if ! command -v vim &> /dev/null; then
         echo -e "${YELLOW}安装 vim...${NC}"
         if command -v apt-get &> /dev/null; then
-            apt-get install -y vim
+            apt-get update -y && apt-get install -y vim || {
+                echo -e "${RED}⚠️ 无法安装 vim，请手动安装！${NC}"
+                return
+            }
         elif command -v yum &> /dev/null; then
-            yum install -y vim-enhanced
+            yum install -y vim-enhanced || {
+                echo -e "${RED}⚠️ 无法安装 vim-enhanced，请手动安装！${NC}"
+                return
+            }
         elif command -v dnf &> /dev/null; then
-            dnf install -y vim-enhanced
+            dnf install -y vim-enhanced || {
+                echo -e "${RED}⚠️ 无法安装 vim-enhanced，请手动安装！${NC}"
+                return
+            }
         else
-            echo -e "${RED}⚠️ 无法安装 vim，请手动安装！${NC}"
+            echo -e "${RED}⚠️ 不支持的包管理器，请手动安装 vim！${NC}"
             return
-        fi
+        }
     fi
 
     vim "${CONFIG_FILE}"
