@@ -27,7 +27,7 @@ REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/Lanlan13-14/Mieru-Easy/main
 
 # 函数: 获取最新 mihomo 版本
 get_mihomo_version() {
-    VERSION=$(curl -sL https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/version.txt)
+    VERSION=$(curl --retry 2 --max-time 5 -sL https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/version.txt)
     if [[ -z "${VERSION}" ]]; then
         echo -e "${RED}⚠️ 无法获取 mihomo 版本，请检查网络！${NC}"
         exit 1
@@ -175,8 +175,7 @@ install_mihomo() {
     # 获取最新版本并下载 mihomo
     get_mihomo_version
     echo -e "${YELLOW}下载 mihomo ${VERSION}...${NC}"
-    cd /tmp || exit 1
-    if ! curl -sL "${DOWNLOAD_URL}" | gunzip -c > "${INSTALL_DIR}/mihomo"; then
+    if ! curl --retry 2 --max-time 5 -sL "${DOWNLOAD_URL}" | gunzip -c > "${INSTALL_DIR}/mihomo"; then
         echo -e "${RED}⚠️ 下载或解压 mihomo 失败，请检查网络或版本。${NC}"
         exit 1
     fi
@@ -194,19 +193,23 @@ install_mihomo() {
     # 创建 systemd 服务
     cat > "${SERVICE_FILE}" << EOF
 [Unit]
-Description=Mihomo (Clash Meta) Daemon
+Description=mihomo Daemon, Another Clash Kernel
 Documentation=https://wiki.metacubex.one/
-After=network.target nss-lookup.target
+After=network.target NetworkManager.service systemd-networkd.service iwd.service nss-lookup.target
 Wants=nss-lookup.target
 
 [Service]
 Type=simple
 User=root
-ExecStart=${INSTALL_DIR}/mihomo -d ${WORK_DIR} -f ${CONFIG_FILE}
+LimitNPROC=500
+LimitNOFILE=1000000
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+ExecStartPre=/usr/bin/sleep 1s
+ExecStart=${INSTALL_DIR}/mihomo -d ${CONFIG_DIR}
 ExecReload=/bin/kill -s HUP \$MAINPID
 Restart=on-failure
 RestartSec=5s
-LimitNOFILE=infinity
 
 [Install]
 WantedBy=multi-user.target
@@ -239,8 +242,7 @@ update_mihomo() {
     systemctl stop mihomo || true
     get_mihomo_version
     echo -e "${YELLOW}下载 mihomo ${VERSION}...${NC}"
-    cd /tmp || exit 1
-    if ! curl -sL "${DOWNLOAD_URL}" | gunzip -c > "${INSTALL_DIR}/mihomo"; then
+    if ! curl --retry 2 --max-time 5 -sL "${DOWNLOAD_URL}" | gunzip -c > "${INSTALL_DIR}/mihomo"; then
         echo -e "${RED}⚠️ 下载或解压 mihomo 失败，请检查网络或版本。${NC}"
         exit 1
     fi
@@ -490,12 +492,15 @@ EOF
                     length=10
                 else
                     # 检查 port-range 格式
-                    if [[ "${port_range}" =~ ^[0-9]+-[0-9]+$ ]]; then
-                        start_port=$(echo "${port_range}" | cut -d'-' -f1)
-                        end_port=$(echo "${port_range}" | cut -d'-' -f2)
-                        length=$((end_port - start_port + 1))
+                    if [[ "${port_range}" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+                        start_port="${BASH_REMATCH[1]}"
+                        end_port="${BASH_REMATCH[2]}"
+                        if [[ ! "${start_port}" =~ ^[0-9]+$ ]] || [[ ! "${end_port}" =~ ^[0-9]+$ ]]; then
+                            echo -e "${RED}⚠️ 端口段必须是数字！${NC}"
+                            continue
+                        fi
                         if (( start_port >= 1 && end_port <= 65535 && start_port < end_port )); then
-                            : # 格式有效，继续检查
+                            length=$((end_port - start_port + 1))
                         else
                             echo -e "${RED}⚠️ 无效的端口段（范围 1-65535，起始端口需小于结束端口）！${NC}"
                             continue
@@ -524,7 +529,7 @@ EOF
                 read -r -p "输入 port (回车自动生成 10000-30000 内端口): " port
                 if [[ -z "${port}" ]]; then
                     port=$((RANDOM % 20001 + 10000))
-                elif ! [[ "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+                elif [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
                     echo -e "${RED}⚠️ 无效的端口号（范围 1-65535）！${NC}"
                     continue
                 fi
@@ -667,7 +672,7 @@ update_script() {
     fi
 
     # 下载新脚本
-    if ! curl --retry 2 --max-time 10 -L "${REMOTE_SCRIPT_URL}" -o /tmp/mieru-easy; then
+    if ! curl --retry 2 --max-time 5 -L "${REMOTE_SCRIPT_URL}" -o /tmp/mieru-easy; then
         echo -e "${RED}⚠️ 下载新脚本失败！${NC}"
         exit 1
     fi
