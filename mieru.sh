@@ -185,11 +185,6 @@ install_mihomo() {
         exit 1
     fi
 
-    # 生成默认配置文件（如果不存在）
-    if [[ ! -f "${CONFIG_FILE}" ]]; then
-        generate_mieru_config
-    fi
-
     # 创建 systemd 服务
     cat > "${SERVICE_FILE}" << EOF
 [Unit]
@@ -223,17 +218,7 @@ EOF
         echo -e "${RED}⚠️ systemctl enable mihomo 失败！${NC}"
         exit 1
     fi
-    if ! systemctl start mihomo; then
-        echo -e "${RED}⚠️ 启动 mihomo 失败！请检查日志: journalctl -u mihomo${NC}"
-        exit 1
-    fi
-
-    if systemctl is-active --quiet mihomo; then
-        echo -e "${GREEN}✅ mihomo 安装并启动成功!${NC}"
-    else
-        echo -e "${RED}⚠️ 安装失败，请检查日志: journalctl -u mihomo${NC}"
-        exit 1
-    fi
+    echo -e "${GREEN}✅ mihomo 安装完成！请手动生成配置文件或启动服务。${NC}"
 }
 
 # 函数: 更新 mihomo
@@ -251,11 +236,13 @@ update_mihomo() {
         echo -e "${RED}⚠️ 设置权限失败！${NC}"
         exit 1
     fi
-    if ! systemctl start mihomo; then
-        echo -e "${RED}⚠️ 启动 mihomo 失败！请检查日志: journalctl -u mihomo${NC}"
-        exit 1
+    if [[ -f "${CONFIG_FILE}" ]]; then
+        if ! systemctl start mihomo; then
+            echo -e "${RED}⚠️ 启动 mihomo 失败！请检查日志: journalctl -u mihomo${NC}"
+            exit 1
+        fi
     fi
-    echo -e "${GREEN}✅ mihomo 更新完成!${NC}"
+    echo -e "${GREEN}✅ mihomo 更新完成！${NC}"
 }
 
 # 函数: 卸载 mihomo
@@ -271,6 +258,10 @@ uninstall_mihomo() {
 
 # 函数: 启动 mihomo
 start_mihomo() {
+    if [[ ! -f "${CONFIG_FILE}" ]]; then
+        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在，请先生成配置！${NC}"
+        exit 1
+    fi
     if ! systemctl start mihomo; then
         echo -e "${RED}⚠️ 启动失败! 请检查日志: journalctl -u mihomo${NC}"
         journalctl -u mihomo --no-pager
@@ -281,6 +272,10 @@ start_mihomo() {
 
 # 函数: 重启 mihomo
 restart_mihomo() {
+    if [[ ! -f "${CONFIG_FILE}" ]]; then
+        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在，请先生成配置！${NC}"
+        exit 1
+    fi
     if ! systemctl restart mihomo; then
         echo -e "${RED}⚠️ 重启失败! 请检查日志: journalctl -u mihomo${NC}"
         journalctl -u mihomo --no-pager
@@ -440,7 +435,10 @@ EOF
     fi
 
     # 查找当前 mieru-in 数量
-    current_count=$(grep -c "name: mieru-in-" "${CONFIG_FILE}" || echo 0)
+    current_count=$(grep -c "name: mieru-in-" "${CONFIG_FILE}" 2>/dev/null || echo 0)
+    if [[ ! "${current_count}" =~ ^[0-9]+$ ]]; then
+        current_count=0
+    fi
     inbound_num=$((current_count + 1))
 
     while true; do
@@ -592,7 +590,7 @@ EOF
     echo -e "${GREEN}✅ 配置文件生成/更新完成: ${CONFIG_FILE}${NC}"
 
     # 重启服务以应用新配置
-    if systemctl is-active --quiet mihomo; then
+    if systemctl is-active --quiet mihomo && [[ -f "${CONFIG_FILE}" ]]; then
         restart_mihomo
     fi
 }
@@ -761,7 +759,7 @@ while true; do
         13) delete_all ;;
         14) delete_config ;;
         15) modify_config ;;
-        16) echo -e "${GREEN}✅ 退出脚本，下次使用输入sudo mieru-easy ${NC}"; exit 0 ;;
+        16) echo -e "${GREEN}✅ 退出脚本，下次使用输入sudo mieru.sh${NC}"; exit 0 ;;
         *) echo -e "${RED}⚠️ 无效选择，请重试。${NC}" ;;
     esac
 done
