@@ -17,8 +17,6 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # 变量定义
-VERSION="v1.19.13"
-DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/${VERSION}/mihomo-linux-amd64-${VERSION}.gz"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/mihomo"
 SERVICE_FILE="/etc/systemd/system/mihomo.service"
@@ -26,6 +24,16 @@ WORK_DIR="/var/lib/mihomo"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 SCRIPT_PATH="/usr/local/bin/mieru-easy"
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/Lanlan13-14/Mieru-Easy/main/mieru.sh"
+
+# 函数: 获取最新 mihomo 版本
+get_mihomo_version() {
+    VERSION=$(curl -sL https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/version.txt)
+    if [[ -z "${VERSION}" ]]; then
+        echo -e "${RED}⚠️ 无法获取 mihomo 版本，请检查网络！${NC}"
+        exit 1
+    fi
+    DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/mihomo-linux-amd64-${VERSION}.gz"
+}
 
 # 函数: 检查端口是否被占用
 check_port() {
@@ -84,16 +92,52 @@ recommend_port_range() {
 
 # 函数: 安装 mihomo
 install_mihomo() {
-    echo -e "${YELLOW}🚀 安装 mihomo ${VERSION}...${NC}"
+    echo -e "${YELLOW}🚀 安装 mihomo...${NC}"
 
-    # 安装依赖
+    # 检查 curl 和 gunzip
+    if ! command -v curl &> /dev/null || ! command -v gunzip &> /dev/null; then
+        echo -e "${YELLOW}安装 curl 和 gzip...${NC}"
+        if command -v apt-get &> /dev/null; then
+            if ! apt-get update -y; then
+                echo -e "${RED}⚠️ apt-get update 失败！请检查网络或软件源。${NC}"
+                exit 1
+            fi
+            if ! apt-get install -y curl gzip; then
+                echo -e "${RED}⚠️ 安装 curl 和 gzip 失败！请检查网络或软件源。${NC}"
+                exit 1
+            fi
+        elif command -v yum &> /dev/null; then
+            if ! yum update -y; then
+                echo -e "${RED}⚠️ yum update 失败！请检查网络或软件源。${NC}"
+                exit 1
+            fi
+            if ! yum install -y curl gzip; then
+                echo -e "${RED}⚠️ 安装 curl 和 gzip 失败！请检查网络或软件源。${NC}"
+                exit 1
+            fi
+        elif command -v dnf &> /dev/null; then
+            if ! dnf check-update -y; then
+                echo -e "${RED}⚠️ dnf check-update 失败！请检查网络或软件源。${NC}"
+                exit 1
+            fi
+            if ! dnf install -y curl gzip; then
+                echo -e "${RED}⚠️ 安装 curl 和 gzip 失败！请检查网络或软件源。${NC}"
+                exit 1
+            fi
+        else
+            echo -e "${RED}⚠️ 不支持的包管理器。请手动安装 curl 和 gzip。${NC}"
+            exit 1
+        fi
+    fi
+
+    # 安装其他依赖
     echo -e "${YELLOW}安装依赖...${NC}"
     if command -v apt-get &> /dev/null; then
         if ! apt-get update -y; then
             echo -e "${RED}⚠️ apt-get update 失败！请检查网络或软件源。${NC}"
             exit 1
         fi
-        if ! apt-get install -y wget gzip curl openssl coreutils iproute2 net-tools vim; then
+        if ! apt-get install -y wget openssl coreutils iproute2 net-tools vim; then
             echo -e "${RED}⚠️ 依赖安装失败！请检查网络或软件源。${NC}"
             exit 1
         fi
@@ -102,7 +146,7 @@ install_mihomo() {
             echo -e "${RED}⚠️ yum update 失败！请检查网络或软件源。${NC}"
             exit 1
         fi
-        if ! yum install -y wget gzip curl openssl coreutils iproute2 net-tools vim-enhanced; then
+        if ! yum install -y wget openssl coreutils iproute2 net-tools vim-enhanced; then
             echo -e "${RED}⚠️ 依赖安装失败！请检查网络或软件源。${NC}"
             exit 1
         fi
@@ -111,12 +155,12 @@ install_mihomo() {
             echo -e "${RED}⚠️ dnf check-update 失败！请检查网络或软件源。${NC}"
             exit 1
         fi
-        if ! dnf install -y wget gzip curl openssl coreutils iproute2 net-tools vim-enhanced; then
+        if ! dnf install -y wget openssl coreutils iproute2 net-tools vim-enhanced; then
             echo -e "${RED}⚠️ 依赖安装失败！请检查网络或软件源。${NC}"
             exit 1
         fi
     else
-        echo -e "${RED}⚠️ 不支持的包管理器。请手动安装 wget、gzip、curl、openssl、coreutils、iproute2、net-tools 和 vim。${NC}"
+        echo -e "${RED}⚠️ 不支持的包管理器。请手动安装 wget、openssl、coreutils、iproute2、net-tools 和 vim。${NC}"
         exit 1
     fi
 
@@ -128,18 +172,12 @@ install_mihomo() {
     chown -R root:root "${CONFIG_DIR}" "${WORK_DIR}"
     chmod 755 "${CONFIG_DIR}" "${WORK_DIR}"
 
-    # 下载并安装 mihomo
+    # 获取最新版本并下载 mihomo
+    get_mihomo_version
+    echo -e "${YELLOW}下载 mihomo ${VERSION}...${NC}"
     cd /tmp || exit 1
-    if ! wget --retry 2 --max-time 10 -O mihomo.gz "${DOWNLOAD_URL}"; then
-        echo -e "${RED}⚠️ 下载失败，请检查网络或版本。${NC}"
-        exit 1
-    fi
-    if ! gzip -d mihomo.gz; then
-        echo -e "${RED}⚠️ 解压失败！${NC}"
-        exit 1
-    fi
-    if ! mv mihomo "${INSTALL_DIR}/mihomo"; then
-        echo -e "${RED}⚠️ 移动文件失败！${NC}"
+    if ! curl -sL "${DOWNLOAD_URL}" | gunzip -c > "${INSTALL_DIR}/mihomo"; then
+        echo -e "${RED}⚠️ 下载或解压 mihomo 失败，请检查网络或版本。${NC}"
         exit 1
     fi
     chmod +x "${INSTALL_DIR}/mihomo"
@@ -197,19 +235,13 @@ EOF
 
 # 函数: 更新 mihomo
 update_mihomo() {
-    echo -e "${YELLOW}🚀 更新 mihomo 到 ${VERSION}...${NC}"
+    echo -e "${YELLOW}🚀 更新 mihomo...${NC}"
     systemctl stop mihomo || true
+    get_mihomo_version
+    echo -e "${YELLOW}下载 mihomo ${VERSION}...${NC}"
     cd /tmp || exit 1
-    if ! wget --retry 2 --max-time 10 -O mihomo.gz "${DOWNLOAD_URL}"; then
-        echo -e "${RED}⚠️ 下载失败。${NC}"
-        exit 1
-    fi
-    if ! gzip -d mihomo.gz; then
-        echo -e "${RED}⚠️ 解压失败！${NC}"
-        exit 1
-    fi
-    if ! mv mihomo "${INSTALL_DIR}/mihomo"; then
-        echo -e "${RED}⚠️ 移动文件失败！${NC}"
+    if ! curl -sL "${DOWNLOAD_URL}" | gunzip -c > "${INSTALL_DIR}/mihomo"; then
+        echo -e "${RED}⚠️ 下载或解压 mihomo 失败，请检查网络或版本。${NC}"
         exit 1
     fi
     chmod +x "${INSTALL_DIR}/mihomo"
