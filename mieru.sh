@@ -114,7 +114,7 @@ install_mihomo() {
     chmod 755 "${CONFIG_DIR}" "${WORK_DIR}"
 
     # 下载并安装 mihomo
-    cd /tmp
+    cd /tmp || exit 1
     wget -O mihomo.gz "${DOWNLOAD_URL}" || {
         echo -e "${RED}⚠️ 下载失败，请检查网络或版本。${NC}"
         exit 1
@@ -166,7 +166,7 @@ EOF
 update_mihomo() {
     echo -e "${YELLOW}🚀 更新 mihomo 到 ${VERSION}...${NC}"
     systemctl stop mihomo || true
-    cd /tmp
+    cd /tmp || exit 1
     wget -O mihomo.gz "${DOWNLOAD_URL}" || {
         echo -e "${RED}⚠️ 下载失败。${NC}"
         exit 1
@@ -234,7 +234,6 @@ show_connection_info() {
         return
     fi
 
-    # 获取服务器 IP
     get_server_ips
     if [[ -z "$ipv4" && -z "$ipv6" ]]; then
         echo -e "${RED}⚠️ 无法获取服务器 IP 地址！${NC}"
@@ -250,7 +249,6 @@ show_connection_info() {
 
     echo -e "${YELLOW}🚀 Mieru 客户端连接信息:${NC}"
     for inbound_name in $mieru_inbounds; do
-        # 提取参数 for this inbound
         block_start=$(awk "/- name: $inbound_name/{print NR}" "${CONFIG_FILE}" | head -n1)
         block_end=$(awk 'NR > '"$block_start"' && /^- name:/{print NR-1; exit} END{print NR}' "${CONFIG_FILE}")
         block=$(sed -n "${block_start},${block_end}p" "${CONFIG_FILE}")
@@ -261,14 +259,12 @@ show_connection_info() {
         port=$(echo "$block" | grep "port:" | awk '{print $2}')
         port_range=$(echo "$block" | grep "port-range:" | awk '{print $2}')
 
-        # 只包括存在的 port 或 port-range
         port_str="port: $port"
         port_range_str=""
         if [[ -n "$port_range" ]]; then
             port_range_str="port-range: $port_range"
         fi
 
-        # 打印 for this inbound
         echo -e "${GREEN}✅ 配置 for $inbound_name:${NC}"
         if [[ -n "$ipv4" ]]; then
             echo -e "${GREEN}IPv4:${NC}"
@@ -303,11 +299,10 @@ EOF
     done
 }
 
-# 函数: 生成 Mieru 服务端配置（交互式自定义，支持多个）
+# 函数: 生成 Mieru 服务端配置（交互式）
 generate_mieru_config() {
     echo -e "${YELLOW}🚀 生成 Mieru 服务端配置文件...${NC}"
 
-    # 如果文件不存在，创建基本结构
     if [[ ! -f "${CONFIG_FILE}" ]]; then
         cat > "${CONFIG_FILE}" << EOF
 mixed-port: 7890
@@ -331,35 +326,27 @@ rules:
 EOF
     fi
 
-    # 查找当前 mieru-in 数量
     current_count=$(grep -c "name: mieru-in-" "${CONFIG_FILE}" || echo 0)
     inbound_num=$((current_count + 1))
 
     while true; do
         inbound_name="mieru-in-${inbound_num}"
 
-        # listen: 支持自定义，默认 ::
         read -p "输入监听地址 (默认 ::): " listen
         listen=${listen:-::}
-        echo -e "${YELLOW}监听地址: $listen${NC}"
 
-        # username: 支持自动生成或手动输入
         read -p "输入 username (回车自动生成): " username
         if [[ -z "$username" ]]; then
             username="user_$(head -c 8 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | cut -c1-8)"
-            echo -e "${YELLOW}自动生成 username: $username${NC}"
         fi
 
-        # password: 支持自动生成或手动输入
         read -p "输入 password (回车自动生成): " password
         if [[ -z "$password" ]]; then
             password=$(openssl rand -base64 12)
-            echo -e "${YELLOW}自动生成 password: $password${NC}"
         fi
 
-        # multiplexing: 选择，默认 low
         echo "选择 multiplexing 级别 (默认 [2] low):"
-        echo "[1] off (关闭多路复用)"
+        echo "[1] off"
         echo "[2] low"
         echo "[3] middle"
         echo "[4] high"
@@ -370,79 +357,60 @@ EOF
             4) multiplexing="high" ;;
             *) multiplexing="low" ;;
         esac
-        echo -e "${YELLOW}选择的 multiplexing: $multiplexing${NC}"
 
-        # port 或 port-range: 选择使用哪一个，支持手动输入或自动生成
-        read -p "是否使用 port-range [y/n，默认 n 只用 port]: " use_range
+        read -p "是否使用 port-range [y/n，默认 n]: " use_range
         if [[ "$use_range" == "y" || "$use_range" == "Y" ]]; then
             while true; do
-                read -p "输入 port-range (格式: start-end，回车自动生成 10000-30000 内范围): " port_range
+                read -p "输入 port-range (格式: start-end，回车自动生成 10 个端口): " port_range
                 if [[ -z "$port_range" ]]; then
                     start_port=$((RANDOM % 20001 + 10000))
-                    end_port=$((start_port + 9))  # 随机 10 个端口范围
+                    end_port=$((start_port + 9))
                     port_range="${start_port}-${end_port}"
-                    length=10
                 else
-                    # 检查 port-range 格式
                     if [[ "$port_range" =~ ^[0-9]+-[0-9]+$ ]]; then
                         start_port=$(echo "$port_range" | cut -d'-' -f1)
                         end_port=$(echo "$port_range" | cut -d'-' -f2)
-                        length=$((end_port - start_port + 1))
-                        if (( start_port >= 1 && end_port <= 65535 && start_port < end_port )); then
-                            : # 格式有效，继续检查
+                        if (( start_port >=1 && end_port <=65535 && start_port<end_port )); then
+                            :
                         else
-                            echo -e "${RED}⚠️ 无效的端口段（范围 1-65535，起始端口需小于结束端口）！${NC}"
+                            echo -e "${RED}⚠️ 无效端口段${NC}"
                             continue
                         fi
                     else
-                        echo -e "${RED}⚠️ 无效的 port-range 格式，需为 start-end（如 2090-2099）！${NC}"
+                        echo -e "${RED}⚠️ 格式错误${NC}"
                         continue
                     fi
                 fi
-                # 检查端口段是否被占用
                 if check_port_range "$start_port" "$end_port"; then
-                    echo -e "${YELLOW}端口段可用: $port_range${NC}"
                     break
                 else
-                    echo -e "${RED}⚠️ 端口段 $port_range 不可用，请重新输入！${NC}"
-                    recommended_range=$(recommend_port_range "$length")
-                    if [[ -n "$recommended_range" ]]; then
-                        echo -e "${YELLOW}推荐可用端口段: $recommended_range${NC}"
-                    fi
+                    echo -e "${RED}⚠️ 端口段不可用${NC}"
+                    recommended_range=$(recommend_port_range $((end_port-start_port+1)))
+                    [[ -n "$recommended_range" ]] && echo -e "${YELLOW}推荐可用端口段: $recommended_range${NC}"
                 fi
             done
             port_config="port: $start_port"
-            if [[ -n "$port_range" ]]; then
-                port_range_config="    port-range: $port_range"
-            else
-                port_range_config=""
-            fi
+            port_range_config="    port-range: $port_range"
         else
             while true; do
                 read -p "输入 port (回车自动生成 10000-30000 内端口): " port
                 if [[ -z "$port" ]]; then
                     port=$((RANDOM % 20001 + 10000))
                 elif ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
-                    echo -e "${RED}⚠️ 无效的端口号（范围 1-65535）！${NC}"
+                    echo -e "${RED}⚠️ 无效端口号！${NC}"
                     continue
                 fi
-                # 检查端口是否被占用
                 if check_port "$port"; then
-                    echo -e "${YELLOW}端口可用: $port${NC}"
                     break
                 else
-                    echo -e "${RED}⚠️ 端口 $port 不可用，请重新输入！${NC}"
                     recommended_port=$(recommend_port)
-                    if [[ -n "$recommended_port" ]]; then
-                        echo -e "${YELLOW}推荐可用端口: $recommended_port${NC}"
-                    fi
+                    [[ -n "$recommended_port" ]] && echo -e "${YELLOW}推荐可用端口: $recommended_port${NC}"
                 fi
             done
             port_config="port: $port"
             port_range_config=""
         fi
 
-        # 追加到 listeners 部分，修正 sed 命令以确保 YAML 格式
         new_inbound=$(cat << EOF
   - name: $inbound_name
     type: mieru
@@ -457,15 +425,6 @@ EOF
 )
         sed -i "/^listeners:/a\\${new_inbound}" "${CONFIG_FILE}"
 
-        echo -e "${GREEN}✅ 添加了 $inbound_name${NC}"
-        echo -e "${YELLOW}自定义值: listen=$listen, username=$username, password=$password, multiplexing=$multiplexing${NC}"
-        if [[ -n "$port" && -z "$port_range" ]]; then
-            echo -e "${YELLOW}port=$port${NC}"
-        else
-            echo -e "${YELLOW}port-range=$port_range${NC}"
-        fi
-
-        # 询问是否添加更多
         read -p "是否添加另一个 Mieru inbound [y/n，默认 n]: " add_more
         if [[ "$add_more" != "y" && "$add_more" != "Y" ]]; then
             break
@@ -475,135 +434,24 @@ EOF
 
     chown root:root "${CONFIG_FILE}"
     chmod 644 "${CONFIG_FILE}"
-    echo -e "${GREEN}✅ 配置文件生成/更新完成: ${CONFIG_FILE}${NC}"
-
-    # 重启服务以应用新配置
-    if systemctl is-active --quiet mihomo; then
-        restart_mihomo
-    fi
-}
-
-# 函数: 删除配置
-delete_config() {
-    echo -e "${YELLOW}🚀 删除配置文件...${NC}"
-    if [[ -f "${CONFIG_FILE}" ]]; then
-        rm -f "${CONFIG_FILE}"
-        echo -e "${GREEN}✅ 配置文件 ${CONFIG_FILE} 已删除！${NC}"
-        if systemctl is-active --quiet mihomo; then
-            restart_mihomo
-        fi
-    else
-        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在！${NC}"
-    fi
-}
-
-# 函数: 修改配置
-modify_config() {
-    echo -e "${YELLOW}🚀 修改配置文件 ${CONFIG_FILE}...${NC}"
-    if [[ ! -f "${CONFIG_FILE}" ]]; then
-        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在，请先生成！${NC}"
-        return
-    fi
-
-    # 检查并安装 vim
-    if ! command -v vim &> /dev/null; then
-        echo -e "${YELLOW}安装 vim...${NC}"
-        if command -v apt-get &> /dev/null; then
-            apt-get update -y && apt-get install -y vim || {
-                echo -e "${RED}⚠️ 无法安装 vim，请手动安装！${NC}"
-                return
-            }
-        elif command -v yum &> /dev/null; then
-            yum install -y vim-enhanced || {
-                echo -e "${RED}⚠️ 无法安装 vim-enhanced，请手动安装！${NC}"
-                return
-            }
-        elif command -v dnf &> /dev/null; then
-            dnf install -y vim-enhanced || {
-                echo -e "${RED}⚠️ 无法安装 vim-enhanced，请手动安装！${NC}"
-                return
-            }
-        else
-            echo -e "${RED}⚠️ 不支持的包管理器，请手动安装 vim！${NC}"
-            return
-        }
-    fi
-
-    vim "${CONFIG_FILE}"
-    if systemctl is-active --quiet mihomo; then
-        restart_mihomo
-    fi
-}
-
-# 函数: 更新脚本
-update_script() {
-    echo -e "${YELLOW}🚀 更新脚本...${NC}"
-    # 备份当前脚本
-    cp "${SCRIPT_PATH}" /tmp/mieru-easy.bak || {
-        echo -e "${RED}⚠️ 备份失败！${NC}"
-        exit 1
-    }
-    echo -e "${YELLOW}已备份当前脚本到 /tmp/mieru-easy.bak${NC}"
-
-    # 下载新脚本
-    curl -L "${REMOTE_SCRIPT_URL}" -o /tmp/mieru-easy || {
-        echo -e "${RED}⚠️ 下载新脚本失败！${NC}"
-        exit 1
-    }
-
-    # 语法检查
-    if bash -n /tmp/mieru-easy; then
-        echo -e "${GREEN}✅ 新脚本语法检查通过${NC}"
-        mv /tmp/mieru-easy "${SCRIPT_PATH}"
-        chmod +x "${SCRIPT_PATH}"
-        rm -f /tmp/mieru-easy.bak
-        echo -e "${GREEN}✅ 脚本更新完成！请重新运行: sudo mieru-easy${NC}"
-    else
-        echo -e "${RED}⚠️ 新脚本语法检查失败，自动回滚！${NC}"
-        mv /tmp/mieru-easy.bak "${SCRIPT_PATH}"
-        chmod +x "${SCRIPT_PATH}"
-        exit 1
-    fi
-}
-
-# 函数: 删除本脚本
-delete_script() {
-    echo -e "${YELLOW}🚀 删除本脚本...${NC}"
-    rm -f "${SCRIPT_PATH}"
-    echo -e "${GREEN}✅ 脚本已删除！${NC}"
-}
-
-# 函数: 删除本脚本及 mihomo 和配置文件
-delete_all() {
-    echo -e "${YELLOW}🚀 删除本脚本、mihomo 及配置文件...${NC}"
-    systemctl stop mihomo || true
-    systemctl disable mihomo || true
-    rm -f "${SERVICE_FILE}"
-    systemctl daemon-reload
-    rm -rf "${INSTALL_DIR}/mihomo" "${CONFIG_DIR}" "${WORK_DIR}" "${SCRIPT_PATH}"
-    echo -e "${GREEN}✅ 脚本、mihomo 及配置文件已删除！${NC}"
+    [[ $(systemctl is-active --quiet mihomo; echo $?) -eq 0 ]] && restart_mihomo
 }
 
 # 主菜单
 while true; do
     echo -e "${GREEN}=== 🚀 Mieru-Easy 管理菜单 🚀 ===${NC}"
-    echo "[1] 安装 mihomo"
-    echo "[2] 更新 mihomo"
-    echo "[3] 卸载 mihomo"
-    echo "[4] 启动 mihomo"
-    echo "[5] 重启 mihomo"
-    echo "[6] 停止 mihomo"
-    echo "[7] 生成 Mieru 服务端配置 (自定义)"
-    echo "[8] 查看 Mieru 客户端连接信息"
-    echo "[9] 查看 mihomo 状态"
-    echo "[10] 查看 mihomo 日志"
-    echo "[11] 更新本脚本"
-    echo "[12] 删除本脚本"
-    echo "[13] 删除本脚本及 mihomo 和配置文件"
-    echo "[14] 删除配置"
-    echo "[15] 修改配置"
-    echo "[16] 退出"
-    read -p "输入选择 [1-16]: " choice
+    echo "1) 安装 mihomo"
+    echo "2) 升级 mihomo"
+    echo "3) 卸载 mihomo"
+    echo "4) 启动 mihomo"
+    echo "5) 重启 mihomo"
+    echo "6) 停止 mihomo"
+    echo "7) 查看 mihomo 状态"
+    echo "8) 查看 mihomo 日志"
+    echo "9) 生成 / 更新 Mieru 配置"
+    echo "10) 查看 Mieru 客户端连接信息"
+    echo "0) 退出"
+    read -p "请选择操作 [0-10]: " choice
 
     case "$choice" in
         1) install_mihomo ;;
@@ -612,16 +460,12 @@ while true; do
         4) start_mihomo ;;
         5) restart_mihomo ;;
         6) stop_mihomo ;;
-        7) generate_mieru_config ;;
-        8) show_connection_info ;;
-        9) status_mihomo ;;
-        10) logs_mihomo ;;
-        11) update_script ;;
-        12) delete_script ;;
-        13) delete_all ;;
-        14) delete_config ;;
-        15) modify_config ;;
-        16) echo -e "${GREEN}✅ 退出脚本。${NC}"; exit 0 ;;
-        *) echo -e "${RED}⚠️ 无效选择，请重试。${NC}" ;;
+        7) status_mihomo ;;
+        8) logs_mihomo ;;
+        9) generate_mieru_config ;;
+        10) show_connection_info ;;
+        0) echo -e "${GREEN}👋 退出 Mieru-Easy${NC}"; exit 0 ;;
+        *) echo -e "${RED}⚠️ 无效选择，请输入 0-10${NC}" ;;
     esac
+    echo ""
 done
