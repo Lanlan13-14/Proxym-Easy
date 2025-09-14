@@ -761,7 +761,7 @@ while true; do
         13) delete_all ;;
         14) delete_config ;;
         15) modify_config ;;
-        16) echo -e "${GREEN}✅ 退出脚本。${NC}"; exit 0 ;;
+        16) echo -e "${GREEN}✅ 退出脚本，下次使用输入sudo mieru-easy ${NC}"; exit 0 ;;
         *) echo -e "${RED}⚠️ 无效选择，请重试。${NC}" ;;
     esac
 done
