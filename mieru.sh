@@ -412,7 +412,7 @@ EOF
                 fi
             done
             port_config="port: $start_port"
-            port_range_config="\n    port-range: $port_range"
+            port_range_config="    port-range: $port_range"
         else
             while true; do
                 read -p "输入 port (回车自动生成 10000-30000 内端口): " port
@@ -438,8 +438,20 @@ EOF
             port_range_config=""
         fi
 
-        # 追加到 listeners 部分
-        sed -i "/listeners:/a\  - name: $inbound_name\n    type: mieru\n    $port_config$port_range_config\n    listen: $listen\n    users:\n      - name: $username\n        pass: $password\n    multiplexing: $multiplexing" "${CONFIG_FILE}"
+        # 追加到 listeners 部分，修正 sed 命令以确保 YAML 格式
+        new_inbound=$(cat << EOF
+  - name: $inbound_name
+    type: mieru
+    $port_config
+    $( [[ -n "$port_range_config" ]] && echo "$port_range_config" )
+    listen: $listen
+    users:
+      - name: $username
+        pass: $password
+    multiplexing: $multiplexing
+EOF
+)
+        sed -i "/^listeners:/a\\$new_inbound" "${CONFIG_FILE}"
 
         echo -e "${GREEN}✅ 添加了 $inbound_name${NC}"
         echo -e "${YELLOW}自定义值: listen=$listen, username=$username, password=$password, multiplexing=$multiplexing${NC}"
