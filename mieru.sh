@@ -412,7 +412,11 @@ EOF
                 fi
             done
             port_config="port: $start_port"
-            port_range_config="    port-range: $port_range"
+            if [[ -n "$port_range" ]]; then
+                port_range_config="    port-range: $port_range"
+            else
+                port_range_config=""
+            fi
         else
             while true; do
                 read -p "输入 port (回车自动生成 10000-30000 内端口): " port
@@ -443,7 +447,7 @@ EOF
   - name: $inbound_name
     type: mieru
     $port_config
-    $( [[ -n "$port_range_config" ]] && echo "$port_range_config" )
+$port_range_config
     listen: $listen
     users:
       - name: $username
@@ -451,11 +455,11 @@ EOF
     multiplexing: $multiplexing
 EOF
 )
-        sed -i "/^listeners:/a\\$new_inbound" "${CONFIG_FILE}"
+        sed -i "/^listeners:/a\\${new_inbound}" "${CONFIG_FILE}"
 
         echo -e "${GREEN}✅ 添加了 $inbound_name${NC}"
         echo -e "${YELLOW}自定义值: listen=$listen, username=$username, password=$password, multiplexing=$multiplexing${NC}"
-        if [[ -n "$port" ]]; then
+        if [[ -n "$port" && -z "$port_range" ]]; then
             echo -e "${YELLOW}port=$port${NC}"
         else
             echo -e "${YELLOW}port-range=$port_range${NC}"
