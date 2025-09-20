@@ -169,38 +169,6 @@ uninstall_mihomo() {
     echo -e "${GREEN}✅ mihomo 卸载完成！${NC}"
 }
 
-# 函数: 添加 Listener 到配置文件（仅追加 inbounds，保留 dns 等其他字段）
-add_listener_to_config() {
-    local config_yaml="$1"
-    local overwrite_dns=false
-    if [ -f "${CONFIG_FILE}" ] && yq eval '.dns' "${CONFIG_FILE}" > /dev/null 2>&1; then
-        echo -e "${YELLOW}检测到现有 DNS 配置，是否覆盖？(y/n，默认 n): ${NC}"
-        read -t 30 -r response || { echo -e "${YELLOW}输入超时，默认不覆盖 DNS 配置！${NC}"; }
-        if [[ "$response" =~ ^[Yy]$ ]]; then
-            overwrite_dns=true
-        fi
-    fi
-    if [ ! -f "${CONFIG_FILE}" ] || [ "$overwrite_dns" = true ]; then
-        mkdir -p "${CONFIG_DIR}"
-        echo "$config_yaml" > "${CONFIG_FILE}"
-        chmod 644 "${CONFIG_FILE}"
-        echo -e "${GREEN}✅ 配置文件已创建/覆盖并添加 Listener。路径: ${CONFIG_FILE}${NC}"
-    else
-        local listener_yaml
-        listener_yaml=$(yq eval '.inbounds[0]' - <<< "$config_yaml" 2>/dev/null)
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}⚠️ 解析 inbounds 失败！${NC}"
-            exit 1
-        fi
-        yq eval ".inbounds += [yamldecode(\"$listener_yaml\")]" -i "${CONFIG_FILE}" 2>/dev/null
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}⚠️ 追加 Listener 到配置文件失败！${NC}"
-            exit 1
-        fi
-        echo -e "${GREEN}✅ 新 Listener 已追加到现有配置文件，保留现有 DNS 配置。${NC}"
-    fi
-}
-
 # 函数: 下载协议脚本
 download_protocol_script() {
     local protocol="$1"
@@ -261,13 +229,18 @@ generate_node_config() {
                 echo -e "${RED}⚠️ 无法为 ${VLESS_SCRIPT} 设置执行权限！${NC}"
                 return 1
             fi
-            local config
-            config=$("${VLESS_SCRIPT}" "${CONFIG_FILE}" 2>&1)
+            echo -e "${YELLOW}执行 VLESS 配置生成脚本...${NC}"
+            "${VLESS_SCRIPT}" 2>&1
             if [ $? -ne 0 ]; then
-                echo -e "${RED}⚠️ 生成 VLESS 配置失败！错误信息：\n${config}${NC}"
+                echo -e "${RED}⚠️ 生成 VLESS 配置失败！请检查子脚本输出或日志。${NC}"
                 return 1
             fi
-            add_listener_to_config "$config"
+            if [ -f "${CONFIG_FILE}" ]; then
+                echo -e "${GREEN}✅ 配置已生成并保存到 ${CONFIG_FILE}${NC}"
+            else
+                echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 未生成，请检查子脚本！${NC}"
+                return 1
+            fi
             ;;
         2)
             return 0
@@ -282,7 +255,7 @@ generate_node_config() {
 # 函数: 编辑配置（使用 vim）
 edit_config() {
     if [ ! -f "${CONFIG_FILE}" ]; then
-        echo -e "${RED}⚠️ 未找到配置文件，正在生成新配置...${NC}"
+        echo -e "${RED}⚠️ 未找到配置文件 ${CONFIG_FILE}，请先生成配置！${NC}"
         generate_node_config
         return
     fi
@@ -291,14 +264,15 @@ edit_config() {
         exit 1
     fi
     vim "${CONFIG_FILE}"
-    echo -e "${GREEN}✅ 配置文件编辑完成。请测试配置有效性。${NC}"
+    echo -e "${GREEN}✅ 配置文件 ${CONFIG_FILE} 编辑完成。请测试配置有效性。${NC}"
 }
 
 # 函数: 启动 mihomo
 start_mihomo() {
     if [[ ! -f "${CONFIG_FILE}" ]]; then
         echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在，请先生成配置！${NC}"
-        exit 1
+        generate_node_config
+        return
     fi
     if ! systemctl start mihomo; then
         echo -e "${RED}⚠️ 启动失败！请检查日志: journalctl -u mihomo${NC}"
@@ -312,7 +286,8 @@ start_mihomo() {
 restart_mihomo() {
     if [[ ! -f "${CONFIG_FILE}" ]]; then
         echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在，请先生成配置！${NC}"
-        exit 1
+        generate_node_config
+        return
     fi
     if ! systemctl restart mihomo; then
         echo -e "${RED}⚠️ 重启失败！请检查日志: journalctl -u mihomo${NC}"
