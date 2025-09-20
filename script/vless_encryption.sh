@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # 独立脚本用于生成 mihomo 的 VLESS encryption 配置（仅包含 nameserver 的 DNS 配置）。
-# 新功能：生成后打印客户端 proxies 单行 YAML 配置（匹配本地 Listener）。
-# 使用方法：./vless_encryption.sh [output_file]
+# 功能：生成配置并打印客户端 proxies 单行 YAML（匹配本地 Listener）。
+# 使用方法：/usr/local/bin/script/vless_encryption.sh [output_file]
 # 依赖：yq, ss, curl (for ipinfo), /proc/sys/kernel/random/uuid, mihomo。
 
 # 颜色定义
@@ -44,22 +44,12 @@ recommend_port() {
 }
 
 # 检查依赖
-if ! command -v "${MIHOMO_BIN}" &> /dev/null; then
-    echo -e "${RED}⚠️ mihomo 未安装，请先安装 mihomo！${NC}"
-    exit 1
-fi
-if ! command -v yq &> /dev/null; then
-    echo -e "${RED}⚠️ yq 未安装，请安装 yq！${NC}"
-    exit 1
-fi
-if ! command -v ss &> /dev/null; then
-    echo -e "${RED}⚠️ ss 未安装，请安装 iproute2 或 net-tools！${NC}"
-    exit 1
-fi
-if ! command -v curl &> /dev/null; then
-    echo -e "${RED}⚠️ curl 未安装，请安装 curl！${NC}"
-    exit 1
-fi
+for cmd in "${MIHOMO_BIN}" yq ss curl; do
+    if ! command -v "${cmd}" &> /dev/null; then
+        echo -e "${RED}⚠️ ${cmd} 未安装，请运行 proxym-easy install！${NC}"
+        exit 1
+    fi
+done
 
 # 收集配置参数
 echo -e "${YELLOW}生成 VLESS encryption 配置（包含 DNS nameserver）...${NC}"
@@ -92,15 +82,31 @@ UUID=${UUID:-$(cat /proc/sys/kernel/random/uuid)}
 echo "请输入 X25519 私钥（默认随机生成，按回车生成新密钥）："
 read -r X25519_PRIVATE
 if [ -z "$X25519_PRIVATE" ]; then
-    X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519)
+    X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}⚠️ 生成 X25519 私钥失败！${NC}"
+        exit 1
+    fi
     X25519_PRIVATE=$(echo "$X25519_OUTPUT" | grep 'Private Key' | awk '{print $3}')
+    if [ -z "$X25519_PRIVATE" ]; then
+        echo -e "${RED}⚠️ 解析 X25519 私钥失败！${NC}"
+        exit 1
+    fi
 fi
 
 echo "请输入 ML-KEM-768 种子（默认随机生成，按回车生成新种子）："
 read -r MLKEM_SEED
 if [ -z "$MLKEM_SEED" ]; then
-    MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768)
+    MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}⚠️ 生成 ML-KEM-768 种子失败！${NC}"
+        exit 1
+    fi
     MLKEM_SEED=$(echo "$MLKEM_OUTPUT" | grep 'Seed' | awk '{print $2}')
+    if [ -z "$MLKEM_SEED" ]; then
+        echo -e "${RED}⚠️ 解析 ML-KEM-768 种子失败！${NC}"
+        exit 1
+    fi
 fi
 
 echo "请输入 Flow（默认：$DEFAULT_FLOW，按回车使用默认值）："
@@ -141,13 +147,19 @@ echo -e "\n生成的 YAML 配置：\n${CONFIG_YAML}"
 
 # 打印连接信息（客户端 proxies 单行 YAML）
 echo -e "\n${YELLOW}获取服务器 IP 和国家...${NC}"
-IP_INFO=$(curl -s ipinfo.io/json)
-SERVER_IP=$(echo "$IP_INFO" | grep '"ip"' | cut -d '"' -f 4)
-COUNTRY=$(echo "$IP_INFO" | grep '"country"' | cut -d '"' -f 4)
-if [ -z "$SERVER_IP" ] || [ -z "$COUNTRY" ]; then
+IP_INFO=$(curl -s --max-time 5 ipinfo.io/json)
+if [ $? -ne 0 ]; then
     echo -e "${RED}⚠️ 获取 IP 信息失败，使用默认值（IP: 127.0.0.1, Country: Unknown）。${NC}"
     SERVER_IP="127.0.0.1"
     COUNTRY="Unknown"
+else
+    SERVER_IP=$(echo "$IP_INFO" | grep '"ip"' | cut -d '"' -f 4)
+    COUNTRY=$(echo "$IP_INFO" | grep '"country"' | cut -d '"' -f 4)
+    if [ -z "$SERVER_IP" ] || [ -z "$COUNTRY" ]; then
+        echo -e "${RED}⚠️ 解析 IP 信息失败，使用默认值（IP: 127.0.0.1, Country: Unknown）。${NC}"
+        SERVER_IP="127.0.0.1"
+        COUNTRY="Unknown"
+    fi
 fi
 NAME="${COUNTRY}-Vless"
 
@@ -158,7 +170,10 @@ echo "$PROXIES_YAML"
 
 # 如果指定了输出文件，则写入
 if [ -n "$1" ]; then
-    echo "$CONFIG_YAML" > "$1"
+    if ! echo "$CONFIG_YAML" > "$1"; then
+        echo -e "${RED}⚠️ 写入文件 $1 失败！${NC}"
+        exit 1
+    fi
     echo -e "${GREEN}✅ YAML 配置已保存到 $1${NC}"
 else
     echo -e "${YELLOW}提示：可将以上 YAML 配置复制到配置文件，或指定输出文件（例如：$0 output.yaml）${NC}"
