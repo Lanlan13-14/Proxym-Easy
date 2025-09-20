@@ -52,7 +52,7 @@ for cmd in "${MIHOMO_BIN}" yq ss curl; do
 done
 
 # 收集配置参数
-echo -e "${YELLOW}生成 VLESS encryption 配置（包含 DNS nameserver）...${NC}"
+echo -e "${YELLOW}生成 VLESS Encryption 配置（包含 DNS nameserver）...${NC}"
 echo "请输入 DNS 服务器地址（逗号分隔，示例：8.8.8.8,1.1.1.1，默认：$DEFAULT_DNS_NAMESERVER，按回车使用默认值）："
 read -r DNS_NAMESERVER
 DNS_NAMESERVER=${DNS_NAMESERVER:-$DEFAULT_DNS_NAMESERVER}
@@ -137,7 +137,7 @@ EOF
 )
 
 # 输出结果
-echo -e "${GREEN}✅ VLESS 配置已生成：${NC}"
+echo -e "${GREEN}✅ VLESS Encryption 配置已生成：${NC}"
 echo "DNS 服务器: $DNS_NAMESERVER"
 echo "UUID: $UUID"
 echo "Decryption: $DECRYPTION"
