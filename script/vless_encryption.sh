@@ -54,15 +54,15 @@ done
 # 收集配置参数
 echo -e "${YELLOW}生成 VLESS Encryption 配置（包含 DNS nameserver）...${NC}"
 echo "请输入 DNS 服务器地址（逗号分隔，示例：8.8.8.8,1.1.1.1，默认：$DEFAULT_DNS_NAMESERVER，按回车使用默认值）："
-read -r DNS_NAMESERVER
+read -t 30 -r DNS_NAMESERVER || { echo -e "${RED}⚠️ 输入超时，使用默认 DNS！${NC}"; DNS_NAMESERVER="$DEFAULT_DNS_NAMESERVER"; }
 DNS_NAMESERVER=${DNS_NAMESERVER:-$DEFAULT_DNS_NAMESERVER}
 
 echo "请输入监听地址（默认：$DEFAULT_LISTEN，按回车使用默认值）："
-read -r LISTEN
+read -t 30 -r LISTEN || { echo -e "${RED}⚠️ 输入超时，使用默认监听地址！${NC}"; LISTEN="$DEFAULT_LISTEN"; }
 LISTEN=${LISTEN:-$DEFAULT_LISTEN}
 
 echo "请输入端口（默认推荐可用端口，按回车自动选择）："
-read -r PORT
+read -t 30 -r PORT || { echo -e "${YELLOW}自动选择端口...${NC}"; PORT=$(recommend_port); }
 if [ -z "$PORT" ]; then
     PORT=$(recommend_port)
     if [ $? -ne 0 ]; then
@@ -76,41 +76,43 @@ if ! check_port "$PORT"; then
 fi
 
 echo "请输入 UUID（默认随机生成，按回车使用随机 UUID）："
-read -r UUID
+read -t 30 -r UUID || { echo -e "${YELLOW}生成随机 UUID...${NC}"; UUID=$(cat /proc/sys/kernel/random/uuid); }
 UUID=${UUID:-$(cat /proc/sys/kernel/random/uuid)}
 
 echo "请输入 X25519 私钥（默认随机生成，按回车生成新密钥）："
-read -r X25519_PRIVATE
+read -t 30 -r X25519_PRIVATE || { echo -e "${YELLOW}生成随机 X25519 私钥...${NC}"; }
 if [ -z "$X25519_PRIVATE" ]; then
     X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>/dev/null)
     if [ $? -ne 0 ]; then
-        echo -e "${RED}⚠️ 生成 X25519 私钥失败！${NC}"
+        echo -e "${RED}⚠️ 生成 X25519 私钥失败！输出：\n${X25519_OUTPUT}${NC}"
         exit 1
     fi
-    X25519_PRIVATE=$(echo "$X25519_OUTPUT" | grep 'Private Key' | awk '{print $3}')
+    echo -e "${YELLOW}调试：X25519 输出：\n${X25519_OUTPUT}${NC}"
+    X25519_PRIVATE=$(echo "$X25519_OUTPUT" | grep 'PrivateKey:' | sed 's/.*PrivateKey: *//')
     if [ -z "$X25519_PRIVATE" ]; then
-        echo -e "${RED}⚠️ 解析 X25519 私钥失败！${NC}"
+        echo -e "${RED}⚠️ 解析 X25519 私钥失败！输出：\n${X25519_OUTPUT}${NC}"
         exit 1
     fi
 fi
 
 echo "请输入 ML-KEM-768 种子（默认随机生成，按回车生成新种子）："
-read -r MLKEM_SEED
+read -t 30 -r MLKEM_SEED || { echo -e "${YELLOW}生成随机 ML-KEM-768 种子...${NC}"; }
 if [ -z "$MLKEM_SEED" ]; then
     MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>/dev/null)
     if [ $? -ne 0 ]; then
-        echo -e "${RED}⚠️ 生成 ML-KEM-768 种子失败！${NC}"
+        echo -e "${RED}⚠️ 生成 ML-KEM-768 种子失败！输出：\n${MLKEM_OUTPUT}${NC}"
         exit 1
     fi
-    MLKEM_SEED=$(echo "$MLKEM_OUTPUT" | grep 'Seed' | awk '{print $2}')
+    echo -e "${YELLOW}调试：ML-KEM-768 输出：\n${MLKEM_OUTPUT}${NC}"
+    MLKEM_SEED=$(echo "$MLKEM_OUTPUT" | grep 'Seed:' | sed 's/.*Seed: *//')
     if [ -z "$MLKEM_SEED" ]; then
-        echo -e "${RED}⚠️ 解析 ML-KEM-768 种子失败！${NC}"
+        echo -e "${RED}⚠️ 解析 ML-KEM-768 种子失败！输出：\n${MLKEM_OUTPUT}${NC}"
         exit 1
     fi
 fi
 
 echo "请输入 Flow（默认：$DEFAULT_FLOW，按回车使用默认值）："
-read -r FLOW
+read -t 30 -r FLOW || { echo -e "${YELLOW}使用默认 Flow...${NC}"; FLOW="$DEFAULT_FLOW"; }
 FLOW=${FLOW:-$DEFAULT_FLOW}
 
 DECRYPTION="mlkem768x25519plus.native/xorpub/random.1rtt/600s.${X25519_PRIVATE}.${MLKEM_SEED}"
