@@ -175,7 +175,7 @@ add_listener_to_config() {
     local overwrite_dns=false
     if [ -f "${CONFIG_FILE}" ] && yq eval '.dns' "${CONFIG_FILE}" > /dev/null 2>&1; then
         echo -e "${YELLOW}检测到现有 DNS 配置，是否覆盖？(y/n，默认 n): ${NC}"
-        read -r response
+        read -t 30 -r response || { echo -e "${YELLOW}输入超时，默认不覆盖 DNS 配置！${NC}"; }
         if [[ "$response" =~ ^[Yy]$ ]]; then
             overwrite_dns=true
         fi
@@ -232,12 +232,12 @@ generate_node_config() {
     echo "1. VLESS Encryption"
     echo "2. 返回主菜单"
     echo -n "请选择协议 [1-2]："
-    read -r protocol_choice
+    read -t 30 -r protocol_choice || { echo -e "${RED}⚠️ 输入超时，返回主菜单！${NC}"; return 1; }
     case $protocol_choice in
         1)
             if [ -f "${VLESS_SCRIPT}" ]; then
                 echo -e "${YELLOW}VLESS 脚本已存在，是否重新下载？(y/n，默认 n): ${NC}"
-                read -r redownload
+                read -t 30 -r redownload || { echo -e "${YELLOW}输入超时，使用现有脚本！${NC}"; redownload="n"; }
                 if [[ "$redownload" =~ ^[Yy]$ ]]; then
                     rm -f "${VLESS_SCRIPT}" 2>/dev/null
                     echo -e "${YELLOW}重新下载 VLESS 脚本...${NC}"
@@ -262,7 +262,7 @@ generate_node_config() {
                 return 1
             fi
             local config
-            config=$("${VLESS_SCRIPT}" 2>&1)
+            config=$("${VLESS_SCRIPT}" "${CONFIG_FILE}" 2>&1)
             if [ $? -ne 0 ]; then
                 echo -e "${RED}⚠️ 生成 VLESS 配置失败！错误信息：\n${config}${NC}"
                 return 1
@@ -277,25 +277,6 @@ generate_node_config() {
             generate_node_config
             ;;
     esac
-}
-
-# 函数: 添加新 VLESS Listener
-add_new_listener() {
-    if ! check_mihomo; then
-        echo -e "${RED}⚠️ mihomo 未安装，请运行 proxym-easy install！${NC}"
-        exit 1
-    fi
-    if [ ! -f "${VLESS_SCRIPT}" ]; then
-        echo -e "${RED}⚠️ VLESS 脚本未下载，请先运行生成节点配置！${NC}"
-        return 1
-    fi
-    local config
-    config=$("${VLESS_SCRIPT}" 2>&1)
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}⚠️ 生成 VLESS 配置失败！错误信息：\n${config}${NC}"
-        return 1
-    fi
-    add_listener_to_config "$config"
 }
 
 # 函数: 编辑配置（使用 vim）
@@ -385,13 +366,13 @@ test_config() {
     fi
 }
 
-# 函数: 删除脚本
+# 函数: 删除主脚本
 delete_scripts() {
     echo -e "${YELLOW}=== 删除主脚本 ===${NC}"
     echo "1. 删除 proxym-easy"
     echo "2. 返回主菜单"
     echo -n "请选择选项 [1-2]："
-    read -r delete_choice
+    read -t 30 -r delete_choice || { echo -e "${RED}⚠️ 输入超时，返回主菜单！${NC}"; return 1; }
     case $delete_choice in
         1)
             if [ -f "${INSTALL_DIR}/proxym-easy" ]; then
@@ -411,7 +392,7 @@ delete_scripts() {
     esac
 }
 
-# 函数: 更新脚本（仅主脚本）
+# 函数: 更新主脚本
 update_scripts() {
     echo -e "${YELLOW}🚀 更新主脚本（proxym-easy）...${NC}"
     if [ -f "${INSTALL_DIR}/proxym-easy" ]; then
@@ -449,16 +430,15 @@ show_menu() {
     echo "5. 查看日志"
     echo "6. 测试配置"
     echo "7. 生成节点配置"
-    echo "8. 添加新 VLESS Listener"
-    echo "9. 编辑配置文件（使用 vim）"
-    echo "10. 安装 mihomo"
-    echo "11. 更新 mihomo"
-    echo "12. 卸载 mihomo"
-    echo "13. 删除主脚本（proxym-easy）"
-    echo "14. 更新主脚本（proxym-easy）"
-    echo "15. 退出"
-    echo -n "请选择选项 [1-15]："
-    read -r choice
+    echo "8. 编辑配置文件（使用 vim）"
+    echo "9. 安装 mihomo"
+    echo "10. 更新 mihomo"
+    echo "11. 卸载 mihomo"
+    echo "12. 删除主脚本（proxym-easy）"
+    echo "13. 更新主脚本（proxym-easy）"
+    echo "14. 退出"
+    echo -n "请选择选项 [1-14]："
+    read -t 30 -r choice || { echo -e "${RED}⚠️ 输入超时，退出！${NC}"; exit 1; }
     case $choice in
         1) start_mihomo ;;
         2) stop_mihomo ;;
@@ -467,14 +447,13 @@ show_menu() {
         5) logs_mihomo ;;
         6) test_config ;;
         7) generate_node_config ;;
-        8) add_new_listener ;;
-        9) edit_config ;;
-        10) install_mihomo ;;
-        11) update_mihomo ;;
-        12) uninstall_mihomo ;;
-        13) delete_scripts ;;
-        14) update_scripts ;;
-        15) exit 0 ;;
+        8) edit_config ;;
+        9) install_mihomo ;;
+        10) update_mihomo ;;
+        11) uninstall_mihomo ;;
+        12) delete_scripts ;;
+        13) update_scripts ;;
+        14) exit 0 ;;
         *) echo -e "${RED}无效选项${NC}"; sleep 1; show_menu ;;
     esac
 }
