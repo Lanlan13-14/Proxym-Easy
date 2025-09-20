@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # 独立脚本用于生成 mihomo 的 VLESS encryption 配置（仅包含 nameserver 的 DNS 配置）。
-# 功能：生成配置并打印客户端 proxies 单行 YAML（匹配本地 Listener）。
-# 使用方法：/usr/local/bin/script/vless_encryption.sh [output_file]
+# 功能：生成不启用 TLS 的 VLESS 配置，写入 /etc/mihomo/config.yaml，打印客户端 proxies 单行 YAML。
+# 使用方法：/usr/local/bin/script/vless_encryption.sh
 # 依赖：yq, ss, curl (for ipinfo), /proc/sys/kernel/random/uuid, mihomo。
+# 输出：配置写入 /etc/mihomo/config.yaml，打印 proxies YAML。
 
 # 颜色定义
 RED='\033[0;31m'
@@ -13,6 +14,8 @@ NC='\033[0m'
 
 # 默认值
 MIHOMO_BIN="/usr/local/bin/mihomo"
+CONFIG_DIR="/etc/mihomo"
+CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 DEFAULT_PORT=10817
 DEFAULT_LISTEN="0.0.0.0"
 DEFAULT_FLOW="xtls-rprx-vision"
@@ -51,8 +54,12 @@ for cmd in "${MIHOMO_BIN}" yq ss curl; do
     fi
 done
 
+# 创建配置目录
+mkdir -p "${CONFIG_DIR}"
+chmod 755 "${CONFIG_DIR}"
+
 # 收集配置参数
-echo -e "${YELLOW}生成 VLESS Encryption 配置（包含 DNS nameserver）...${NC}"
+echo -e "${YELLOW}生成 VLESS Encryption 配置（不启用 TLS，包含 DNS nameserver）...${NC}"
 echo "请输入 DNS 服务器地址（逗号分隔，示例：8.8.8.8,1.1.1.1，默认：$DEFAULT_DNS_NAMESERVER，按回车使用默认值）："
 read -t 30 -r DNS_NAMESERVER || { echo -e "${RED}⚠️ 输入超时，使用默认 DNS！${NC}"; DNS_NAMESERVER="$DEFAULT_DNS_NAMESERVER"; }
 DNS_NAMESERVER=${DNS_NAMESERVER:-$DEFAULT_DNS_NAMESERVER}
@@ -131,12 +138,43 @@ inbounds:
     listen: $LISTEN
     port: $PORT
     decryption: $DECRYPTION
+    tls: false
     users:
       - username: user1
         uuid: $UUID
         flow: $FLOW
 EOF
 )
+
+# 检查现有配置文件
+if [ -f "${CONFIG_FILE}" ] && yq eval '.dns' "${CONFIG_FILE}" > /dev/null 2>&1; then
+    echo -e "${YELLOW}检测到现有配置文件 ${CONFIG_FILE}，是否覆盖 DNS 配置？(y/n，默认 n): ${NC}"
+    read -t 30 -r response || { echo -e "${YELLOW}输入超时，默认不覆盖 DNS 配置！${NC}"; response="n"; }
+    if [[ "$response" =~ ^[Yy]$ ]]; then
+        # 覆盖整个配置文件
+        echo "$CONFIG_YAML" > "${CONFIG_FILE}"
+        chmod 644 "${CONFIG_FILE}"
+        echo -e "${GREEN}✅ 配置已覆盖并保存到 ${CONFIG_FILE}${NC}"
+    else
+        # 追加 inbounds
+        listener_yaml=$(yq eval '.inbounds[0]' - <<< "$CONFIG_YAML" 2>/dev/null)
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}⚠️ 解析 inbounds 失败！请检查 YAML 格式。${NC}"
+            exit 1
+        fi
+        yq eval ".inbounds += [yamldecode(\"$listener_yaml\")]" -i "${CONFIG_FILE}" 2>/dev/null
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}⚠️ 追加 Listener 到 ${CONFIG_FILE} 失败！${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}✅ 新 Listener 已追加到 ${CONFIG_FILE}，保留现有 DNS 配置${NC}"
+    fi
+else
+    # 初次创建配置文件
+    echo "$CONFIG_YAML" > "${CONFIG_FILE}"
+    chmod 644 "${CONFIG_FILE}"
+    echo -e "${GREEN}✅ 新配置文件已创建并保存到 ${CONFIG_FILE}${NC}"
+fi
 
 # 输出结果
 echo -e "${GREEN}✅ VLESS Encryption 配置已生成：${NC}"
@@ -145,7 +183,9 @@ echo "UUID: $UUID"
 echo "Decryption: $DECRYPTION"
 echo "监听地址: $LISTEN:$PORT"
 echo "Flow: $FLOW"
-echo -e "\n生成的 YAML 配置：\n${CONFIG_YAML}"
+echo "TLS: disabled"
+echo -e "\n生成的 YAML 配置已保存到：${CONFIG_FILE}"
+echo -e "${CONFIG_YAML}"
 
 # 打印连接信息（客户端 proxies 单行 YAML）
 echo -e "\n${YELLOW}获取服务器 IP 和国家...${NC}"
@@ -169,14 +209,3 @@ PROXIES_YAML="{ name: \"${NAME}\", type: vless, server: \"${SERVER_IP}\", port: 
 
 echo -e "${GREEN}✅ 客户端 Proxies 配置（单行 YAML）：${NC}"
 echo "$PROXIES_YAML"
-
-# 如果指定了输出文件，则写入
-if [ -n "$1" ]; then
-    if ! echo "$CONFIG_YAML" > "$1"; then
-        echo -e "${RED}⚠️ 写入文件 $1 失败！${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}✅ YAML 配置已保存到 $1${NC}"
-else
-    echo -e "${YELLOW}提示：可将以上 YAML 配置复制到配置文件，或指定输出文件（例如：$0 output.yaml）${NC}"
-fi
