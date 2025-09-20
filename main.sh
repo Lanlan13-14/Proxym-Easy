@@ -1,18 +1,19 @@
 #!/bin/bash
 
-# 主脚本用于管理 mihomo 服务器，调用 script/vless_encryption.sh 生成 VLESS 配置。
+# 主脚本用于管理 mihomo 服务器，支持生成 VLESS 配置（通过 script/vless_encryption.sh）。
 # 功能：
-# - 可扩展的 Listener 管理：通过独立脚本生成 VLESS 配置，追加到 inbounds 列表，保留或覆盖 dns 配置。
+# - 可扩展的 Listener 管理：通过“生成节点配置”选择协议（当前仅 VLESS），下载脚本并生成配置。
 # - 使用 yq 确保 YAML 语法准确，日志级别设为 error。
 # - 自动检查端口占用，推荐可用端口。
 # - 动态获取最新 mihomo 版本。
 # - 自动安装依赖（不包括 vim）。
 # - 使用 systemd 管理 mihomo 服务。
 # - 默认运行显示管理面板，支持命令行参数。
+# - 支持删除脚本（proxym-easy 和 vless_encryption.sh）。
 # - 支持远程更新脚本（备份+下载+语法检查+回滚）。
-# 使用方法：proxym-easy [menu|start|stop|restart|status|log|test|install|update|uninstall|update-scripts]
+# 使用方法：proxym-easy [menu|start|stop|restart|status|log|test|install|update|uninstall|update-scripts|generate-config|delete-scripts]
 # 安装命令：curl -L https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/main.sh -o /tmp/proxym-easy && chmod +x /tmp/proxym-easy && sudo mv /tmp/proxym-easy /usr/local/bin/proxym-easy && sudo proxym-easy
-# 依赖：yq, script/vless_encryption.sh
+# 依赖：yq
 
 # 颜色定义
 RED='\033[0;31m'
@@ -86,9 +87,9 @@ install_dependencies() {
 install_mihomo() {
     echo -e "${YELLOW}🚀 安装 mihomo...${NC}"
     install_dependencies
-    mkdir -p "${CONFIG_DIR}" "${WORK_DIR}" "${INSTALL_DIR}/script"
-    chown -R root:root "${CONFIG_DIR}" "${WORK_DIR}" "${INSTALL_DIR}/script"
-    chmod 755 "${CONFIG_DIR}" "${WORK_DIR}" "${INSTALL_DIR}/script"
+    mkdir -p "${CONFIG_DIR}" "${WORK_DIR}"
+    chown -R root:root "${CONFIG_DIR}" "${WORK_DIR}"
+    chmod 755 "${CONFIG_DIR}" "${WORK_DIR}"
     get_mihomo_version
     echo -e "${YELLOW}下载 mihomo ${VERSION}...${NC}"
     if ! curl --retry 2 --max-time 5 -sL "${DOWNLOAD_URL}" | gunzip -c > "${INSTALL_DIR}/mihomo"; then
@@ -100,13 +101,6 @@ install_mihomo() {
         echo -e "${RED}⚠️ 设置权限失败！${NC}"
         exit 1
     fi
-    # 下载 vless_encryption.sh
-    echo -e "${YELLOW}下载 vless_encryption.sh...${NC}"
-    if ! curl -s -o "${VLESS_SCRIPT}" "$VLESS_URL"; then
-        echo -e "${RED}⚠️ 下载 vless_encryption.sh 失败！${NC}"
-        exit 1
-    fi
-    chmod +x "${VLESS_SCRIPT}"
     cat > "${SERVICE_FILE}" << EOF
 [Unit]
 Description=mihomo Daemon, Another Clash Kernel
@@ -138,7 +132,7 @@ EOF
         echo -e "${RED}⚠️ systemctl enable mihomo 失败！${NC}"
         exit 1
     fi
-    echo -e "${GREEN}✅ mihomo 安装完成！请运行 'proxym-easy' 配置或管理服务。${NC}"
+    echo -e "${GREEN}✅ mihomo 安装完成！运行 'proxym-easy' 配置或管理服务。${NC}"
 }
 
 # 函数: 更新 mihomo
@@ -170,7 +164,7 @@ uninstall_mihomo() {
     systemctl disable mihomo || true
     rm -f "${SERVICE_FILE}"
     systemctl daemon-reload
-    rm -rf "${INSTALL_DIR}/mihomo" "${CONFIG_DIR}" "${WORK_DIR}" "${LOG_FILE}" "${INSTALL_DIR}/script"
+    rm -rf "${INSTALL_DIR}/mihomo" "${CONFIG_DIR}" "${WORK_DIR}" "${LOG_FILE}"
     echo -e "${GREEN}✅ mihomo 卸载完成！${NC}"
 }
 
@@ -186,41 +180,97 @@ add_listener_to_config() {
         fi
     fi
     if [ ! -f "${CONFIG_FILE}" ] || [ "$overwrite_dns" = true ]; then
-        # 如果不存在或选择覆盖，直接使用完整配置
         mkdir -p "${CONFIG_DIR}"
         echo "$config_yaml" > "${CONFIG_FILE}"
         chmod 644 "${CONFIG_FILE}"
         echo -e "${GREEN}✅ 配置文件已创建/覆盖并添加 Listener。路径: ${CONFIG_FILE}${NC}"
     else
-        # 提取新配置中的 inbounds 部分
         local listener_yaml
         listener_yaml=$(yq eval '.inbounds[0]' - <<< "$config_yaml")
-        # 追加到现有配置的 inbounds 列表
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}⚠️ 解析 inbounds 失败！${NC}"
+            exit 1
+        fi
         yq eval ".inbounds += [yamldecode(\"$listener_yaml\")]" -i "${CONFIG_FILE}"
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}⚠️ 追加 Listener 到配置文件失败！${NC}"
+            exit 1
+        fi
         echo -e "${GREEN}✅ 新 Listener 已追加到现有配置文件，保留现有 DNS 配置。${NC}"
     fi
 }
 
-# 函数: 生成或更新配置（调用外部脚本）
+# 函数: 下载协议脚本
+download_protocol_script() {
+    local protocol="$1"
+    if [ "$protocol" != "vless" ]; then
+        echo -e "${RED}⚠️ 当前仅支持 VLESS 协议！${NC}"
+        return 1
+    fi
+    mkdir -p "${INSTALL_DIR}/script"
+    echo -e "${YELLOW}下载 vless_encryption.sh...${NC}"
+    if ! curl -s --max-time 5 -o "${VLESS_SCRIPT}" "$VLESS_URL"; then
+        echo -e "${RED}⚠️ 下载 vless_encryption.sh 失败！${NC}"
+        return 1
+    fi
+    chmod +x "${VLESS_SCRIPT}"
+    echo -e "${GREEN}✅ vless_encryption.sh 下载完成！${NC}"
+}
+
+# 函数: 生成节点配置
 generate_config() {
-    if ! command -v yq &> /dev/null; then
-        echo -e "${RED}⚠️ yq 未安装，请运行 proxym-easy install！${NC}"
+    echo -e "${YELLOW}=== 选择协议 ===${NC}"
+    echo "1. VLESS"
+    echo "2. 返回主菜单"
+    echo -n "请选择协议 [1-2]："
+    read -r protocol_choice
+    case $protocol_choice in
+        1)
+            if ! download_protocol_script "vless"; then
+                echo -e "${RED}⚠️ 下载协议脚本失败！${NC}"
+                return 1
+            fi
+            if ! command -v yq &> /dev/null; then
+                echo -e "${RED}⚠️ yq 未安装，请运行 proxym-easy install！${NC}"
+                return 1
+            fi
+            if [ ! -f "${VLESS_SCRIPT}" ]; then
+                echo -e "${RED}⚠️ VLESS 生成脚本 ${VLESS_SCRIPT} 不存在！${NC}"
+                return 1
+            fi
+            if ! chmod +x "${VLESS_SCRIPT}"; then
+                echo -e "${RED}⚠️ 无法为 ${VLESS_SCRIPT} 设置执行权限！${NC}"
+                return 1
+            fi
+            local config
+            config=$("${VLESS_SCRIPT}")
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}⚠️ 生成 VLESS 配置失败！${NC}"
+                return 1
+            fi
+            add_listener_to_config "$config"
+            ;;
+        2)
+            return 0
+            ;;
+        *)
+            echo -e "${RED}无效选项${NC}"
+            generate_config
+            ;;
+    esac
+}
+
+# 函数: 添加新 VLESS Listener
+add_new_listener() {
+    if ! check_mihomo; then
+        echo -e "${RED}⚠️ mihomo 未安装，请运行 proxym-easy install！${NC}"
         exit 1
     fi
     if [ ! -f "${VLESS_SCRIPT}" ]; then
-        echo -e "${RED}⚠️ VLESS 生成脚本 ${VLESS_SCRIPT} 不存在！请运行 proxym-easy install！${NC}"
-        exit 1
+        echo -e "${YELLOW}未找到 VLESS 脚本，正在下载...${NC}"
+        download_protocol_script "vless" || exit 1
     fi
-    if ! chmod +x "${VLESS_SCRIPT}"; then
-        echo -e "${RED}⚠️ 无法为 ${VLESS_SCRIPT} 设置执行权限！${NC}"
-        exit 1
-    fi
-    local config=$("${VLESS_SCRIPT}")
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}⚠️ 生成 VLESS 配置失败！${NC}"
-        exit 1
-    fi
-    add_listener_to_config "$config"
+    generate_config
 }
 
 # 函数: 编辑配置（使用 vim）
@@ -310,13 +360,54 @@ test_config() {
     fi
 }
 
-# 函数: 添加新 VLESS Listener
-add_new_listener() {
-    if ! check_mihomo; then
-        echo -e "${RED}⚠️ mihomo 未安装，请运行 proxym-easy install！${NC}"
-        exit 1
-    fi
-    generate_config
+# 函数: 删除脚本
+delete_scripts() {
+    echo -e "${YELLOW}=== 删除脚本 ===${NC}"
+    echo "1. 删除 proxym-easy"
+    echo "2. 删除 vless_encryption.sh"
+    echo "3. 删除所有脚本"
+    echo "4. 返回主菜单"
+    echo -n "请选择选项 [1-4]："
+    read -r delete_choice
+    case $delete_choice in
+        1)
+            if [ -f "${INSTALL_DIR}/proxym-easy" ]; then
+                rm -f "${INSTALL_DIR}/proxym-easy"
+                echo -e "${GREEN}✅ proxym-easy 已删除！${NC}"
+            else
+                echo -e "${RED}⚠️ proxym-easy 不存在！${NC}"
+            fi
+            ;;
+        2)
+            if [ -f "${VLESS_SCRIPT}" ]; then
+                rm -f "${VLESS_SCRIPT}"
+                echo -e "${GREEN}✅ vless_encryption.sh 已删除！${NC}"
+            else
+                echo -e "${RED}⚠️ vless_encryption.sh 不存在！${NC}"
+            fi
+            ;;
+        3)
+            if [ -f "${INSTALL_DIR}/proxym-easy" ]; then
+                rm -f "${INSTALL_DIR}/proxym-easy"
+                echo -e "${GREEN}✅ proxym-easy 已删除！${NC}"
+            fi
+            if [ -f "${VLESS_SCRIPT}" ]; then
+                rm -f "${VLESS_SCRIPT}"
+                echo -e "${GREEN}✅ vless_encryption.sh 已删除！${NC}"
+            fi
+            if [ -d "${INSTALL_DIR}/script" ]; then
+                rmdir "${INSTALL_DIR}/script" 2>/dev/null || true
+                echo -e "${GREEN}✅ 脚本目录已清理！${NC}"
+            fi
+            ;;
+        4)
+            return 0
+            ;;
+        *)
+            echo -e "${RED}无效选项${NC}"
+            delete_scripts
+            ;;
+    esac
 }
 
 # 函数: 更新脚本（远程下载+备份+语法检查+回滚）
@@ -324,43 +415,48 @@ update_scripts() {
     echo -e "${YELLOW}🚀 更新脚本（proxym-easy 和 vless_encryption.sh）...${NC}"
     mkdir -p "${INSTALL_DIR}/script"
     # 更新 proxym-easy
-    cp "${INSTALL_DIR}/proxym-easy" "${INSTALL_DIR}/proxym-easy.bak"
-    if ! curl -s -o "${INSTALL_DIR}/proxym-easy.tmp" "$MAIN_URL"; then
-        echo -e "${RED}⚠️ 下载 proxym-easy 失败！${NC}"
-        rm -f "${INSTALL_DIR}/proxym-easy.tmp"
-        mv "${INSTALL_DIR}/proxym-easy.bak" "${INSTALL_DIR}/proxym-easy"
-        return 1
-    fi
-    if bash -n "${INSTALL_DIR}/proxym-easy.tmp"; then
-        mv "${INSTALL_DIR}/proxym-easy.tmp" "${INSTALL_DIR}/proxym-easy"
-        chmod +x "${INSTALL_DIR}/proxym-easy"
-        rm -f "${INSTALL_DIR}/proxym-easy.bak"
-        echo -e "${GREEN}✅ proxym-easy 更新成功！${NC}"
-    else
-        echo -e "${RED}⚠️ proxym-easy 语法检查失败，回滚备份。${NC}"
-        rm -f "${INSTALL_DIR}/proxym-easy.tmp"
-        mv "${INSTALL_DIR}/proxym-easy.bak" "${INSTALL_DIR}/proxym-easy"
-        return 1
+    if [ -f "${INSTALL_DIR}/proxym-easy" ]; then
+        cp "${INSTALL_DIR}/proxym-easy" "${INSTALL_DIR}/proxym-easy.bak"
+        if ! curl -s --max-time 5 -o "${INSTALL_DIR}/proxym-easy.tmp" "$MAIN_URL"; then
+            echo -e "${RED}⚠️ 下载 proxym-easy 失败！${NC}"
+            rm -f "${INSTALL_DIR}/proxym-easy.tmp"
+            mv "${INSTALL_DIR}/proxym-easy.bak" "${INSTALL_DIR}/proxym-easy" 2>/dev/null
+            return 1
+        fi
+        if bash -n "${INSTALL_DIR}/proxym-easy.tmp"; then
+            mv "${INSTALL_DIR}/proxym-easy.tmp" "${INSTALL_DIR}/proxym-easy"
+            chmod +x "${INSTALL_DIR}/proxym-easy"
+            rm -f "${INSTALL_DIR}/proxym-easy.bak"
+            echo -e "${GREEN}✅ proxym-easy 更新成功！${NC}"
+        else
+            echo -e "${RED}⚠️ proxym-easy 语法检查失败，回滚备份。${NC}"
+            rm -f "${INSTALL_DIR}/proxym-easy.tmp"
+            mv "${INSTALL_DIR}/proxym-easy.bak" "${INSTALL_DIR}/proxym-easy"
+            return 1
+        fi
     fi
     # 更新 vless_encryption.sh
-    cp "${VLESS_SCRIPT}" "${VLESS_SCRIPT}.bak" 2>/dev/null || true
-    if ! curl -s -o "${VLESS_SCRIPT}.tmp" "$VLESS_URL"; then
-        echo -e "${RED}⚠️ 下载 vless_encryption.sh 失败！${NC}"
-        rm -f "${VLESS_SCRIPT}.tmp"
-        mv "${VLESS_SCRIPT}.bak" "${VLESS_SCRIPT}" 2>/dev/null || true
-        return 1
+    if [ -f "${VLESS_SCRIPT}" ]; then
+        cp "${VLESS_SCRIPT}" "${VLESS_SCRIPT}.bak" 2>/dev/null
+        if ! curl -s --max-time 5 -o "${VLESS_SCRIPT}.tmp" "$VLESS_URL"; then
+            echo -e "${RED}⚠️ 下载 vless_encryption.sh 失败！${NC}"
+            rm -f "${VLESS_SCRIPT}.tmp"
+            mv "${VLESS_SCRIPT}.bak" "${VLESS_SCRIPT}" 2>/dev/null
+            return 1
+        fi
+        if bash -n "${VLESS_SCRIPT}.tmp"; then
+            mv "${VLESS_SCRIPT}.tmp" "${VLESS_SCRIPT}"
+            chmod +x "${VLESS_SCRIPT}"
+            rm -f "${VLESS_SCRIPT}.bak"
+            echo -e "${GREEN}✅ vless_encryption.sh 更新成功！${NC}"
+        else
+            echo -e "${RED}⚠️ vless_encryption.sh 语法检查失败，回滚备份。${NC}"
+            rm -f "${VLESS_SCRIPT}.tmp"
+            mv "${VLESS_SCRIPT}.bak" "${VLESS_SCRIPT}" 2>/dev/null
+            return 1
+        fi
     fi
-    if bash -n "${VLESS_SCRIPT}.tmp"; then
-        mv "${VLESS_SCRIPT}.tmp" "${VLESS_SCRIPT}"
-        chmod +x "${VLESS_SCRIPT}"
-        rm -f "${VLESS_SCRIPT}.bak"
-        echo -e "${GREEN}✅ vless_encryption.sh 更新成功！${NC}"
-    else
-        echo -e "${RED}⚠️ vless_encryption.sh 语法检查失败，回滚备份。${NC}"
-        rm -f "${VLESS_SCRIPT}.tmp"
-        mv "${VLESS_SCRIPT}.bak" "${VLESS_SCRIPT}" 2>/dev/null || true
-        return 1
-    fi
+    echo -e "${GREEN}✅ 所有脚本更新完成！${NC}"
 }
 
 # 函数: 管理面板
@@ -372,14 +468,16 @@ show_menu() {
     echo "4. 查看状态"
     echo "5. 查看日志"
     echo "6. 测试配置"
-    echo "7. 添加新 VLESS Listener"
-    echo "8. 编辑配置文件（使用 vim）"
-    echo "9. 安装 mihomo"
-    echo "10. 更新 mihomo"
-    echo "11. 卸载 mihomo"
-    echo "12. 更新脚本（proxym-easy 和 vless_encryption.sh）"
-    echo "13. 退出"
-    echo -n "请选择选项 [1-13]："
+    echo "7. 生成节点配置"
+    echo "8. 添加新 VLESS Listener"
+    echo "9. 编辑配置文件（使用 vim）"
+    echo "10. 安装 mihomo"
+    echo "11. 更新 mihomo"
+    echo "12. 卸载 mihomo"
+    echo "13. 删除脚本（proxym-easy 和 vless_encryption.sh）"
+    echo "14. 更新脚本（proxym-easy 和 vless_encryption.sh）"
+    echo "15. 退出"
+    echo -n "请选择选项 [1-15]："
     read -r choice
     case $choice in
         1) start_mihomo ;;
@@ -388,13 +486,15 @@ show_menu() {
         4) status_mihomo ;;
         5) logs_mihomo ;;
         6) test_config ;;
-        7) add_new_listener ;;
-        8) edit_config ;;
-        9) install_mihomo ;;
-        10) update_mihomo ;;
-        11) uninstall_mihomo ;;
-        12) update_scripts ;;
-        13) exit 0 ;;
+        7) generate_config ;;
+        8) add_new_listener ;;
+        9) edit_config ;;
+        10) install_mihomo ;;
+        11) update_mihomo ;;
+        12) uninstall_mihomo ;;
+        13) delete_scripts ;;
+        14) update_scripts ;;
+        15) exit 0 ;;
         *) echo -e "${RED}无效选项${NC}"; sleep 1; show_menu ;;
     esac
 }
@@ -438,6 +538,12 @@ case "$1" in
     update-scripts)
         update_scripts
         ;;
+    generate-config)
+        generate_config
+        ;;
+    delete-scripts)
+        delete_scripts
+        ;;
     menu)
         show_menu
         ;;
@@ -445,8 +551,6 @@ case "$1" in
         if ! check_mihomo; then
             echo -e "${YELLOW}mihomo 未安装，正在安装...${NC}"
             install_mihomo
-            generate_config
-            start_mihomo
         fi
         show_menu
         ;;
