@@ -1,20 +1,15 @@
 #!/bin/bash
 
 # 独立脚本用于生成 mihomo 的 VLESS encryption 配置（仅包含 nameserver 的 DNS 配置）。
-# 功能：
-# - 生成 VLESS encryption Listener，支持自定义监听地址、端口、UUID、X25519 私钥、ML-KEM-768 种子、Flow。
-# - 支持简化的 DNS 配置（仅 nameserver），参考 https://wiki.metacubex.one/config/dns/。
-# - 未输入时随机生成默认值（DNS nameserver 默认：8.8.8.8,1.1.1.1）。
-# - 自动检查端口占用并推荐可用端口。
-# - 输出完整 YAML 配置（log-level: error, dns, inbounds）到标准输出或指定文件。
-# 使用方法：./generate_vless_listener.sh [output_file]
-# 依赖：yq, ss, /proc/sys/kernel/random/uuid, mihomo（用于生成密钥）。
+# 新功能：生成后打印客户端 proxies 单行 YAML 配置（匹配本地 Listener）。
+# 使用方法：./vless_encryption.sh [output_file]
+# 依赖：yq, ss, curl (for ipinfo), /proc/sys/kernel/random/uuid, mihomo。
 
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
-NC='\033[0m' # 无颜色
+NC='\033[0m'
 
 # 默认值
 MIHOMO_BIN="/usr/local/bin/mihomo"
@@ -59,6 +54,10 @@ if ! command -v yq &> /dev/null; then
 fi
 if ! command -v ss &> /dev/null; then
     echo -e "${RED}⚠️ ss 未安装，请安装 iproute2 或 net-tools！${NC}"
+    exit 1
+fi
+if ! command -v curl &> /dev/null; then
+    echo -e "${RED}⚠️ curl 未安装，请安装 curl！${NC}"
     exit 1
 fi
 
@@ -139,6 +138,23 @@ echo "Decryption: $DECRYPTION"
 echo "监听地址: $LISTEN:$PORT"
 echo "Flow: $FLOW"
 echo -e "\n生成的 YAML 配置：\n${CONFIG_YAML}"
+
+# 打印连接信息（客户端 proxies 单行 YAML）
+echo -e "\n${YELLOW}获取服务器 IP 和国家...${NC}"
+IP_INFO=$(curl -s ipinfo.io/json)
+SERVER_IP=$(echo "$IP_INFO" | grep '"ip"' | cut -d '"' -f 4)
+COUNTRY=$(echo "$IP_INFO" | grep '"country"' | cut -d '"' -f 4)
+if [ -z "$SERVER_IP" ] || [ -z "$COUNTRY" ]; then
+    echo -e "${RED}⚠️ 获取 IP 信息失败，使用默认值（IP: 127.0.0.1, Country: Unknown）。${NC}"
+    SERVER_IP="127.0.0.1"
+    COUNTRY="Unknown"
+fi
+NAME="${COUNTRY}-Vless"
+
+PROXIES_YAML="{ name: \"${NAME}\", type: vless, server: \"${SERVER_IP}\", port: ${PORT}, udp: true, uuid: \"${UUID}\", flow: \"${FLOW}\", packet-encoding: \"xudp\", tls: false, encryption: \"none\", network: \"tcp\", smux: { enabled: false } }"
+
+echo -e "${GREEN}✅ 客户端 Proxies 配置（单行 YAML）：${NC}"
+echo "$PROXIES_YAML"
 
 # 如果指定了输出文件，则写入
 if [ -n "$1" ]; then
