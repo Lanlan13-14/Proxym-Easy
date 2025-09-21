@@ -8,7 +8,7 @@
 # - 支持单个端口或端口段（示例：100 或 100-200），端口段未输入时随机选择 10 个连续端口。
 # - 子菜单：[1] 生成 VLESS Encryption 配置 [2] 打印连接信息 [3] 返回主菜单。
 # - 默认：gRPC + mlkem768x25519plus.random.1rtt，无 flow（非 TLS 模式）。
-# - 如果配置文件存在，询问覆盖或追加。
+# - 如果配置文件存在，强制询问覆盖或追加。
 # 使用方法：/usr/local/bin/script/vless_encryption.sh
 # 依赖：yq, ss, curl (for ipinfo), /proc/sys/kernel/random/uuid, mihomo。
 # 输出：配置写入 /etc/mihomo/config.yaml，打印 proxies YAML。
@@ -118,13 +118,27 @@ parse_ports() {
     return 0
 }
 
-# 函数: 验证字符串非空
-validate_non_empty() {
+# 函数: 验证标准 Base64 字符串
+validate_base64() {
     local input="$1"
     if [ -z "$input" ]; then
         return 1
     fi
-    return 0
+    if [[ "$input" =~ ^[A-Za-z0-9+/=]+$ ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# 函数: 清理和转换密钥/种子
+clean_key() {
+    local input="$1"
+    # 清理空白字符
+    input=$(echo "$input" | tr -d '[:space:]')
+    # 替换 _ 为 /，- 为 +
+    input=${input//_/\/}
+    input=${input//-/+}
+    echo "$input"
 }
 
 # 函数: 生成 VLESS Encryption 配置
@@ -152,6 +166,14 @@ generate_vless_config() {
     # 创建配置目录
     mkdir -p "${CONFIG_DIR}"
     chmod 755 "${CONFIG_DIR}"
+
+    # 调试：检查配置文件是否存在
+    echo -e "${YELLOW}🔍 调试：检查配置文件 ${CONFIG_FILE} 是否存在...${NC}"
+    if [ -f "${CONFIG_FILE}" ]; then
+        echo -e "${YELLOW}📄 配置文件 ${CONFIG_FILE} 存在，大小 $(stat -c %s "${CONFIG_FILE}") 字节，权限 $(stat -c %a "${CONFIG_FILE}")${NC}"
+    else
+        echo -e "${YELLOW}📄 配置文件 ${CONFIG_FILE} 不存在，将创建新文件${NC}"
+    fi
 
     # 收集配置参数
     echo -e "${YELLOW}🌟 生成 VLESS Encryption 配置（不启用 TLS，包含 DNS nameserver）...${NC}"
@@ -205,19 +227,19 @@ generate_vless_config() {
     fi
 
     echo "请选择传输层：[1] TCP [2] WebSocket [3] gRPC（默认：[3]）"
-    read -r network_choice
+    read -r -t 5 network_choice
     case $network_choice in
         1) NETWORK="tcp" ;;
         2)
             NETWORK="ws"
             echo "请输入 WebSocket 路径（默认：$DEFAULT_WS_PATH，按回车使用默认值）："
-            read -r WS_PATH
+            read -r -t 5 WS_PATH
             WS_PATH=${WS_PATH:-$DEFAULT_WS_PATH}
             ;;
         3|"") 
             NETWORK="grpc"
             echo "请输入 gRPC 服务名称（默认：$DEFAULT_GRPC_SERVICE_NAME，按回车使用默认值）："
-            read -r GRPC_SERVICE_NAME
+            read -r -t 5 GRPC_SERVICE_NAME
             GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME:-$DEFAULT_GRPC_SERVICE_NAME}
             ;;
         *)
@@ -228,7 +250,7 @@ generate_vless_config() {
     esac
 
     echo "请选择 VLESS Encryption 类型：[1] 原生外观 [2] 只 XOR 公钥 [3] 全随机数（默认：[3]）"
-    read -r decryption_type
+    read -r -t 5 decryption_type
     case $decryption_type in
         1) DECRYPTION_TYPE="native" ;;
         2) DECRYPTION_TYPE="xorpub" ;;
@@ -240,7 +262,7 @@ generate_vless_config() {
     esac
 
     echo "请选择 RTT 模式：[1] 仅 1-RTT [2] 1-RTT 和 600s 0-RTT（默认：[1]）"
-    read -r rtt_mode
+    read -r -t 5 rtt_mode
     case $rtt_mode in
         1|"") RTT_MODE="1rtt" ;;
         2) RTT_MODE="600s" ;;
@@ -251,7 +273,7 @@ generate_vless_config() {
     esac
 
     echo "请输入 X25519 私钥数量（默认 1，按回车使用默认值）："
-    read -r x25519_count
+    read -r -t 5 x25519_count
     x25519_count=${x25519_count:-1}
     if ! [[ "$x25519_count" =~ ^[0-9]+$ ]] || [ "$x25519_count" -lt 1 ]; then
         echo -e "${RED}⚠️ 私钥数量必须为正整数，使用默认 1！${NC}"
@@ -261,25 +283,28 @@ generate_vless_config() {
     X25519_PRIVATE_KEYS=""
     for ((i=1; i<=x25519_count; i++)); do
         echo "请输入第 $i 个 X25519 私钥（按回车随机生成）："
-        read -r X25519_PRIVATE
+        read -r -t 5 X25519_PRIVATE
         if [ -z "$X25519_PRIVATE" ]; then
             X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>&1)
             if [ $? -ne 0 ]; then
                 echo -e "${RED}⚠️ 生成 X25519 私钥失败！命令输出：\n${X25519_OUTPUT}${NC}"
-                echo -e "${YELLOW}请手动输入有效的 X25519 私钥（示例：6Osg4j6I_0zC8nOAMM5r_T0f-7_0LXPDvEqwsW8Wlls）！${NC}"
-                read -r X25519_PRIVATE
-                if ! validate_non_empty "$X25519_PRIVATE"; then
-                    echo -e "${RED}⚠️ 未提供有效的 X25519 私钥！${NC}"
+                echo -e "${YELLOW}请手动输入有效的 Base64 私钥（示例：SMtfjCQHpi66E8pURTnkKO1uuItVkvBgpjw8T3sXs==）！${NC}"
+                read -r -t 5 X25519_PRIVATE
+                if ! validate_base64 "$X25519_PRIVATE"; then
+                    echo -e "${RED}⚠️ 输入的 X25519 私钥不是有效的 Base64 字符串：${X25519_PRIVATE}${NC}"
                     return 1
                 fi
             else
                 X25519_PRIVATE=$(echo "$X25519_OUTPUT" | grep -i 'PrivateKey:' | sed 's/.*PrivateKey: *//' | tr -d '[:space:]')
-                if ! validate_non_empty "$X25519_PRIVATE"; then
-                    echo -e "${RED}⚠️ 解析 X25519 私钥失败！命令输出：\n${X25519_OUTPUT}${NC}"
-                    echo -e "${YELLOW}请手动输入有效的 X25519 私钥（示例：6Osg4j6I_0zC8nOAMM5r_T0f-7_0LXPDvEqwsW8Wlls）！${NC}"
-                    read -r X25519_PRIVATE
-                    if ! validate_non_empty "$X25519_PRIVATE"; then
-                        echo -e "${RED}⚠️ 未提供有效的 X25519 私钥！${NC}"
+                X25519_PRIVATE=$(clean_key "$X25519_PRIVATE")
+                echo -e "${YELLOW}🔍 调试：X25519 原始输出：${X25519_OUTPUT}${NC}"
+                echo -e "${YELLOW}🔍 调试：清理后的 X25519 私钥：${X25519_PRIVATE}${NC}"
+                if ! validate_base64 "$X25519_PRIVATE"; then
+                    echo -e "${RED}⚠️ 生成的 X25519 私钥不是标准 Base64 格式！${NC}"
+                    echo -e "${YELLOW}请手动输入有效的 Base64 私钥（示例：SMtfjCQHpi66E8pURTnkKO1uuItVkvBgpjw8T3sXs==）！${NC}"
+                    read -r -t 5 X25519_PRIVATE
+                    if ! validate_base64 "$X25519_PRIVATE"; then
+                        echo -e "${RED}⚠️ 输入的 X25519 私钥仍不是有效的 Base64 字符串：${X25519_PRIVATE}${NC}"
                         return 1
                     fi
                 fi
@@ -290,7 +315,7 @@ generate_vless_config() {
     done
 
     echo "请输入 ML-KEM-768 种子数量（默认 1，按回车使用默认值）："
-    read -r mlkem_count
+    read -r -t 5 mlkem_count
     mlkem_count=${mlkem_count:-1}
     if ! [[ "$mlkem_count" =~ ^[0-9]+$ ]] || [ "$mlkem_count" -lt 1 ]; then
         echo -e "${RED}⚠️ 种子数量必须为正整数，使用默认 1！${NC}"
@@ -300,25 +325,28 @@ generate_vless_config() {
     MLKEM_SEEDS=""
     for ((i=1; i<=mlkem_count; i++)); do
         echo "请输入第 $i 个 ML-KEM-768 种子（按回车随机生成）："
-        read -r MLKEM_SEED
+        read -r -t 5 MLKEM_SEED
         if [ -z "$MLKEM_SEED" ]; then
             MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>&1)
             if [ $? -ne 0 ]; then
                 echo -e "${RED}⚠️ 生成 ML-KEM-768 种子失败！命令输出：\n${MLKEM_OUTPUT}${NC}"
-                echo -e "${YELLOW}请手动输入有效的 ML-KEM-768 种子（示例：GHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890==）！${NC}"
-                read -r MLKEM_SEED
-                if ! validate_non_empty "$MLKEM_SEED"; then
-                    echo -e "${RED}⚠️ 未提供有效的 ML-KEM-768 种子！${NC}"
+                echo -e "${YELLOW}请手动输入有效的 Base64 种子（示例：kFWnpgGcLFb6jNbiepBshH0C2vmeHlYhBcbOKgMnoflSfsxPSvpPVYVtp7yuImes==）！${NC}"
+                read -r -t 5 MLKEM_SEED
+                if ! validate_base64 "$MLKEM_SEED"; then
+                    echo -e "${RED}⚠️ 输入的 ML-KEM-768 种子不是有效的 Base64 字符串：${MLKEM_SEED}${NC}"
                     return 1
                 fi
             else
                 MLKEM_SEED=$(echo "$MLKEM_OUTPUT" | grep -i 'Seed:' | sed 's/.*Seed: *//' | tr -d '[:space:]')
-                if ! validate_non_empty "$MLKEM_SEED"; then
-                    echo -e "${RED}⚠️ 解析 ML-KEM-768 种子失败！命令输出：\n${MLKEM_OUTPUT}${NC}"
-                    echo -e "${YELLOW}请手动输入有效的 ML-KEM-768 种子（示例：GHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890==）！${NC}"
-                    read -r MLKEM_SEED
-                    if ! validate_non_empty "$MLKEM_SEED"; then
-                        echo -e "${RED}⚠️ 未提供有效的 ML-KEM-768 种子！${NC}"
+                MLKEM_SEED=$(clean_key "$MLKEM_SEED")
+                echo -e "${YELLOW}🔍 调试：ML-KEM-768 原始输出：${MLKEM_OUTPUT}${NC}"
+                echo -e "${YELLOW}🔍 调试：清理后的 ML-KEM-768 种子：${MLKEM_SEED}${NC}"
+                if ! validate_base64 "$MLKEM_SEED"; then
+                    echo -e "${RED}⚠️ 生成的 ML-KEM-768 种子不是标准 Base64 格式！${NC}"
+                    echo -e "${YELLOW}请手动输入有效的 Base64 种子（示例：kFWnpgGcLFb6jNbiepBshH0C2vmeHlYhBcbOKgMnoflSfsxPSvpPVYVtp7yuImes==）！${NC}"
+                    read -r -t 5 MLKEM_SEED
+                    if ! validate_base64 "$MLKEM_SEED"; then
+                        echo -e "${RED}⚠️ 输入的 ML-KEM-768 种子仍不是有效的 Base64 字符串：${MLKEM_SEED}${NC}"
                         return 1
                     fi
                 fi
@@ -329,13 +357,13 @@ generate_vless_config() {
     done
 
     DECRYPTION="mlkem768x25519plus.${DECRYPTION_TYPE}.${RTT_MODE}${X25519_PRIVATE_KEYS}${MLKEM_SEEDS}"
-    if ! [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|600s)(\.[^[:space:]]+)+$ ]]; then
+    if ! [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|600s)(\.[A-Za-z0-9+/=]+)+$ ]]; then
         echo -e "${RED}⚠️ 生成的 DECRYPTION 字符串格式无效：${DECRYPTION}${NC}"
         return 1
     fi
 
     echo "请输入 Flow（默认无 flow，建议非 TLS 模式留空，按回车使用默认值）："
-    read -r FLOW
+    read -r -t 5 FLOW
     FLOW=${FLOW:-$DEFAULT_FLOW}
     if [ -n "$FLOW" ]; then
         echo -e "${YELLOW}⚠️ 注意：非 TLS 模式下 Flow（如 xtls-rprx-vision）可能不可用，建议留空！${NC}"
@@ -376,49 +404,13 @@ $LISTENERS
 EOF
 )
 
-    # 检查现有配置文件
+    # 检查并处理现有配置文件
     if [ -f "${CONFIG_FILE}" ]; then
-        if yq eval '.dns' "${CONFIG_FILE}" > /dev/null 2>&1; then
-            echo -e "${YELLOW}📄 检测到现有配置文件 ${CONFIG_FILE}，是否覆盖整个配置文件？(y/n，默认 n): ${NC}"
-            read -r response
-            if [[ "$response" =~ ^[Yy]$ ]]; then
-                echo "$CONFIG_YAML" > "${CONFIG_FILE}"
-                if [ $? -ne 0 ]; then
-                    echo -e "${RED}⚠️ 写入 ${CONFIG_FILE} 失败，请检查权限！${NC}"
-                    return 1
-                fi
-                chmod 644 "${CONFIG_FILE}"
-                echo -e "${GREEN}✅ 配置已覆盖并保存到 ${CONFIG_FILE}${NC}"
-            else
-                if yq eval '.listeners' "${CONFIG_FILE}" > /dev/null 2>&1; then
-                    echo -e "${YELLOW}📄 检测到 listeners 字段，是否追加新的 VLESS 配置？(y/n，默认 y): ${NC}"
-                    read -r append_response
-                    append_response=${append_response:-y}
-                    if [[ "$append_response" =~ ^[Yy]$ ]]; then
-                        yq eval ".listeners += [$(yq eval -o=j -I=0 - <<< "$LISTENERS")]" -i "${CONFIG_FILE}" 2>/dev/null
-                        if [ $? -ne 0 ]; then
-                            echo -e "${RED}⚠️ 追加 Listener 到 ${CONFIG_FILE} 失败！${NC}"
-                            return 1
-                        fi
-                        chmod 644 "${CONFIG_FILE}"
-                        echo -e "${GREEN}✅ 新 Listener 已追加到 ${CONFIG_FILE}，保留现有配置${NC}"
-                    else
-                        echo -e "${YELLOW}🚫 用户取消追加，保留现有配置文件！${NC}"
-                        return 1
-                    fi
-                else
-                    echo -e "${YELLOW}📄 配置文件中无 listeners 字段，将添加新的 listeners 配置！${NC}"
-                    yq eval ".listeners = [$(yq eval -o=j -I=0 - <<< "$LISTENERS")]" -i "${CONFIG_FILE}" 2>/dev/null
-                    if [ $? -ne 0 ]; then
-                        echo -e "${RED}⚠️ 添加 listeners 到 ${CONFIG_FILE} 失败！${NC}"
-                        return 1
-                    fi
-                    chmod 644 "${CONFIG_FILE}"
-                    echo -e "${GREEN}✅ 新 listeners 字段已添加到 ${CONFIG_FILE}${NC}"
-                fi
-            fi
-        else
-            echo -e "${YELLOW}📄 配置文件 ${CONFIG_FILE} 存在但无效，将覆盖！${NC}"
+        echo -e "${YELLOW}📄 检测到现有配置文件 ${CONFIG_FILE}，是否覆盖整个配置文件？(y/n，默认 n，5秒超时自动选择 n)：${NC}"
+        read -r -t 5 response
+        response=${response:-n}
+        echo -e "${YELLOW}🔍 调试：用户选择覆盖选项：${response}${NC}"
+        if [[ "$response" =~ ^[Yy]$ ]]; then
             echo "$CONFIG_YAML" > "${CONFIG_FILE}"
             if [ $? -ne 0 ]; then
                 echo -e "${RED}⚠️ 写入 ${CONFIG_FILE} 失败，请检查权限！${NC}"
@@ -426,8 +418,37 @@ EOF
             fi
             chmod 644 "${CONFIG_FILE}"
             echo -e "${GREEN}✅ 配置已覆盖并保存到 ${CONFIG_FILE}${NC}"
+        else
+            echo -e "${YELLOW}📄 是否追加新的 VLESS 配置到现有 listeners？(y/n，默认 y，5秒超时自动追加)：${NC}"
+            read -r -t 5 append_response
+            append_response=${append_response:-y}
+            echo -e "${YELLOW}🔍 调试：用户选择追加选项：${append_response}${NC}"
+            if [[ "$append_response" =~ ^[Yy]$ ]]; then
+                if yq eval '.listeners' "${CONFIG_FILE}" > /dev/null 2>&1; then
+                    yq eval ".listeners += [$(yq eval -o=j -I=0 - <<< "$LISTENERS")]" -i "${CONFIG_FILE}" 2>/dev/null
+                    if [ $? -ne 0 ]; then
+                        echo -e "${RED}⚠️ 追加 Listener 到 ${CONFIG_FILE} 失败，请检查 yq 或配置文件格式！${NC}"
+                        return 1
+                    fi
+                    chmod 644 "${CONFIG_FILE}"
+                    echo -e "${GREEN}✅ 新 Listener 已追加到 ${CONFIG_FILE}，保留现有配置${NC}"
+                else
+                    echo -e "${YELLOW}📄 配置文件中无 listeners 字段，将添加新的 listeners 配置！${NC}"
+                    yq eval ".listeners = [$(yq eval -o=j -I=0 - <<< "$LISTENERS")]" -i "${CONFIG_FILE}" 2>/dev/null
+                    if [ $? -ne 0 ]; then
+                        echo -e "${RED}⚠️ 添加 listeners 到 ${CONFIG_FILE} 失败，请检查 yq 或配置文件格式！${NC}"
+                        return 1
+                    fi
+                    chmod 644 "${CONFIG_FILE}"
+                    echo -e "${GREEN}✅ 新 listeners 字段已添加到 ${CONFIG_FILE}${NC}"
+                fi
+            else
+                echo -e "${YELLOW}🚫 用户取消追加，保留现有配置文件！${NC}"
+                return 1
+            fi
         fi
     else
+        echo -e "${YELLOW}📄 配置文件 ${CONFIG_FILE} 不存在，将创建新文件${NC}"
         echo "$CONFIG_YAML" > "${CONFIG_FILE}"
         if [ $? -ne 0 ]; then
             echo -e "${RED}⚠️ 写入 ${CONFIG_FILE} 失败，请检查权限！${NC}"
@@ -488,6 +509,7 @@ EOF
     echo "TLS: disabled"
     echo -e "\n${GREEN}📄 生成的 YAML 配置已保存到：${CONFIG_FILE}${NC}"
     echo -e "${CONFIG_YAML}"
+    echo -e "${YELLOW}⚠️ 注意：请确保客户端软件（如 mihomo）支持 mlkem768x25519plus 加密方案！${NC}"
     return 0
 }
 
@@ -514,6 +536,7 @@ print_connection_info() {
         PROXIES_YAML+=", smux: { enabled: false } }"
         echo "$PROXIES_YAML"
     done
+    echo -e "${YELLOW}⚠️ 请确保客户端软件支持 mlkem768x25519plus 加密，并验证 encryption 字段是否与服务器端一致！${NC}"
     return 0
 }
 
@@ -524,7 +547,7 @@ show_sub_menu() {
     echo "[2] 打印连接信息（仅 VLESS Encryption 节点）"
     echo "[3] 返回主菜单"
     echo -n "请选择选项 [1-3]："
-    read -r choice
+    read -r -t 5 choice
     case $choice in
         1)
             generate_vless_config
