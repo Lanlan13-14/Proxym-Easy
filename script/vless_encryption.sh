@@ -2,7 +2,7 @@
 
 # 🚀 独立脚本用于生成 mihomo 的 VLESS Encryption 配置（仅包含 nameserver 的 DNS 配置）。
 # 功能：
-# - 生成不启用 TLS 的 VLESS Encryption 配置，写入 /etc/mihomo/config.yaml，打印客户端 proxies 单行 YAML。
+# - 生成不启用 TLS 的 VLESS 配置，写入 /etc/mihomo/config.yaml，打印客户端 proxies 单行 YAML。
 # - 支持传输层选择：[1] TCP [2] WebSocket [3] gRPC（默认：[3]）。
 # - 支持 VLESS Encryption 配置： [1] 原生外观 [2] 只 XOR 公钥 [3] 全随机数（默认：[3]） + [1] 仅 1-RTT [2] 1-RTT 和 600s 0-RTT（默认：[1]），多个 Base64 串联。
 # - 支持单个端口或端口段（示例：200,302 或 200,204,401-429,501-503），端口段未输入时随机从 10000-20000 选择 10 个连续端口。
@@ -10,6 +10,7 @@
 # - 所有选项失败后返回子菜单，[3] 返回主菜单。
 # - 默认：gRPC + mlkem768x25519plus.random.1rtt。
 # - 移除 30 秒输入超时。
+# - 如果配置文件存在，询问覆盖或追加。
 # 使用方法：/usr/local/bin/script/vless_encryption.sh
 # 依赖：yq, ss, curl (for ipinfo), /proc/sys/kernel/random/uuid, mihomo。
 # 输出：配置写入 /etc/mihomo/config.yaml，打印 proxies YAML。
@@ -145,6 +146,14 @@ generate_vless_config() {
     echo "请输入监听地址（默认：$DEFAULT_LISTEN，按回车使用默认值）："
     read -r LISTEN
     LISTEN=${LISTEN:-$DEFAULT_LISTEN}
+
+    echo "请输入 UUID（默认随机生成，按回车使用随机 UUID）："
+    read -r UUID
+    UUID=${UUID:-$(cat /proc/sys/kernel/random/uuid)}
+    if [ -z "$UUID" ]; then
+        echo -e "${RED}⚠️ UUID 生成失败，请手动输入！${NC}"
+        return 1
+    fi
 
     echo "请选择端口类型：[1] 单个端口 [2] 端口段（示例：200,302 或 200,204,401-429,501-503）"
     read -r port_type
@@ -293,6 +302,7 @@ generate_vless_config() {
     port: $PORTS
     decryption: $DECRYPTION
     tls: false
+    network: $NETWORK
 EOF
 )
     if [[ "$NETWORK" == "ws" ]]; then
@@ -315,13 +325,114 @@ $LISTENERS
 EOF
 )
 
+    # 检查现有配置文件
+    if [ -f "${CONFIG_FILE}" ]; then
+        if yq eval '.dns' "${CONFIG_FILE}" > /dev/null 2>&1; then
+            echo -e "${YELLOW}📄 检测到现有配置文件 ${CONFIG_FILE}，是否覆盖整个配置文件？(y/n，默认 n): ${NC}"
+            read -r response
+            if [[ "$response" =~ ^[Yy]$ ]]; then
+                # 覆盖整个配置文件
+                echo "$CONFIG_YAML" > "${CONFIG_FILE}"
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}⚠️ 写入 ${CONFIG_FILE} 失败，请检查权限！${NC}"
+                    return 1
+                fi
+                chmod 644 "${CONFIG_FILE}"
+                echo -e "${GREEN}✅ 配置已覆盖并保存到 ${CONFIG_FILE}${NC}"
+            else
+                # 检查 listeners 字段是否存在
+                if yq eval '.listeners' "${CONFIG_FILE}" > /dev/null 2>&1; then
+                    echo -e "${YELLOW}📄 检测到 listeners 字段，是否追加新的 VLESS 配置？(y/n，默认 y): ${NC}"
+                    read -r append_response
+                    append_response=${append_response:-y}
+                    if [[ "$append_response" =~ ^[Yy]$ ]]; then
+                        # 追加 listeners
+                        yq eval ".listeners += [$(yq eval -o=j -I=0 - <<< "$LISTENERS")]" -i "${CONFIG_FILE}" 2>/dev/null
+                        if [ $? -ne 0 ]; then
+                            echo -e "${RED}⚠️ 追加 Listener 到 ${CONFIG_FILE} 失败！${NC}"
+                            return 1
+                        fi
+                        chmod 644 "${CONFIG_FILE}"
+                        echo -e "${GREEN}✅ 新 Listener 已追加到 ${CONFIG_FILE}，保留现有配置${NC}"
+                    else
+                        echo -e "${YELLOW}🚫 用户取消追加，保留现有配置文件！${NC}"
+                        return 1
+                    fi
+                else
+                    # 如果没有 listeners 字段，添加 listeners 字段
+                    echo -e "${YELLOW}📄 配置文件中无 listeners 字段，将添加新的 listeners 配置！${NC}"
+                    yq eval ".listeners = [$(yq eval -o=j -I=0 - <<< "$LISTENERS")]" -i "${CONFIG_FILE}" 2>/dev/null
+                    if [ $? -ne 0 ]; then
+                        echo -e "${RED}⚠️ 添加 listeners 到 ${CONFIG_FILE} 失败！${NC}"
+                        return 1
+                    fi
+                    chmod 644 "${CONFIG_FILE}"
+                    echo -e "${GREEN}✅ 新 listeners 字段已添加到 ${CONFIG_FILE}${NC}"
+                fi
+            fi
+        else
+            # 配置文件存在但无效，覆盖
+            echo -e "${YELLOW}📄 配置文件 ${CONFIG_FILE} 存在但无效，将覆盖！${NC}"
+            echo "$CONFIG_YAML" > "${CONFIG_FILE}"
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}⚠️ 写入 ${CONFIG_FILE} 失败，请检查权限！${NC}"
+                return 1
+            fi
+            chmod 644 "${CONFIG_FILE}"
+            echo -e "${GREEN}✅ 配置已覆盖并保存到 ${CONFIG_FILE}${NC}"
+        fi
+    else
+        # 初次创建配置文件
+        echo "$CONFIG_YAML" > "${CONFIG_FILE}"
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}⚠️ 写入 ${CONFIG_FILE} 失败，请检查权限！${NC}"
+            return 1
+        fi
+        chmod 644 "${CONFIG_FILE}"
+        echo -e "${GREEN}✅ 新配置文件已创建并保存到 ${CONFIG_FILE}${NC}"
+    fi
+
+    # 获取服务器 IP 和国家
+    echo -e "\n${YELLOW}🌐 获取服务器 IP 和国家...${NC}"
+    IP_INFO=$(curl -s --max-time 5 ipinfo.io/json)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}⚠️ 获取 IP 信息失败，使用默认值（IP: 127.0.0.1, Country: Unknown）。${NC}"
+        SERVER_IP="127.0.0.1"
+        COUNTRY="Unknown"
+    else
+        SERVER_IP=$(echo "$IP_INFO" | grep '"ip"' | cut -d '"' -f 4)
+        COUNTRY=$(echo "$IP_INFO" | grep '"country"' | cut -d '"' -f 4)
+        if [ -z "$SERVER_IP" ] || [ -z "$COUNTRY" ]; then
+            echo -e "${RED}⚠️ 解析 IP 信息失败，使用默认值（IP: 127.0.0.1, Country: Unknown）。${NC}"
+            SERVER_IP="127.0.0.1"
+            COUNTRY="Unknown"
+        fi
+    fi
+    NAME="${COUNTRY}-Vless"
+
+    # 保存配置参数以便打印连接信息
+    echo "DNS_NAMESERVER=\"$DNS_NAMESERVER\"" > /tmp/vless_config_params
+    echo "UUID=\"$UUID\"" >> /tmp/vless_config_params
+    echo "DECRYPTION=\"$DECRYPTION\"" >> /tmp/vless_config_params
+    echo "LISTEN=\"$LISTEN\"" >> /tmp/vless_config_params
+    echo "PORTS=\"$PORTS\"" >> /tmp/vless_config_params
+    echo "FLOW=\"$FLOW\"" >> /tmp/vless_config_params
+    echo "SERVER_IP=\"$SERVER_IP\"" >> /tmp/vless_config_params
+    echo "NAME=\"$NAME\"" >> /tmp/vless_config_params
+    echo "NETWORK=\"$NETWORK\"" >> /tmp/vless_config_params
+    if [[ "$NETWORK" == "ws" ]]; then
+        echo "WS_PATH=\"$WS_PATH\"" >> /tmp/vless_config_params
+    elif [[ "$NETWORK" == "grpc" ]]; then
+        echo "GRPC_SERVICE_NAME=\"$GRPC_SERVICE_NAME\"" >> /tmp/vless_config_params
+    fi
+
     # 输出结果
     echo -e "${GREEN}✅ VLESS Encryption 配置已生成：${NC}"
     echo "DNS 服务器: $DNS_NAMESERVER"
     echo "UUID: $UUID"
     echo "Decryption: $DECRYPTION"
     echo "监听地址: $LISTEN"
-    -echo "端口: $PORTS"
+    echo "端口: $PORTS"
     echo "Flow: $FLOW"
     echo "传输层: $NETWORK"
     if [[ "$NETWORK" == "ws" ]]; then
