@@ -2,11 +2,9 @@
 
 # 🌟 Proxym-Easy 管理面板 🌟
 # 功能：
-# - 管理 mihomo 服务的启动、停止、重启、状态查看、日志查看、配置测试。
-# - 支持生成 VLESS Encryption 配置（调用 vless_encryption.sh）。
+# - 管理 mihomo 服务（启动、停止、重启、状态、日志、测试）。
+# - 调用 vless_encryption.sh 生成 VLESS 配置。
 # - 支持安装、更新、卸载 mihomo。
-# - 支持更新主脚本。
-# 使用方法：proxym-easy
 # 依赖：curl, jq, yq, ss, tar, systemctl, mihomo。
 
 # 颜色定义
@@ -101,9 +99,9 @@ start_mihomo() {
         echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在，请先生成配置！${NC}"
         return 1
     fi
-    # 测试配置
-    if ! "${MIHOMO_BIN}" -t -d "${CONFIG_DIR}" > /dev/null 2>&1; then
-        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 无效，请检查！${NC}"
+    echo -e "${YELLOW}🔍 测试配置文件 ${CONFIG_FILE}...${NC}"
+    if ! "${MIHOMO_BIN}" -t -d "${CONFIG_DIR}" 2>&1; then
+        echo -e "${RED}⚠️ 配置文件无效，请检查！${NC}"
         return 1
     fi
     if ! systemctl start mihomo; then
@@ -111,13 +109,13 @@ start_mihomo() {
         return 1
     fi
     echo -e "${GREEN}✅ mihomo 启动成功！${NC}"
-    # 检查端口监听
     sleep 2
     PORT=$(yq eval '.listeners[].port' "${CONFIG_FILE}" | head -n 1)
     if [ -n "$PORT" ] && ! ss -tuln | grep -q ":${PORT}"; then
-        echo -e "${YELLOW}⚠️ 警告：端口 ${PORT} 未监听，请检查配置和防火墙！${NC}"
-        echo -e "${YELLOW}🔍 调试：查看 mihomo 日志：${NC}"
+        echo -e "${YELLOW}⚠️ 端口 ${PORT} 未监听，请检查配置和防火墙！${NC}"
+        echo -e "${YELLOW}🔍 日志：${NC}"
         journalctl -u mihomo -n 10 --no-pager
+        return 1
     else
         echo -e "${GREEN}✅ 端口 ${PORT} 监听正常！${NC}"
     fi
@@ -127,7 +125,7 @@ start_mihomo() {
 # 函数: 停止 mihomo
 stop_mihomo() {
     if ! check_mihomo; then
-        echo -e "${RED}⚠️ mihomo 未安装，请运行 proxym-easy install！${NC}"
+        echo -e "${RED}⚠️ mihomo 未安装！${NC}"
         return 1
     fi
     if systemctl stop mihomo; then
@@ -142,15 +140,16 @@ stop_mihomo() {
 # 函数: 重启 mihomo
 restart_mihomo() {
     if ! check_mihomo; then
-        echo -e "${RED}⚠️ mihomo 未安装，请运行 proxym-easy install！${NC}"
+        echo -e "${RED}⚠️ mihomo 未安装！${NC}"
         return 1
     fi
     if [[ ! -f "${CONFIG_FILE}" ]]; then
-        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在，请先生成配置！${NC}"
+        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在！${NC}"
         return 1
     fi
-    if ! "${MIHOMO_BIN}" -t -d "${CONFIG_DIR}" > /dev/null 2>&1; then
-        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 无效，请检查！${NC}"
+    echo -e "${YELLOW}🔍 测试配置文件 ${CONFIG_FILE}...${NC}"
+    if ! "${MIHOMO_BIN}" -t -d "${CONFIG_DIR}" 2>&1; then
+        echo -e "${RED}⚠️ 配置文件无效，请检查！${NC}"
         return 1
     fi
     if ! systemctl restart mihomo; then
@@ -158,13 +157,13 @@ restart_mihomo() {
         return 1
     fi
     echo -e "${GREEN}✅ mihomo 重启成功！${NC}"
-    # 检查端口监听
     sleep 2
     PORT=$(yq eval '.listeners[].port' "${CONFIG_FILE}" | head -n 1)
     if [ -n "$PORT" ] && ! ss -tuln | grep -q ":${PORT}"; then
-        echo -e "${YELLOW}⚠️ 警告：端口 ${PORT} 未监听，请检查配置和防火墙！${NC}"
-        echo -e "${YELLOW}🔍 调试：查看 mihomo 日志：${NC}"
+        echo -e "${YELLOW}⚠️ 端口 ${PORT} 未监听，请检查配置和防火墙！${NC}"
+        echo -e "${YELLOW}🔍 日志：${NC}"
         journalctl -u mihomo -n 10 --no-pager
+        return 1
     else
         echo -e "${GREEN}✅ 端口 ${PORT} 监听正常！${NC}"
     fi
@@ -174,17 +173,16 @@ restart_mihomo() {
 # 函数: 查看状态
 view_status() {
     if ! check_mihomo; then
-        echo -e "${RED}⚠️ mihomo 未安装，请运行 proxym-easy install！${NC}"
+        echo -e "${RED}⚠️ mihomo 未安装！${NC}"
         return 1
     fi
     if systemctl is-active mihomo >/dev/null; then
         echo -e "${GREEN}✅ mihomo 运行中:${NC}"
         systemctl status mihomo --no-pager -l
-        # 检查端口监听
         PORT=$(yq eval '.listeners[].port' "${CONFIG_FILE}" | head -n 1)
         if [ -n "$PORT" ] && ! ss -tuln | grep -q ":${PORT}"; then
-            echo -e "${YELLOW}⚠️ 警告：端口 ${PORT} 未监听，请检查配置和防火墙！${NC}"
-            echo -e "${YELLOW}🔍 调试：查看 mihomo 日志：${NC}"
+            echo -e "${YELLOW}⚠️ 端口 ${PORT} 未监听！${NC}"
+            echo -e "${YELLOW}🔍 日志：${NC}"
             journalctl -u mihomo -n 10 --no-pager
         else
             echo -e "${GREEN}✅ 端口 ${PORT} 监听正常！${NC}"
@@ -198,21 +196,21 @@ view_status() {
 # 函数: 查看日志
 view_logs() {
     if ! check_mihomo; then
-        echo -e "${RED}⚠️ mihomo 未安装，请运行 proxym-easy install！${NC}"
+        echo -e "${RED}⚠️ mihomo 未安装！${NC}"
         return 1
     fi
-    echo -e "${YELLOW}📜 查看 mihomo 日志（按 Ctrl+C 退出）：${NC}"
+    echo -e "${YELLOW}📜 mihomo 日志（按 Ctrl+C 退出）：${NC}"
     journalctl -u mihomo -f
 }
 
 # 函数: 测试配置
 test_config() {
     if ! check_mihomo; then
-        echo -e "${RED}⚠️ mihomo 未安装，请运行 proxym-easy install！${NC}"
+        echo -e "${RED}⚠️ mihomo 未安装！${NC}"
         return 1
     fi
     if [[ ! -f "${CONFIG_FILE}" ]]; then
-        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在，请先生成配置！${NC}"
+        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在！${NC}"
         return 1
     fi
     echo -e "${YELLOW}🔍 测试配置文件 ${CONFIG_FILE}...${NC}"
@@ -228,7 +226,7 @@ test_config() {
 # 函数: 生成节点配置
 generate_node_config() {
     if [[ ! -f "${VLESS_SCRIPT}" ]]; then
-        echo -e "${RED}⚠️ VLESS 脚本 ${VLESS_SCRIPT} 不存在，请检查安装！${NC}"
+        echo -e "${RED}⚠️ VLESS 脚本 ${VLESS_SCRIPT} 不存在！${NC}"
         return 1
     fi
     bash "${VLESS_SCRIPT}"
@@ -243,7 +241,7 @@ generate_node_config() {
 # 函数: 编辑配置文件
 edit_config() {
     if [[ ! -f "${CONFIG_FILE}" ]]; then
-        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在，请先生成配置！${NC}"
+        echo -e "${RED}⚠️ 配置文件 ${CONFIG_FILE} 不存在！${NC}"
         return 1
     fi
     vim "${CONFIG_FILE}"
@@ -254,7 +252,7 @@ edit_config() {
 # 函数: 更新 mihomo
 update_mihomo() {
     if ! check_mihomo; then
-        echo -e "${RED}⚠️ mihomo 未安装，请运行 proxym-easy install！${NC}"
+        echo -e "${RED}⚠️ mihomo 未安装！${NC}"
         return 1
     fi
     echo -e "${YELLOW}🌟 更新 mihomo...${NC}"
@@ -274,7 +272,7 @@ uninstall_options() {
     echo -e "${YELLOW}🌟 卸载选项 🌟${NC}"
     echo "[1] 仅卸载脚本"
     echo "[2] 仅卸载 mihomo"
-    echo "[3] 卸载全部（脚本和 mihomo）"
+    echo "[3] 卸载全部"
     echo "[4] 返回主菜单"
     echo -n "请选择选项 [1-4]："
     read -r choice
@@ -312,7 +310,7 @@ uninstall_options() {
 
 # 函数: 更新主脚本
 update_main_script() {
-    echo -e "${YELLOW}🌟 更新主脚本（proxym-easy）...${NC}"
+    echo -e "${YELLOW}🌟 更新主脚本...${NC}"
     curl -s -o /tmp/proxym-easy "${GITHUB_RAW_URL}/proxym-easy"
     if [ $? -ne 0 ]; then
         echo -e "${RED}⚠️ 下载主脚本失败！${NC}"
@@ -334,11 +332,11 @@ show_menu() {
     echo "[5] 查看日志"
     echo "[6] 测试配置"
     echo "[7] 生成节点配置"
-    echo "[8] 编辑配置文件（使用 vim）"
+    echo "[8] 编辑配置文件"
     echo "[9] 安装 mihomo"
     echo "[10] 更新 mihomo"
-    echo "[11] 卸载选项（脚本/mihomo/全部）"
-    echo "[12] 更新主脚本（proxym-easy）"
+    echo "[11] 卸载选项"
+    echo "[12] 更新主脚本"
     echo "[13] 退出"
     echo -n "请选择选项 [1-13]："
     read -r choice
@@ -441,7 +439,7 @@ show_menu() {
             show_menu
             ;;
         13)
-            echo -e "${GREEN}✅ 已退出，下次使用请输入 proxym-easy${NC}"
+            echo -e "${GREEN}✅ 已退出！${NC}"
             exit 0
             ;;
         *)
