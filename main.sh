@@ -290,7 +290,7 @@ generate_node_config() {
             echo -e "${YELLOW}🚀 执行 VLESS 配置生成脚本...${NC}"
             "${VLESS_SCRIPT}" 2>&1
             if [ $? -ne 0 ]; then
-                echo -e "${RED}⚠️ 生成 VLESS 配置失败！请检查子脚本输出或日志。${NC}"
+                echo -e "${RED}⚠️ VLESS 子脚本执行失败！请检查输出或日志。${NC}"
                 return 1
             fi
             echo -e "${YELLOW}🔄 配置生成完成，返回主菜单...${NC}"
@@ -497,6 +497,9 @@ show_menu() {
             ;;
         5)
             logs_mihomo
+            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
+            sleep 2
+            show_menu
             ;;
         6)
             test_config
