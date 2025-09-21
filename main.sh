@@ -431,4 +431,67 @@ show_menu() {
             ;;
         6)
             test_config
-            echo -e "${YELLOW}🔄 返回主菜单...${
+            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
+            sleep 2
+            show_menu
+            ;;
+        7)
+            generate_node_config
+            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
+            sleep 2
+            show_menu
+            ;;
+        8)
+            edit_config
+            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
+            sleep 2
+            show_menu
+            ;;
+        9)
+            install_mihomo
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}✅ 安装成功！${NC}"
+            else
+                echo -e "${RED}⚠️ 安装失败！${NC}"
+            fi
+            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
+            sleep 2
+            show_menu
+            ;;
+        10)
+            update_mihomo
+            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
+            sleep 2
+            show_menu
+            ;;
+        11)
+            uninstall_options
+            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
+            sleep 2
+            show_menu
+            ;;
+        12)
+            update_main_script
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}✅ 更新成功！${NC}"
+            else
+                echo -e "${RED}⚠️ 更新失败！${NC}"
+            fi
+            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
+            sleep 2
+            show_menu
+            ;;
+        13)
+            echo -e "${GREEN}✅ 已退出！${NC}"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}⚠️ 无效选项${NC}"
+            sleep 1
+            show_menu
+            ;;
+    esac
+}
+
+# 主逻辑
+show_menu
