@@ -123,6 +123,15 @@ parse_ports() {
     return 0
 }
 
+# 函数: 验证 Base64 字符串
+validate_base64() {
+    local input="$1"
+    if [[ "$input" =~ ^[A-Za-z0-9+/=]+$ ]]; then
+        return 0
+    fi
+    return 1
+}
+
 # 函数: 生成 VLESS Encryption 配置
 generate_vless_config() {
     # 检查依赖
@@ -259,13 +268,17 @@ generate_vless_config() {
                         echo -e "${RED}⚠️ 生成 X25519 私钥失败！输出：\n${X25519_OUTPUT}${NC}"
                         return 1
                     fi
-                    X25519_PRIVATE=$(echo "$X25519_OUTPUT" | grep 'PrivateKey:' | sed 's/.*PrivateKey: *//')
+                    X25519_PRIVATE=$(echo "$X25519_OUTPUT" | grep 'PrivateKey:' | sed 's/.*PrivateKey: *//' | tr -d '[:space:]')
                     if [ -z "$X25519_PRIVATE" ]; then
                         echo -e "${RED}⚠️ 解析 X25519 私钥失败！输出：\n${X25519_OUTPUT}${NC}"
                         return 1
                     fi
+                    if ! validate_base64 "$X25519_PRIVATE"; then
+                        echo -e "${RED}⚠️ X25519 私钥不是有效的 Base64 字符串！${NC}"
+                        return 1
+                    fi
                 fi
-                X25519_PRIVATE_KEYS+=".${X25519_PRIVATE}"
+                X25519_PRIVATE_KEYS+="${X25519_PRIVATE:+.$X25519_PRIVATE}"
             done
 
             echo "请输入 ML-KEM-768 种子数量（默认 1，按回车使用默认值）："
@@ -286,16 +299,24 @@ generate_vless_config() {
                         echo -e "${RED}⚠️ 生成 ML-KEM-768 种子失败！输出：\n${MLKEM_OUTPUT}${NC}"
                         return 1
                     fi
-                    MLKEM_SEED=$(echo "$MLKEM_OUTPUT" | grep 'Seed:' | sed 's/.*Seed: *//')
+                    MLKEM_SEED=$(echo "$MLKEM_OUTPUT" | grep 'Seed:' | sed 's/.*Seed: *//' | tr -d '[:space:]')
                     if [ -z "$MLKEM_SEED" ]; then
                         echo -e "${RED}⚠️ 解析 ML-KEM-768 种子失败！输出：\n${MLKEM_OUTPUT}${NC}"
                         return 1
                     fi
+                    if ! validate_base64 "$MLKEM_SEED"; then
+                        echo -e "${RED}⚠️ ML-KEM-768 种子不是有效的 Base64 字符串！${NC}"
+                        return 1
+                    fi
                 fi
-                MLKEM_SEEDS+=".${MLKEM_SEED}"
+                MLKEM_SEEDS+="${MLKEM_SEED:+.$MLKEM_SEED}"
             done
 
             DECRYPTION="mlkem768x25519plus.${DECRYPTION_TYPE}.${RTT_MODE}${X25519_PRIVATE_KEYS}${MLKEM_SEEDS}"
+            if ! [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|600s)(\.[A-Za-z0-9+/=]+)*$ ]]; then
+                echo -e "${RED}⚠️ 生成的 DECRYPTION 字符串格式无效：${DECRYPTION}${NC}"
+                return 1
+            fi
             ;;
         *)
             echo -e "${RED}⚠️ 无效选项，使用默认启用 Encryption！${NC}"
