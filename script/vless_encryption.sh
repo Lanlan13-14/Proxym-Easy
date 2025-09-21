@@ -175,7 +175,7 @@ generate_vless_config() {
         fi
     fi
 
-    echo "请选择传输层：[1] TCP [2] Websocket [3] gRPC（默认 [3] gRPC，按回车使用默认值）："
+    echo "请选择传输层：[1] TCP [2] Websocket [3] gRPC（默认 [1] TCP，按回车使用默认值）："
     read -r transport
     case "$transport" in
         1|"") TRANSPORT="tcp"; WS_PATH=""; GRPC_SERVICE=""; ;;
