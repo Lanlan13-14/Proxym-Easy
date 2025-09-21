@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 🚀 修复后的 VLESS Encryption 配置生成脚本
+# 🚀 VLESS Encryption 配置生成脚本
 # 功能：
 # - 生成 mihomo 的 VLESS 配置，写入 /etc/mihomo/config.yaml，打印客户端 proxies YAML 和 VLESS URL。
 # - 支持传输层：[1] TCP [2] WebSocket [3] gRPC（默认：[3]）。
@@ -288,76 +288,43 @@ generate_vless_config() {
                 ;;
         esac
 
-        echo "请输入 X25519 Password 数量（默认 1）："
-        read -r x25519_count
-        x25519_count=${x25519_count:-1}
-        if ! [[ "$x25519_count" =~ ^[0-9]+$ ]] || [ "$x25519_count" -lt 1 ]; then
-            echo -e "${RED}⚠️ 数量必须为正整数，使用默认 1！${NC}"
-            x25519_count=1
+        echo -e "${YELLOW}🔍 生成 X25519 Password...${NC}"
+        X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>&1)
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}⚠️ 生成 X25519 Password 失败！输出：\n${X25519_OUTPUT}${NC}"
+            return 1
+        fi
+        X25519_PASSWORD=$(echo "$X25519_OUTPUT" | grep -i 'Password:' | sed 's/.*Password: *//' | tr -d '[:space:]')
+        X25519_PASSWORD=$(clean_key "$X25519_PASSWORD")
+        echo -e "${YELLOW}🔍 调试：X25519 输出：${X25519_OUTPUT}${NC}"
+        echo -e "${YELLOW}🔍 调试：清理后的 X25519 Password：${X25519_PASSWORD}${NC}"
+        if ! validate_base64 "$X25519_PASSWORD" 44; then
+            echo -e "${RED}⚠️ X25519 Password 无效！${NC}"
+            return 1
         fi
 
-        X25519_PASSWORDS=""
-        for ((i=1; i<=x25519_count; i++)); do
-            echo "请输入第 $i 个 X25519 Password（默认随机生成，长度 44）："
-            read -r X25519_PASSWORD
-            if [ -z "$X25519_PASSWORD" ]; then
-                X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>&1)
-                if [ $? -ne 0 ]; then
-                    echo -e "${RED}⚠️ 生成 X25519 Password 失败！输出：\n${X25519_OUTPUT}${NC}"
-                    return 1
-                fi
-                X25519_PASSWORD=$(echo "$X25519_OUTPUT" | grep -i 'Password:' | sed 's/.*Password: *//' | tr -d '[:space:]')
-                X25519_PASSWORD=$(clean_key "$X25519_PASSWORD")
-                echo -e "${YELLOW}🔍 调试：X25519 输出：${X25519_OUTPUT}${NC}"
-                echo -e "${YELLOW}🔍 调试：清理后的 X25519 Password：${X25519_PASSWORD}${NC}"
-                if ! validate_base64 "$X25519_PASSWORD" 44; then
-                    echo -e "${RED}⚠️ 生成的 X25519 Password 无效！${NC}"
-                    return 1
-                fi
-            fi
-            echo -e "${YELLOW}使用的 X25519 Password：${X25519_PASSWORD}${NC}"
-            X25519_PASSWORDS+="${X25519_PASSWORD:+.$X25519_PASSWORD}"
-        done
-
-        echo "请输入 ML-KEM-768 Client 数量（默认 1）："
-        read -r mlkem_count
-        mlkem_count=${mlkem_count:-1}
-        if ! [[ "$mlkem_count" =~ ^[0-9]+$ ]] || [ "$mlkem_count" -lt 1 ]; then
-            echo -e "${RED}⚠️ 数量必须为正整数，使用默认 1！${NC}"
-            mlkem_count=1
+        echo -e "${YELLOW}🔍 生成 ML-KEM-768 Client...${NC}"
+        MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>&1)
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}⚠️ 生成 ML-KEM-768 Client 失败！输出：\n${MLKEM_OUTPUT}${NC}"
+            return 1
+        fi
+        MLKEM_CLIENT=$(echo "$MLKEM_OUTPUT" | grep -i 'Client:' | sed 's/.*Client: *//' | tr -d '[:space:]')
+        MLKEM_CLIENT=$(clean_key "$MLKEM_CLIENT")
+        echo -e "${YELLOW}🔍 调试：ML-KEM-768 输出：${MLKEM_OUTPUT}${NC}"
+        echo -e "${YELLOW}🔍 调试：清理后的 ML-KEM-768 Client：${MLKEM_CLIENT}${NC}"
+        if ! validate_base64 "$MLKEM_CLIENT" 684; then
+            echo -e "${RED}⚠️ ML-KEM-768 Client 无效！${NC}"
+            return 1
         fi
 
-        MLKEM_CLIENTS=""
-        for ((i=1; i<=mlkem_count; i++)); do
-            echo "请输入第 $i 个 ML-KEM-768 Client（默认随机生成，长度 684）："
-            read -r MLKEM_CLIENT
-            if [ -z "$MLKEM_CLIENT" ]; then
-                MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>&1)
-                if [ $? -ne 0 ]; then
-                    echo -e "${RED}⚠️ 生成 ML-KEM-768 Client 失败！输出：\n${MLKEM_OUTPUT}${NC}"
-                    return 1
-                fi
-                MLKEM_CLIENT=$(echo "$MLKEM_OUTPUT" | grep -i 'Client:' | sed 's/.*Client: *//' | tr -d '[:space:]')
-                MLKEM_CLIENT=$(clean_key "$MLKEM_CLIENT")
-                echo -e "${YELLOW}🔍 调试：ML-KEM-768 输出：${MLKEM_OUTPUT}${NC}"
-                echo -e "${YELLOW}🔍 调试：清理后的 ML-KEM-768 Client：${MLKEM_CLIENT}${NC}"
-                if ! validate_base64 "$MLKEM_CLIENT" 684; then
-                    echo -e "${RED}⚠️ 生成的 ML-KEM-768 Client 无效！${NC}"
-                    return 1
-                fi
-            fi
-            echo -e "${YELLOW}使用的 ML-KEM-768 Client：${MLKEM_CLIENT}${NC}"
-            MLKEM_CLIENTS+="${MLKEM_CLIENT:+.$MLKEM_CLIENT}"
-        done
-    fi
-
-    DECRYPTION="$ENCRYPTION_TYPE"
-    if [[ "$ENCRYPTION_TYPE" == "mlkem768x25519plus" ]]; then
-        DECRYPTION="mlkem768x25519plus.${DECRYPTION_TYPE}.${RTT_MODE}${X25519_PASSWORDS}${MLKEM_CLIENTS}"
-        if ! [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|600s)(\.[A-Za-z0-9+/=]+)+$ ]]; then
+        DECRYPTION="mlkem768x25519plus.${DECRYPTION_TYPE}.${RTT_MODE}.${X25519_PASSWORD}.${MLKEM_CLIENT}"
+        if ! [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|600s)\.[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]+$ ]]; then
             echo -e "${RED}⚠️ DECRYPTION 格式无效：${DECRYPTION}${NC}"
             return 1
         fi
+    else
+        DECRYPTION="none"
     fi
 
     echo "请输入 Flow（默认空，建议非 TLS 留空）："
@@ -529,7 +496,13 @@ print_connection_info() {
         PROXIES_YAML+=", smux: { enabled: false } }"
         echo "$PROXIES_YAML"
         ENCODED_DECRYPTION=$(url_encode "$DECRYPTION")
-        VLESS_URL="vless://${UUID}@${SERVER_IP}:${port}?type=${NETWORK}&encryption=${ENCODED_DECRYPTION}&serviceName=${GRPC_SERVICE_NAME}#${NAME}-${port}"
+        VLESS_URL="vless://${UUID}@${SERVER_IP}:${port}?type=${NETWORK}&encryption=${ENCODED_DECRYPTION}"
+        if [[ "$NETWORK" == "ws" ]]; then
+            VLESS_URL+="&path=${WS_PATH}"
+        elif [[ "$NETWORK" == "grpc" ]]; then
+            VLESS_URL+="&serviceName=${GRPC_SERVICE_NAME}"
+        fi
+        VLESS_URL+="#${NAME}-${port}"
         echo -e "${YELLOW}🔗 VLESS URL：${NC}"
         echo "$VLESS_URL"
     done
