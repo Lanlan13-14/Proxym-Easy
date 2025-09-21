@@ -133,6 +133,11 @@ validate_base64() {
             echo -e "${RED}⚠️ Base64 字符串长度 $length 不符合预期（应为 $expected_length）：${input}${NC}"
             return 1
         fi
+        # 测试 Base64 解码
+        if ! echo "$input" | base64 -d >/dev/null 2>&1; then
+            echo -e "${RED}⚠️ Base64 字符串无法解码：${input}${NC}"
+            return 1
+        fi
         return 0
     fi
     echo -e "${RED}⚠️ Base64 字符串包含非法字符：${input}${NC}"
@@ -147,6 +152,13 @@ clean_key() {
     # 替换 _ 为 /，- 为 +
     input=${input//_/\/}
     input=${input//-/+}
+    # 确保 Base64 填充
+    local length=${#input}
+    local mod=$((length % 4))
+    if [ $mod -ne 0 ]; then
+        local padding=$((4 - mod))
+        input="${input}$(printf '=%.0s' $(seq 1 $padding))"
+    fi
     echo "$input"
 }
 
@@ -407,6 +419,29 @@ generate_vless_config() {
     if [ -n "$FLOW" ]; then
         echo -e "${YELLOW}⚠️ 注意：非 TLS 模式下 Flow（如 xtls-rprx-vision）可能不可用，建议留空！${NC}"
     fi
+
+    echo "请选择传输层：[1] TCP [2] WebSocket [3] gRPC（默认：[3]）"
+    read -r network_choice
+    case $network_choice in
+        1) NETWORK="tcp" ;;
+        2)
+            NETWORK="ws"
+            echo "请输入 WebSocket 路径（默认：$DEFAULT_WS_PATH，按回车使用默认值）："
+            read -r WS_PATH
+            WS_PATH=${WS_PATH:-$DEFAULT_WS_PATH}
+            ;;
+        3|"") 
+            NETWORK="grpc"
+            echo "请输入 gRPC 服务名称（默认：$DEFAULT_GRPC_SERVICE_NAME，按回车使用默认值）："
+            read -r GRPC_SERVICE_NAME
+            GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME:-$DEFAULT_GRPC_SERVICE_NAME}
+            ;;
+        *)
+            echo -e "${RED}⚠️ 无效选项，使用默认 gRPC！${NC}"
+            NETWORK="grpc"
+            GRPC_SERVICE_NAME="$DEFAULT_GRPC_SERVICE_NAME"
+            ;;
+    esac
 
     # 生成 listeners 配置
     LISTENERS=$(cat <<EOF
