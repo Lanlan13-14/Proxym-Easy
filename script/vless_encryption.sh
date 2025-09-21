@@ -5,7 +5,7 @@
 # - 生成不启用 TLS 的 VLESS 配置，写入 /etc/mihomo/config.yaml，打印客户端 proxies 单行 YAML。
 # - 支持传输层选择：[1] TCP [2] WebSocket [3] gRPC（默认：[3]）。
 # - 支持 VLESS Encryption 配置：[1] 原生外观 [2] 只 XOR 公钥 [3] 全随机数（默认：[3]） + [1] 仅 1-RTT [2] 1-RTT 和 600s 0-RTT（默认：[1]），多个 Base64 串联。
-# - 支持单个端口或端口段（示例：100-200），端口段未输入时随机选择 10 个连续端口。
+# - 支持单个端口或端口段（示例：100 或 100-200），端口段未输入时随机选择 10 个连续端口。
 # - 子菜单：[1] 生成 VLESS Encryption 配置 [2] 打印连接信息 [3] 返回主菜单。
 # - 默认：gRPC + mlkem768x25519plus.random.1rtt，无 flow（非 TLS 模式）。
 # - 如果配置文件存在，询问覆盖或追加。
@@ -118,16 +118,13 @@ parse_ports() {
     return 0
 }
 
-# 函数: 验证 Base64 字符串
-validate_base64() {
+# 函数: 验证字符串非空
+validate_non_empty() {
     local input="$1"
     if [ -z "$input" ]; then
         return 1
     fi
-    if [[ "$input" =~ ^[A-Za-z0-9+/=]+$ ]]; then
-        return 0
-    fi
-    return 1
+    return 0
 }
 
 # 函数: 生成 VLESS Encryption 配置
@@ -143,12 +140,12 @@ generate_vless_config() {
     # 检查 mihomo 命令是否支持 generate
     "${MIHOMO_BIN}" generate vless-x25519 >/dev/null 2>&1
     if [ $? -ne 0 ]; then
-        echo -e "${RED}⚠️ ${MIHOMO_BIN} 不支持 'generate vless-x25519' 命令，请检查 mihomo 版本或手动输入 Base64 私钥！${NC}"
+        echo -e "${RED}⚠️ ${MIHOMO_BIN} 不支持 'generate vless-x25519' 命令，请检查 mihomo 版本或手动输入密钥！${NC}"
         return 1
     fi
     "${MIHOMO_BIN}" generate vless-mlkem768 >/dev/null 2>&1
     if [ $? -ne 0 ]; then
-        echo -e "${RED}⚠️ ${MIHOMO_BIN} 不支持 'generate vless-mlkem768' 命令，请检查 mihomo 版本或手动输入 Base64 种子！${NC}"
+        echo -e "${RED}⚠️ ${MIHOMO_BIN} 不支持 'generate vless-mlkem768' 命令，请检查 mihomo 版本或手动输入种子！${NC}"
         return 1
     fi
 
@@ -269,35 +266,26 @@ generate_vless_config() {
             X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>&1)
             if [ $? -ne 0 ]; then
                 echo -e "${RED}⚠️ 生成 X25519 私钥失败！命令输出：\n${X25519_OUTPUT}${NC}"
-                echo -e "${YELLOW}请手动输入有效的 Base64 私钥（示例：ABCDEF1234567890==）！${NC}"
+                echo -e "${YELLOW}请手动输入有效的 X25519 私钥（示例：6Osg4j6I_0zC8nOAMM5r_T0f-7_0LXPDvEqwsW8Wlls）！${NC}"
                 read -r X25519_PRIVATE
-                if [ -z "$X25519_PRIVATE" ]; then
+                if ! validate_non_empty "$X25519_PRIVATE"; then
                     echo -e "${RED}⚠️ 未提供有效的 X25519 私钥！${NC}"
                     return 1
                 fi
             else
                 X25519_PRIVATE=$(echo "$X25519_OUTPUT" | grep -i 'PrivateKey:' | sed 's/.*PrivateKey: *//' | tr -d '[:space:]')
-                if [ -z "$X25519_PRIVATE" ]; then
+                if ! validate_non_empty "$X25519_PRIVATE"; then
                     echo -e "${RED}⚠️ 解析 X25519 私钥失败！命令输出：\n${X25519_OUTPUT}${NC}"
-                    echo -e "${YELLOW}请手动输入有效的 Base64 私钥（示例：ABCDEF1234567890==）！${NC}"
+                    echo -e "${YELLOW}请手动输入有效的 X25519 私钥（示例：6Osg4j6I_0zC8nOAMM5r_T0f-7_0LXPDvEqwsW8Wlls）！${NC}"
                     read -r X25519_PRIVATE
-                    if [ -z "$X25519_PRIVATE" ]; then
+                    if ! validate_non_empty "$X25519_PRIVATE"; then
                         echo -e "${RED}⚠️ 未提供有效的 X25519 私钥！${NC}"
                         return 1
                     fi
                 fi
             fi
         fi
-        if ! validate_base64 "$X25519_PRIVATE"; then
-            echo -e "${RED}⚠️ X25519 私钥不是有效的 Base64 字符串：${X25519_PRIVATE}${NC}"
-            echo -e "${YELLOW}请手动输入有效的 Base64 私钥（示例：ABCDEF1234567890==）！${NC}"
-            read -r X25519_PRIVATE
-            if ! validate_base64 "$X25519_PRIVATE"; then
-                echo -e "${RED}⚠️ 输入的 X25519 私钥仍无效！${NC}"
-                return 1
-            fi
-        fi
-        echo -e "${YELLOW}生成的 X25519 私钥：${X25519_PRIVATE}${NC}"
+        echo -e "${YELLOW}使用的 X25519 私钥：${X25519_PRIVATE}${NC}"
         X25519_PRIVATE_KEYS+="${X25519_PRIVATE:+.$X25519_PRIVATE}"
     done
 
@@ -317,40 +305,31 @@ generate_vless_config() {
             MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>&1)
             if [ $? -ne 0 ]; then
                 echo -e "${RED}⚠️ 生成 ML-KEM-768 种子失败！命令输出：\n${MLKEM_OUTPUT}${NC}"
-                echo -e "${YELLOW}请手动输入有效的 Base64 种子（示例：GHIJKLMNOPQRSTUVWXYZ==）！${NC}"
+                echo -e "${YELLOW}请手动输入有效的 ML-KEM-768 种子（示例：GHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890==）！${NC}"
                 read -r MLKEM_SEED
-                if [ -z "$MLKEM_SEED" ]; then
+                if ! validate_non_empty "$MLKEM_SEED"; then
                     echo -e "${RED}⚠️ 未提供有效的 ML-KEM-768 种子！${NC}"
                     return 1
                 fi
             else
                 MLKEM_SEED=$(echo "$MLKEM_OUTPUT" | grep -i 'Seed:' | sed 's/.*Seed: *//' | tr -d '[:space:]')
-                if [ -z "$MLKEM_SEED" ]; then
+                if ! validate_non_empty "$MLKEM_SEED"; then
                     echo -e "${RED}⚠️ 解析 ML-KEM-768 种子失败！命令输出：\n${MLKEM_OUTPUT}${NC}"
-                    echo -e "${YELLOW}请手动输入有效的 Base64 种子（示例：GHIJKLMNOPQRSTUVWXYZ==）！${NC}"
+                    echo -e "${YELLOW}请手动输入有效的 ML-KEM-768 种子（示例：GHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890==）！${NC}"
                     read -r MLKEM_SEED
-                    if [ -z "$MLKEM_SEED" ]; then
+                    if ! validate_non_empty "$MLKEM_SEED"; then
                         echo -e "${RED}⚠️ 未提供有效的 ML-KEM-768 种子！${NC}"
                         return 1
                     fi
                 fi
             fi
         fi
-        if ! validate_base64 "$MLKEM_SEED"; then
-            echo -e "${RED}⚠️ ML-KEM-768 种子不是有效的 Base64 字符串：${MLKEM_SEED}${NC}"
-            echo -e "${YELLOW}请手动输入有效的 Base64 种子（示例：GHIJKLMNOPQRSTUVWXYZ==）！${NC}"
-            read -r MLKEM_SEED
-            if ! validate_base64 "$MLKEM_SEED"; then
-                echo -e "${RED}⚠️ 输入的 ML-KEM-768 种子仍无效！${NC}"
-                return 1
-            fi
-        fi
-        echo -e "${YELLOW}生成的 ML-KEM-768 种子：${MLKEM_SEED}${NC}"
+        echo -e "${YELLOW}使用的 ML-KEM-768 种子：${MLKEM_SEED}${NC}"
         MLKEM_SEEDS+="${MLKEM_SEED:+.$MLKEM_SEED}"
     done
 
     DECRYPTION="mlkem768x25519plus.${DECRYPTION_TYPE}.${RTT_MODE}${X25519_PRIVATE_KEYS}${MLKEM_SEEDS}"
-    if ! [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|600s)(\.[A-Za-z0-9+/=]+)+$ ]]; then
+    if ! [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|600s)(\.[^[:space:]]+)+$ ]]; then
         echo -e "${RED}⚠️ 生成的 DECRYPTION 字符串格式无效：${DECRYPTION}${NC}"
         return 1
     fi
