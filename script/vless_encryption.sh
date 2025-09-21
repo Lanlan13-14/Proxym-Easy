@@ -7,7 +7,7 @@
 # - 支持加密类型：[1] mlkem768x25519plus [2] 标准 VLESS（默认：[2]）。
 # - 支持 decryption 类型：[1] native [2] xorpub [3] random（默认：[3]）。
 # - 支持 RTT 模式：[1] 1-RTT [2] 0-RTT（600s）（默认：[1]）。
-# - 使用 mihomo generate 的 Password 和 Client，自动修复 Base64 填充。
+# - 直接使用 mihomo generate 的 Password 和 Client，不做任何修改。
 # - 支持单个端口（默认 10840）或端口段。
 # - 子菜单：[1] 生成配置 [2] 打印连接信息 [3] 返回主菜单。
 # 依赖：yq, ss, curl, jq, mihomo。
@@ -118,43 +118,17 @@ parse_ports() {
     return 0
 }
 
-# 函数: 验证 Base64 字符串
-validate_base64() {
+# 函数: 验证字符串长度
+validate_length() {
     local input="$1"
     local expected_length="$2"
-    if [ -z "$input" ]; then
-        echo -e "${RED}⚠️ Base64 字符串为空！${NC}"
+    local name="$3"
+    local length=${#input}
+    if [ "$length" -ne "$expected_length" ]; then
+        echo -e "${RED}⚠️ ${name} 长度 $length 不符合预期（应为 $expected_length）：${input}${NC}"
         return 1
     fi
-    if [[ "$input" =~ ^[A-Za-z0-9+/=]+$ ]]; then
-        local length=${#input}
-        if [ -n "$expected_length" ] && [ "$length" -ne "$expected_length" ]; then
-            echo -e "${RED}⚠️ Base64 字符串长度 $length 不符合预期（应为 $expected_length）：${input}${NC}"
-            return 1
-        fi
-        if ! echo "$input" | base64 -d >/dev/null 2>&1; then
-            echo -e "${RED}⚠️ Base64 字符串无法解码：${input}${NC}"
-            return 1
-        fi
-        return 0
-    fi
-    echo -e "${RED}⚠️ Base64 字符串包含非法字符：${input}${NC}"
-    return 1
-}
-
-# 函数: 清理和转换密钥/种子
-clean_key() {
-    local input="$1"
-    input=$(echo "$input" | tr -d '[:space:]')
-    input=${input//_/\/}
-    input=${input//-/+}
-    local length=${#input}
-    local mod=$((length % 4))
-    if [ $mod -ne 0 ]; then
-        local padding=$((4 - mod))
-        input="${input}$(printf '=%.0s' $(seq 1 $padding))"
-    fi
-    echo "$input"
+    return 0
 }
 
 # 函数: URL 编码
@@ -219,46 +193,29 @@ generate_vless_config() {
     read -r LISTEN
     LISTEN=${LISTEN:-$DEFAULT_LISTEN}
 
-    echo "请输入 UUID（默认随机生成）："
+    echo "请输入 UUID（默认：bed00738-d71a-4320-a9bb-c09920180dbb）："
     read -r UUID
-    UUID=${UUID:-$(cat /proc/sys/kernel/random/uuid)}
+    UUID=${UUID:-bed00738-d71a-4320-a9bb-c09920180dbb}
     if [ -z "$UUID" ]; then
         echo -e "${RED}⚠️ UUID 生成失败，请手动输入！${NC}"
         return 1
     fi
 
-    echo "请选择端口类型：[1] 单个端口（默认） [2] 端口段"
-    read -r port_type
-    if [[ "$port_type" == "2" ]]; then
-        echo "请输入端口段（示例：100-200，默认随机 10 个端口）："
-        read -r PORTS
-        if [ -z "$PORTS" ]; then
-            PORTS=$(recommend_port_range)
-            if [ $? -ne 0 ]; then
-                return 1
-            fi
-        fi
-        PORTS=$(parse_ports "$PORTS")
-        if [ $? -ne 0 ]; then
-            return 1
-        fi
-    else
-        echo "请输入端口（默认：$DEFAULT_PORT）："
-        read -r PORT
-        PORT=${PORT:-$DEFAULT_PORT}
-        if ! check_port "$PORT"; then
-            echo -e "${RED}⚠️ 端口 $PORT 已被占用！${NC}"
-            return 1
-        fi
-        PORTS="$PORT"
+    echo "请输入端口（默认：$DEFAULT_PORT）："
+    read -r PORT
+    PORT=${PORT:-$DEFAULT_PORT}
+    if ! check_port "$PORT"; then
+        echo -e "${RED}⚠️ 端口 $PORT 已被占用！${NC}"
+        return 1
     fi
+    PORTS="$PORT"
 
     echo "请选择加密类型：[1] mlkem768x25519plus [2] 标准 VLESS（默认：[2]）"
     read -r encryption_choice
     case $encryption_choice in
         1) ENCRYPTION_TYPE="mlkem768x25519plus" ;;
         2|"") ENCRYPTION_TYPE="none" ;;
-        *) 
+        *)
             echo -e "${RED}⚠️ 无效选项，使用默认标准 VLESS！${NC}"
             ENCRYPTION_TYPE="none"
             ;;
@@ -271,7 +228,7 @@ generate_vless_config() {
             1) DECRYPTION_TYPE="native" ;;
             2) DECRYPTION_TYPE="xorpub" ;;
             3|"") DECRYPTION_TYPE="random" ;;
-            *) 
+            *)
                 echo -e "${RED}⚠️ 无效选项，使用默认 random！${NC}"
                 DECRYPTION_TYPE="random"
                 ;;
@@ -281,45 +238,55 @@ generate_vless_config() {
         read -r rtt_mode
         case $rtt_mode in
             1|"") RTT_MODE="1rtt" ;;
-            2) RTT_MODE="600s" ;;
-            *) 
+            2) RTT_MODE="0rtt" ;;
+            *)
                 echo -e "${RED}⚠️ 无效选项，使用默认 1-RTT！${NC}"
                 RTT_MODE="1rtt"
                 ;;
         esac
 
-        echo -e "${YELLOW}🔍 生成 X25519 Password...${NC}"
-        X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>&1)
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}⚠️ 生成 X25519 Password 失败！输出：\n${X25519_OUTPUT}${NC}"
-            return 1
+        echo -e "${YELLOW}🔍 请输入 X25519 Password（默认使用 mihomo generate vless-x25519）：${NC}"
+        read -r X25519_PASSWORD
+        if [ -z "$X25519_PASSWORD" ]; then
+            echo -e "${YELLOW}🔍 生成 X25519 Password...${NC}"
+            X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>&1)
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}⚠️ 生成 X25519 Password 失败！输出：\n${X25519_OUTPUT}${NC}"
+                return 1
+            fi
+            X25519_PASSWORD=$(echo "$X25519_OUTPUT" | grep -i 'Password:' | sed 's/.*Password: *//')
+            echo -e "${YELLOW}🔍 调试：X25519 输出：${X25519_OUTPUT}${NC}"
+            echo -e "${YELLOW}🔍 调试：原始 X25519 Password：${X25519_PASSWORD}${NC}"
+        else
+            echo -e "${YELLOW}🔍 调试：用户输入 X25519 Password：${X25519_PASSWORD}${NC}"
         fi
-        X25519_PASSWORD=$(echo "$X25519_OUTPUT" | grep -i 'Password:' | sed 's/.*Password: *//' | tr -d '[:space:]')
-        X25519_PASSWORD=$(clean_key "$X25519_PASSWORD")
-        echo -e "${YELLOW}🔍 调试：X25519 输出：${X25519_OUTPUT}${NC}"
-        echo -e "${YELLOW}🔍 调试：清理后的 X25519 Password：${X25519_PASSWORD}${NC}"
-        if ! validate_base64 "$X25519_PASSWORD" 44; then
+        if ! validate_length "$X25519_PASSWORD" 44 "X25519 Password"; then
             echo -e "${RED}⚠️ X25519 Password 无效！${NC}"
             return 1
         fi
 
-        echo -e "${YELLOW}🔍 生成 ML-KEM-768 Client...${NC}"
-        MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>&1)
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}⚠️ 生成 ML-KEM-768 Client 失败！输出：\n${MLKEM_OUTPUT}${NC}"
-            return 1
+        echo -e "${YELLOW}🔍 请输入 ML-KEM-768 Client（默认使用 mihomo generate vless-mlkem768）：${NC}"
+        read -r MLKEM_CLIENT
+        if [ -z "$MLKEM_CLIENT" ]; then
+            echo -e "${YELLOW}🔍 生成 ML-KEM-768 Client...${NC}"
+            MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>&1)
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}⚠️ 生成 ML-KEM-768 Client 失败！输出：\n${MLKEM_OUTPUT}${NC}"
+                return 1
+            fi
+            MLKEM_CLIENT=$(echo "$MLKEM_OUTPUT" | grep -i 'Client:' | sed 's/.*Client: *//')
+            echo -e "${YELLOW}🔍 调试：ML-KEM-768 输出：${MLKEM_OUTPUT}${NC}"
+            echo -e "${YELLOW}🔍 调试：原始 ML-KEM-768 Client：${MLKEM_CLIENT}${NC}"
+        else
+            echo -e "${YELLOW}🔍 调试：用户输入 ML-KEM-768 Client：${MLKEM_CLIENT}${NC}"
         fi
-        MLKEM_CLIENT=$(echo "$MLKEM_OUTPUT" | grep -i 'Client:' | sed 's/.*Client: *//' | tr -d '[:space:]')
-        MLKEM_CLIENT=$(clean_key "$MLKEM_CLIENT")
-        echo -e "${YELLOW}🔍 调试：ML-KEM-768 输出：${MLKEM_OUTPUT}${NC}"
-        echo -e "${YELLOW}🔍 调试：清理后的 ML-KEM-768 Client：${MLKEM_CLIENT}${NC}"
-        if ! validate_base64 "$MLKEM_CLIENT" 684; then
+        if ! validate_length "$MLKEM_CLIENT" 684 "ML-KEM-768 Client"; then
             echo -e "${RED}⚠️ ML-KEM-768 Client 无效！${NC}"
             return 1
         fi
 
         DECRYPTION="mlkem768x25519plus.${DECRYPTION_TYPE}.${RTT_MODE}.${X25519_PASSWORD}.${MLKEM_CLIENT}"
-        if ! [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|600s)\.[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]+$ ]]; then
+        if ! [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|0rtt)\.[A-Za-z0-9+/]+\.[A-Za-z0-9+/]+$ ]]; then
             echo -e "${RED}⚠️ DECRYPTION 格式无效：${DECRYPTION}${NC}"
             return 1
         fi
@@ -343,7 +310,7 @@ generate_vless_config() {
             read -r WS_PATH
             WS_PATH=${WS_PATH:-$DEFAULT_WS_PATH}
             ;;
-        3|"") 
+        3|"")
             NETWORK="grpc"
             echo "请输入 gRPC 服务名称（默认：$DEFAULT_GRPC_SERVICE_NAME）："
             read -r GRPC_SERVICE_NAME
@@ -409,7 +376,7 @@ EOF
         else
             yq eval ".listeners = [$(yq eval -o=j -I=0 - <<< "$LISTENERS")]" -i "${CONFIG_FILE}" 2>/dev/null
             if [ $? -ne 0 ]; then
-                echo -e "${RED}⚠️ 添加 listeners 失败！${NC}"
+                echo -e "${RED}⚠️ 添加 listeners 字段失败！${NC}"
                 return 1
             fi
             chmod 644 "${CONFIG_FILE}"
