@@ -7,6 +7,7 @@
 # - 支持安装、更新、卸载 mihomo，更新主脚本。
 # - 所有选项（成功或失败）返回主菜单，[13] 退出显示提示。
 # - 卸载子菜单：[1] 卸载脚本，[2] 卸载 mihomo，[3] 卸载全部，[4] 返回主菜单。
+# - 移除 30 秒输入超时。
 # 使用方法：proxym-easy [menu|start|stop|restart|status|log|test|install|update|uninstall|update-scripts|generate-config|delete]
 # 安装命令：curl -L https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/main.sh -o /tmp/proxym-easy && chmod +x /tmp/proxym-easy && sudo mv /tmp/proxym-easy /usr/local/bin/proxym-easy && sudo proxym-easy
 # 依赖：yq
@@ -189,7 +190,7 @@ uninstall() {
     echo "[3] 卸载全部（mihomo 和主脚本）"
     echo "[4] 返回主菜单"
     echo -n "请选择选项 [1-4]："
-    read -t 30 -r choice || { echo -e "${RED}⚠️ 输入超时，返回主菜单！${NC}"; return 1; }
+    read -r choice
     case $choice in
         1)
             if [ -f "${INSTALL_DIR}/proxym-easy" ]; then
@@ -256,12 +257,13 @@ generate_node_config() {
     echo "[1] VLESS Encryption"
     echo "[2] 返回主菜单"
     echo -n "请选择协议 [1-2]："
-    read -t 30 -r protocol_choice || { echo -e "${RED}⚠️ 输入超时，返回主菜单！${NC}"; return 1; }
+    read -r protocol_choice
     case $protocol_choice in
         1)
             if [ -f "${VLESS_SCRIPT}" ]; then
                 echo -e "${YELLOW}📄 VLESS 脚本已存在，是否重新下载？(y/n，默认 n): ${NC}"
-                read -t 30 -r redownload || { echo -e "${YELLOW}⚠️ 输入超时，使用现有脚本！${NC}"; redownload="n"; }
+                read -r redownload
+                redownload=${redownload:-n}
                 if [[ "$redownload" =~ ^[Yy]$ ]]; then
                     rm -f "${VLESS_SCRIPT}" 2>/dev/null
                     echo -e "${YELLOW}📥 重新下载 VLESS 脚本...${NC}"
@@ -288,7 +290,7 @@ generate_node_config() {
             echo -e "${YELLOW}🚀 执行 VLESS 配置生成脚本...${NC}"
             "${VLESS_SCRIPT}" 2>&1
             if [ $? -ne 0 ]; then
-                echo -e "${RED}⚠️ VLESS 子脚本执行失败！请检查输出或日志。${NC}"
+                echo -e "${RED}⚠️ 生成 VLESS 配置失败！请检查子脚本输出或日志。${NC}"
                 return 1
             fi
             echo -e "${YELLOW}🔄 配置生成完成，返回主菜单...${NC}"
@@ -452,7 +454,7 @@ show_menu() {
     echo "[12] 更新主脚本（proxym-easy）"
     echo "[13] 退出"
     echo -n "请选择选项 [1-13]："
-    read -t 30 -r choice || { echo -e "${RED}⚠️ 输入超时，退出！${NC}"; echo -e "${GREEN}✅ 已退出，下次使用请输入 proxym-easy${NC}"; exit 1; }
+    read -r choice
     case $choice in
         1)
             start_mihomo
@@ -495,9 +497,6 @@ show_menu() {
             ;;
         5)
             logs_mihomo
-            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
-            sleep 2
-            show_menu
             ;;
         6)
             test_config
