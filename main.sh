@@ -3,9 +3,9 @@
 # 🌟 Proxym-Easy 管理面板 🌟
 # 功能：
 # - 管理 mihomo 服务（启动、停止、重启、状态、日志、测试）。
-# - 选项 [7] 提供协议选择菜单（当前仅 VLESS Encryption），调用对应的子脚本。
+# - 选项 [7] 提供协议选择菜单（当前仅 VLESS Encryption），自动更新并调用子脚本。
 # - 支持安装、更新、卸载 mihomo。
-# - 子脚本独立存储，方便更新。
+# - 子脚本独立存储，自动或手动更新。
 # 依赖：curl, jq, yq, ss, tar, systemctl, mihomo。
 
 # 颜色定义
@@ -267,6 +267,20 @@ test_config() {
     return 0
 }
 
+# 函数: 更新子脚本
+update_sub_scripts() {
+    echo -e "${YELLOW}🌟 更新子脚本...${NC}"
+    mkdir -p "${SCRIPT_DIR}"
+    curl -s --max-time 10 -o "${VLESS_SCRIPT}" "${GITHUB_RAW_URL}/vless_encryption.sh"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}⚠️ 下载 vless_encryption.sh 失败！${NC}"
+        return 1
+    fi
+    chmod +x "${VLESS_SCRIPT}"
+    echo -e "${GREEN}✅ 子脚本更新成功！${NC}"
+    return 0
+}
+
 # 函数: 生成节点配置（协议选择菜单）
 generate_node_config() {
     echo -e "${YELLOW}🌟 选择协议 🌟${NC}"
@@ -276,6 +290,13 @@ generate_node_config() {
     read -r choice
     case $choice in
         1)
+            echo -e "${YELLOW}🔄 自动更新 VLESS Encryption 子脚本...${NC}"
+            update_sub_scripts
+            if [ $? -ne 0 ]; then
+                echo -e "${YELLOW}⚠️ 子脚本更新失败，继续使用现有 ${VLESS_SCRIPT}...${NC}"
+            else
+                echo -e "${GREEN}✅ 子脚本已更新到最新版本！${NC}"
+            fi
             if [[ ! -f "${VLESS_SCRIPT}" ]]; then
                 echo -e "${RED}⚠️ VLESS 脚本 ${VLESS_SCRIPT} 不存在！${NC}"
                 return 1
@@ -328,20 +349,6 @@ update_mihomo() {
     else
         echo -e "${RED}⚠️ mihomo 更新失败！${NC}"
     fi
-    return 0
-}
-
-# 函数: 更新子脚本
-update_sub_scripts() {
-    echo -e "${YELLOW}🌟 更新子脚本...${NC}"
-    mkdir -p "${SCRIPT_DIR}"
-    curl -s -o "${VLESS_SCRIPT}" "${GITHUB_RAW_URL}/vless_encryption.sh"
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}⚠️ 下载 vless_encryption.sh 失败！${NC}"
-        return 1
-    fi
-    chmod +x "${VLESS_SCRIPT}"
-    echo -e "${GREEN}✅ 子脚本更新成功！${NC}"
     return 0
 }
 
