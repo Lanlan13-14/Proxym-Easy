@@ -3,8 +3,9 @@
 # 🌟 Proxym-Easy 管理面板 🌟
 # 功能：
 # - 管理 mihomo 服务（启动、停止、重启、状态、日志、测试）。
-# - 调用 vless_encryption.sh 生成 VLESS 配置。
+# - 选项 [7] 提供协议选择菜单（当前仅 VLESS Encryption），调用对应的子脚本。
 # - 支持安装、更新、卸载 mihomo。
+# - 子脚本独立存储，方便更新。
 # 依赖：curl, jq, yq, ss, tar, systemctl, mihomo。
 
 # 颜色定义
@@ -266,19 +267,39 @@ test_config() {
     return 0
 }
 
-# 函数: 生成节点配置
+# 函数: 生成节点配置（协议选择菜单）
 generate_node_config() {
-    if [[ ! -f "${VLESS_SCRIPT}" ]]; then
-        echo -e "${RED}⚠️ VLESS 脚本 ${VLESS_SCRIPT} 不存在！${NC}"
-        return 1
-    fi
-    bash "${VLESS_SCRIPT}"
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ 生成节点配置成功！${NC}"
-    else
-        echo -e "${RED}⚠️ 生成节点配置失败！${NC}"
-    fi
-    return 0
+    echo -e "${YELLOW}🌟 选择协议 🌟${NC}"
+    echo "[1] VLESS Encryption"
+    echo "[2] 返回主菜单"
+    echo -n "请选择选项 [1-2]："
+    read -r choice
+    case $choice in
+        1)
+            if [[ ! -f "${VLESS_SCRIPT}" ]]; then
+                echo -e "${RED}⚠️ VLESS 脚本 ${VLESS_SCRIPT} 不存在！${NC}"
+                return 1
+            fi
+            bash "${VLESS_SCRIPT}"
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}✅ VLESS Encryption 配置生成成功！${NC}"
+            else
+                echo -e "${RED}⚠️ VLESS Encryption 配置生成失败！${NC}"
+            fi
+            ;;
+        2)
+            echo -e "${YELLOW}🔙 返回主菜单...${NC}"
+            return 0
+            ;;
+        *)
+            echo -e "${RED}⚠️ 无效选项${NC}"
+            sleep 1
+            generate_node_config
+            ;;
+    esac
+    echo -e "${YELLOW}🔄 返回协议选择菜单...${NC}"
+    sleep 2
+    generate_node_config
 }
 
 # 函数: 编辑配置文件
@@ -307,6 +328,20 @@ update_mihomo() {
     else
         echo -e "${RED}⚠️ mihomo 更新失败！${NC}"
     fi
+    return 0
+}
+
+# 函数: 更新子脚本
+update_sub_scripts() {
+    echo -e "${YELLOW}🌟 更新子脚本...${NC}"
+    mkdir -p "${SCRIPT_DIR}"
+    curl -s -o "${VLESS_SCRIPT}" "${GITHUB_RAW_URL}/vless_encryption.sh"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}⚠️ 下载 vless_encryption.sh 失败！${NC}"
+        return 1
+    fi
+    chmod +x "${VLESS_SCRIPT}"
+    echo -e "${GREEN}✅ 子脚本更新成功！${NC}"
     return 0
 }
 
@@ -380,8 +415,9 @@ show_menu() {
     echo "[10] 更新 mihomo"
     echo "[11] 卸载选项"
     echo "[12] 更新主脚本"
-    echo "[13] 退出"
-    echo -n "请选择选项 [1-13]："
+    echo "[13] 更新子脚本"
+    echo "[14] 退出"
+    echo -n "请选择选项 [1-14]："
     read -r choice
     case $choice in
         1)
@@ -482,6 +518,17 @@ show_menu() {
             show_menu
             ;;
         13)
+            update_sub_scripts
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}✅ 子脚本更新成功！${NC}"
+            else
+                echo -e "${RED}⚠️ 子脚本更新失败！${NC}"
+            fi
+            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
+            sleep 2
+            show_menu
+            ;;
+        14)
             echo -e "${GREEN}✅ 已退出！${NC}"
             exit 0
             ;;
