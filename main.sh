@@ -31,6 +31,22 @@ check_mihomo() {
     return 1
 }
 
+# 函数: 检查 yq 版本
+check_yq_version() {
+    if command -v yq >/dev/null 2>&1; then
+        YQ_VERSION=$(yq --version 2>&1 | grep -oP 'version v?\K[0-9]+\.[0-9]+')
+        if [[ "$YQ_VERSION" == 4.* ]]; then
+            return 0
+        else
+            echo -e "${RED}⚠️ yq 版本 $YQ_VERSION 不兼容，需要 4.x！${NC}"
+            return 1
+        fi
+    else
+        echo -e "${RED}⚠️ yq 未安装，请安装 yq 4.x！${NC}"
+        return 1
+    fi
+}
+
 # 函数: 安装 mihomo
 install_mihomo() {
     echo -e "${YELLOW}🌟 安装 mihomo...${NC}"
@@ -100,24 +116,35 @@ start_mihomo() {
         return 1
     fi
     echo -e "${YELLOW}🔍 测试配置文件 ${CONFIG_FILE}...${NC}"
-    if ! "${MIHOMO_BIN}" -t -d "${CONFIG_DIR}" 2>&1; then
-        echo -e "${RED}⚠️ 配置文件无效，请检查！${NC}"
+    CONFIG_TEST=$("${MIHOMO_BIN}" -t -d "${CONFIG_DIR}" 2>&1)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}⚠️ 配置文件无效！错误：\n${CONFIG_TEST}${NC}"
         return 1
     fi
+    echo -e "${GREEN}✅ 配置文件有效！${NC}"
     if ! systemctl start mihomo; then
         echo -e "${RED}⚠️ 启动失败！请检查日志: journalctl -u mihomo -f${NC}"
         return 1
     fi
     echo -e "${GREEN}✅ mihomo 启动成功！${NC}"
     sleep 2
-    PORT=$(yq eval '.listeners[].port' "${CONFIG_FILE}" | head -n 1)
-    if [ -n "$PORT" ] && ! ss -tuln | grep -q ":${PORT}"; then
-        echo -e "${YELLOW}⚠️ 端口 ${PORT} 未监听，请检查配置和防火墙！${NC}"
-        echo -e "${YELLOW}🔍 日志：${NC}"
-        journalctl -u mihomo -n 10 --no-pager
+    if ! check_yq_version; then
+        echo -e "${YELLOW}⚠️ 无法检查端口（yq 不可用）！${NC}"
         return 1
+    fi
+    if yq eval '.listeners' "${CONFIG_FILE}" >/dev/null 2>&1; then
+        PORT=$(yq eval '.listeners[0].port' "${CONFIG_FILE}" 2>/dev/null | head -n 1)
+        if [ -n "$PORT" ] && ! ss -tuln | grep -q ":${PORT}\b"; then
+            echo -e "${YELLOW}⚠️ 端口 ${PORT} 未监听，请检查配置和防火墙！${NC}"
+            echo -e "${YELLOW}🔍 日志：${NC}"
+            journalctl -u mihomo -n 10 --no-pager
+            return 1
+        else
+            echo -e "${GREEN}✅ 端口 ${PORT} 监听正常！${NC}"
+        fi
     else
-        echo -e "${GREEN}✅ 端口 ${PORT} 监听正常！${NC}"
+        echo -e "${RED}⚠️ 配置文件缺少 listeners 字段！${NC}"
+        return 1
     fi
     return 0
 }
@@ -148,24 +175,35 @@ restart_mihomo() {
         return 1
     fi
     echo -e "${YELLOW}🔍 测试配置文件 ${CONFIG_FILE}...${NC}"
-    if ! "${MIHOMO_BIN}" -t -d "${CONFIG_DIR}" 2>&1; then
-        echo -e "${RED}⚠️ 配置文件无效，请检查！${NC}"
+    CONFIG_TEST=$("${MIHOMO_BIN}" -t -d "${CONFIG_DIR}" 2>&1)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}⚠️ 配置文件无效！错误：\n${CONFIG_TEST}${NC}"
         return 1
     fi
+    echo -e "${GREEN}✅ 配置文件有效！${NC}"
     if ! systemctl restart mihomo; then
         echo -e "${RED}⚠️ 重启失败！请检查日志: journalctl -u mihomo -f${NC}"
         return 1
     fi
     echo -e "${GREEN}✅ mihomo 重启成功！${NC}"
     sleep 2
-    PORT=$(yq eval '.listeners[].port' "${CONFIG_FILE}" | head -n 1)
-    if [ -n "$PORT" ] && ! ss -tuln | grep -q ":${PORT}"; then
-        echo -e "${YELLOW}⚠️ 端口 ${PORT} 未监听，请检查配置和防火墙！${NC}"
-        echo -e "${YELLOW}🔍 日志：${NC}"
-        journalctl -u mihomo -n 10 --no-pager
+    if ! check_yq_version; then
+        echo -e "${YELLOW}⚠️ 无法检查端口（yq 不可用）！${NC}"
         return 1
+    fi
+    if yq eval '.listeners' "${CONFIG_FILE}" >/dev/null 2>&1; then
+        PORT=$(yq eval '.listeners[0].port' "${CONFIG_FILE}" 2>/dev/null | head -n 1)
+        if [ -n "$PORT" ] && ! ss -tuln | grep -q ":${PORT}\b"; then
+            echo -e "${YELLOW}⚠️ 端口 ${PORT} 未监听，请检查配置和防火墙！${NC}"
+            echo -e "${YELLOW}🔍 日志：${NC}"
+            journalctl -u mihomo -n 10 --no-pager
+            return 1
+        else
+            echo -e "${GREEN}✅ 端口 ${PORT} 监听正常！${NC}"
+        fi
     else
-        echo -e "${GREEN}✅ 端口 ${PORT} 监听正常！${NC}"
+        echo -e "${RED}⚠️ 配置文件缺少 listeners 字段！${NC}"
+        return 1
     fi
     return 0
 }
@@ -179,13 +217,17 @@ view_status() {
     if systemctl is-active mihomo >/dev/null; then
         echo -e "${GREEN}✅ mihomo 运行中:${NC}"
         systemctl status mihomo --no-pager -l
-        PORT=$(yq eval '.listeners[].port' "${CONFIG_FILE}" | head -n 1)
-        if [ -n "$PORT" ] && ! ss -tuln | grep -q ":${PORT}"; then
-            echo -e "${YELLOW}⚠️ 端口 ${PORT} 未监听！${NC}"
-            echo -e "${YELLOW}🔍 日志：${NC}"
-            journalctl -u mihomo -n 10 --no-pager
+        if [[ -f "${CONFIG_FILE}" ]] && check_yq_version && yq eval '.listeners' "${CONFIG_FILE}" >/dev/null 2>&1; then
+            PORT=$(yq eval '.listeners[0].port' "${CONFIG_FILE}" 2>/dev/null | head -n 1)
+            if [ -n "$PORT" ] && ! ss -tuln | grep -q ":${PORT}\b"; then
+                echo -e "${YELLOW}⚠️ 端口 ${PORT} 未监听！${NC}"
+                echo -e "${YELLOW}🔍 日志：${NC}"
+                journalctl -u mihomo -n 10 --no-pager
+            else
+                echo -e "${GREEN}✅ 端口 ${PORT} 监听正常！${NC}"
+            fi
         else
-            echo -e "${GREEN}✅ 端口 ${PORT} 监听正常！${NC}"
+            echo -e "${RED}⚠️ 无法检查端口：配置文件不存在或 yq 不可用！${NC}"
         fi
     else
         echo -e "${RED}⚠️ mihomo 未运行${NC}"
@@ -214,10 +256,11 @@ test_config() {
         return 1
     fi
     echo -e "${YELLOW}🔍 测试配置文件 ${CONFIG_FILE}...${NC}"
-    if "${MIHOMO_BIN}" -t -d "${CONFIG_DIR}" 2>&1; then
+    CONFIG_TEST=$("${MIHOMO_BIN}" -t -d "${CONFIG_DIR}" 2>&1)
+    if [ $? -eq 0 ]; then
         echo -e "${GREEN}✅ 配置文件有效！${NC}"
     else
-        echo -e "${RED}⚠️ 配置文件无效，请检查！${NC}"
+        echo -e "${RED}⚠️ 配置文件无效！错误：\n${CONFIG_TEST}${NC}"
         return 1
     fi
     return 0
@@ -388,67 +431,4 @@ show_menu() {
             ;;
         6)
             test_config
-            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
-            sleep 2
-            show_menu
-            ;;
-        7)
-            generate_node_config
-            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
-            sleep 2
-            show_menu
-            ;;
-        8)
-            edit_config
-            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
-            sleep 2
-            show_menu
-            ;;
-        9)
-            install_mihomo
-            if [ $? -eq 0 ]; then
-                echo -e "${GREEN}✅ 安装成功！${NC}"
-            else
-                echo -e "${RED}⚠️ 安装失败！${NC}"
-            fi
-            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
-            sleep 2
-            show_menu
-            ;;
-        10)
-            update_mihomo
-            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
-            sleep 2
-            show_menu
-            ;;
-        11)
-            uninstall_options
-            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
-            sleep 2
-            show_menu
-            ;;
-        12)
-            update_main_script
-            if [ $? -eq 0 ]; then
-                echo -e "${GREEN}✅ 更新成功！${NC}"
-            else
-                echo -e "${RED}⚠️ 更新失败！${NC}"
-            fi
-            echo -e "${YELLOW}🔄 返回主菜单...${NC}"
-            sleep 2
-            show_menu
-            ;;
-        13)
-            echo -e "${GREEN}✅ 已退出！${NC}"
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}⚠️ 无效选项${NC}"
-            sleep 1
-            show_menu
-            ;;
-    esac
-}
-
-# 主逻辑
-show_menu
+            echo -e "${YELLOW}🔄 返回主菜单...${
