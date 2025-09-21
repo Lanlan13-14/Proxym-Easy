@@ -4,11 +4,11 @@
 # 功能：
 # - 生成不启用 TLS 的 VLESS 配置，写入 /etc/mihomo/config.yaml，打印客户端 proxies 单行 YAML。
 # - 支持传输层选择：[1] TCP [2] WebSocket [3] gRPC（默认：[3]）。
-# - 支持 VLESS Encryption 配置： [1] 原生外观 [2] 只 XOR 公钥 [3] 全随机数（默认：[3]） + [1] 仅 1-RTT [2] 1-RTT 和 600s 0-RTT（默认：[1]），多个 Base64 串联。
+# - 支持 VLESS Encryption 配置：[1] 原生外观 [2] 只 XOR 公钥 [3] 全随机数（默认：[3]） + [1] 仅 1-RTT [2] 1-RTT 和 600s 0-RTT（默认：[1]），多个 Base64 串联。
 # - 支持单个端口或端口段（示例：200,302 或 200,204,401-429,501-503），端口段未输入时随机从 10000-20000 选择 10 个连续端口。
 # - 子菜单：[1] 生成 VLESS Encryption 配置 [2] 打印连接信息 [3] 返回主菜单。
 # - 所有选项失败后返回子菜单，[3] 返回主菜单。
-# - 默认：gRPC + mlkem768x25519plus.random.1rtt。
+# - 默认：gRPC + mlkem768x25519plus.random.1rtt，无 flow（非 TLS 模式）。
 # - 移除 30 秒输入超时。
 # - 如果配置文件存在，询问覆盖或追加。
 # 使用方法：/usr/local/bin/script/vless_encryption.sh
@@ -26,7 +26,7 @@ MIHOMO_BIN="/usr/local/bin/mihomo"
 CONFIG_DIR="/etc/mihomo"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 DEFAULT_LISTEN="0.0.0.0"
-DEFAULT_FLOW="xtls-rprx-vision"
+DEFAULT_FLOW="" # 非 TLS 模式默认无 flow
 DEFAULT_DNS_NAMESERVER="8.8.8.8,1.1.1.1"
 DEFAULT_NETWORK="grpc"
 DEFAULT_WS_PATH="/"
@@ -211,88 +211,104 @@ generate_vless_config() {
             ;;
     esac
 
-    echo "请选择 VLESS Encryption 类型：[1] 原生外观 [2] 只 XOR 公钥 [3] 全随机数（默认：[3]）"
-    read -r decryption_type
-    case $decryption_type in
-        1) DECRYPTION_TYPE="native" ;;
-        2) DECRYPTION_TYPE="xorpub" ;;
-        3|"") DECRYPTION_TYPE="random" ;;
-        *) 
-            echo -e "${RED}⚠️ 无效选项，使用默认全随机数！${NC}"
-            DECRYPTION_TYPE="random"
+    echo "是否启用 VLESS Encryption？[1] 是（默认） [2] 否（无加密）"
+    read -r encryption_choice
+    case $encryption_choice in
+        2)
+            DECRYPTION=""
+            ;;
+        1|"")
+            echo "请选择 VLESS Encryption 类型：[1] 原生外观 [2] 只 XOR 公钥 [3] 全随机数（默认：[3]）"
+            read -r decryption_type
+            case $decryption_type in
+                1) DECRYPTION_TYPE="native" ;;
+                2) DECRYPTION_TYPE="xorpub" ;;
+                3|"") DECRYPTION_TYPE="random" ;;
+                *) 
+                    echo -e "${RED}⚠️ 无效选项，使用默认全随机数！${NC}"
+                    DECRYPTION_TYPE="random"
+                    ;;
+            esac
+
+            echo "请选择 RTT 模式：[1] 仅 1-RTT [2] 1-RTT 和 600s 0-RTT（默认：[1]）"
+            read -r rtt_mode
+            case $rtt_mode in
+                1|"") RTT_MODE="1rtt" ;;
+                2) RTT_MODE="600s" ;;
+                *) 
+                    echo -e "${RED}⚠️ 无效选项，使用默认 1-RTT！${NC}"
+                    RTT_MODE="1rtt"
+                    ;;
+            esac
+
+            echo "请输入 X25519 私钥数量（默认 1，按回车使用默认值）："
+            read -r x25519_count
+            x25519_count=${x25519_count:-1}
+            if ! [[ "$x25519_count" =~ ^[0-9]+$ ]] || [ "$x25519_count" -lt 1 ]; then
+                echo -e "${RED}⚠️ 私钥数量必须为正整数，使用默认 1！${NC}"
+                x25519_count=1
+            fi
+
+            X25519_PRIVATE_KEYS=""
+            for ((i=1; i<=x25519_count; i++)); do
+                echo "请输入第 $i 个 X25519 私钥（按回车随机生成）："
+                read -r X25519_PRIVATE
+                if [ -z "$X25519_PRIVATE" ]; then
+                    X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>/dev/null)
+                    if [ $? -ne 0 ]; then
+                        echo -e "${RED}⚠️ 生成 X25519 私钥失败！输出：\n${X25519_OUTPUT}${NC}"
+                        return 1
+                    fi
+                    X25519_PRIVATE=$(echo "$X25519_OUTPUT" | grep 'PrivateKey:' | sed 's/.*PrivateKey: *//')
+                    if [ -z "$X25519_PRIVATE" ]; then
+                        echo -e "${RED}⚠️ 解析 X25519 私钥失败！输出：\n${X25519_OUTPUT}${NC}"
+                        return 1
+                    fi
+                fi
+                X25519_PRIVATE_KEYS+=".${X25519_PRIVATE}"
+            done
+
+            echo "请输入 ML-KEM-768 种子数量（默认 1，按回车使用默认值）："
+            read -r mlkem_count
+            mlkem_count=${mlkem_count:-1}
+            if ! [[ "$mlkem_count" =~ ^[0-9]+$ ]] || [ "$mlkem_count" -lt 1 ]; then
+                echo -e "${RED}⚠️ 种子数量必须为正整数，使用默认 1！${NC}"
+                mlkem_count=1
+            fi
+
+            MLKEM_SEEDS=""
+            for ((i=1; i<=mlkem_count; i++)); do
+                echo "请输入第 $i 个 ML-KEM-768 种子（按回车随机生成）："
+                read -r MLKEM_SEED
+                if [ -z "$MLKEM_SEED" ]; then
+                    MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>/dev/null)
+                    if [ $? -ne 0 ]; then
+                        echo -e "${RED}⚠️ 生成 ML-KEM-768 种子失败！输出：\n${MLKEM_OUTPUT}${NC}"
+                        return 1
+                    fi
+                    MLKEM_SEED=$(echo "$MLKEM_OUTPUT" | grep 'Seed:' | sed 's/.*Seed: *//')
+                    if [ -z "$MLKEM_SEED" ]; then
+                        echo -e "${RED}⚠️ 解析 ML-KEM-768 种子失败！输出：\n${MLKEM_OUTPUT}${NC}"
+                        return 1
+                    fi
+                fi
+                MLKEM_SEEDS+=".${MLKEM_SEED}"
+            done
+
+            DECRYPTION="mlkem768x25519plus.${DECRYPTION_TYPE}.${RTT_MODE}${X25519_PRIVATE_KEYS}${MLKEM_SEEDS}"
+            ;;
+        *)
+            echo -e "${RED}⚠️ 无效选项，使用默认启用 Encryption！${NC}"
+            DECRYPTION="mlkem768x25519plus.${DEFAULT_DECRYPTION_TYPE}.${DEFAULT_RTT_MODE}"
             ;;
     esac
 
-    echo "请选择 RTT 模式：[1] 仅 1-RTT [2] 1-RTT 和 600s 0-RTT（默认：[1]）"
-    read -r rtt_mode
-    case $rtt_mode in
-        1|"") RTT_MODE="1rtt" ;;
-        2) RTT_MODE="600s" ;;
-        *) 
-            echo -e "${RED}⚠️ 无效选项，使用默认 1-RTT！${NC}"
-            RTT_MODE="1rtt"
-            ;;
-    esac
-
-    echo "请输入 X25519 私钥数量（默认 1，按回车使用默认值）："
-    read -r x25519_count
-    x25519_count=${x25519_count:-1}
-    if ! [[ "$x25519_count" =~ ^[0-9]+$ ]] || [ "$x25519_count" -lt 1 ]; then
-        echo -e "${RED}⚠️ 私钥数量必须为正整数，使用默认 1！${NC}"
-        x25519_count=1
-    fi
-
-    X25519_PRIVATE_KEYS=""
-    for ((i=1; i<=x25519_count; i++)); do
-        echo "请输入第 $i 个 X25519 私钥（按回车随机生成）："
-        read -r X25519_PRIVATE
-        if [ -z "$X25519_PRIVATE" ]; then
-            X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>/dev/null)
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}⚠️ 生成 X25519 私钥失败！输出：\n${X25519_OUTPUT}${NC}"
-                return 1
-            fi
-            X25519_PRIVATE=$(echo "$X25519_OUTPUT" | grep 'PrivateKey:' | sed 's/.*PrivateKey: *//')
-            if [ -z "$X25519_PRIVATE" ]; then
-                echo -e "${RED}⚠️ 解析 X25519 私钥失败！输出：\n${X25519_OUTPUT}${NC}"
-                return 1
-            fi
-        fi
-        X25519_PRIVATE_KEYS+=".${X25519_PRIVATE}"
-    done
-
-    echo "请输入 ML-KEM-768 种子数量（默认 1，按回车使用默认值）："
-    read -r mlkem_count
-    mlkem_count=${mlkem_count:-1}
-    if ! [[ "$mlkem_count" =~ ^[0-9]+$ ]] || [ "$mlkem_count" -lt 1 ]; then
-        echo -e "${RED}⚠️ 种子数量必须为正整数，使用默认 1！${NC}"
-        mlkem_count=1
-    fi
-
-    MLKEM_SEEDS=""
-    for ((i=1; i<=mlkem_count; i++)); do
-        echo "请输入第 $i 个 ML-KEM-768 种子（按回车随机生成）："
-        read -r MLKEM_SEED
-        if [ -z "$MLKEM_SEED" ]; then
-            MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>/dev/null)
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}⚠️ 生成 ML-KEM-768 种子失败！输出：\n${MLKEM_OUTPUT}${NC}"
-                return 1
-            fi
-            MLKEM_SEED=$(echo "$MLKEM_OUTPUT" | grep 'Seed:' | sed 's/.*Seed: *//')
-            if [ -z "$MLKEM_SEED" ]; then
-                echo -e "${RED}⚠️ 解析 ML-KEM-768 种子失败！输出：\n${MLKEM_OUTPUT}${NC}"
-                return 1
-            fi
-        fi
-        MLKEM_SEEDS+=".${MLKEM_SEED}"
-    done
-
-    echo "请输入 Flow（默认：$DEFAULT_FLOW，按回车使用默认值）："
+    echo "请输入 Flow（默认无 flow，建议非 TLS 模式留空，按回车使用默认值）："
     read -r FLOW
     FLOW=${FLOW:-$DEFAULT_FLOW}
-
-    DECRYPTION="mlkem768x25519plus.${DECRYPTION_TYPE}.${RTT_MODE}${X25519_PRIVATE_KEYS}${MLKEM_SEEDS}"
+    if [ -n "$FLOW" ]; then
+        echo -e "${YELLOW}⚠️ 注意：非 TLS 模式下 Flow（如 xtls-rprx-vision）可能不可用，建议留空！${NC}"
+    fi
 
     # 生成 listeners 配置
     LISTENERS=$(cat <<EOF
@@ -310,7 +326,11 @@ EOF
     elif [[ "$NETWORK" == "grpc" ]]; then
         LISTENERS+=$'\n    grpc-service-name: '"$GRPC_SERVICE_NAME"
     fi
-    LISTENERS+=$'\n    users:\n      - username: user1\n        uuid: '"$UUID"$'\n        flow: '"$FLOW"
+    if [ -n "$FLOW" ]; then
+        LISTENERS+=$'\n    users:\n      - username: user1\n        uuid: '"$UUID"$'\n        flow: '"$FLOW"
+    else
+        LISTENERS+=$'\n    users:\n      - username: user1\n        uuid: '"$UUID"
+    fi
 
     # 生成完整 YAML 配置
     CONFIG_YAML=$(cat <<EOF
@@ -456,7 +476,11 @@ print_connection_info() {
     IFS=',' read -r -a port_array <<< "$PORTS"
     echo -e "${GREEN}✅ 客户端 Proxies 配置（单行 YAML）：${NC}"
     for port in "${port_array[@]}"; do
-        PROXIES_YAML="{ name: \"${NAME}-${port}\", type: vless, server: \"${SERVER_IP}\", port: ${port}, udp: true, uuid: \"${UUID}\", flow: \"${FLOW}\", packet-encoding: \"xudp\", tls: false, encryption: \"${DECRYPTION}\", network: \"${NETWORK}\""
+        PROXIES_YAML="{ name: \"${NAME}-${port}\", type: vless, server: \"${SERVER_IP}\", port: ${port}, udp: true, uuid: \"${UUID}\""
+        if [ -n "$FLOW" ]; then
+            PROXIES_YAML+=", flow: \"${FLOW}\""
+        fi
+        PROXIES_YAML+=", packet-encoding: \"xudp\", tls: false, encryption: \"${DECRYPTION}\", network: \"${NETWORK}\""
         if [[ "$NETWORK" == "ws" ]]; then
             PROXIES_YAML+=", ws-opts: { path: \"${WS_PATH}\" }"
         elif [[ "$NETWORK" == "grpc" ]]; then
