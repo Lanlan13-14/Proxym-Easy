@@ -5,11 +5,9 @@
 # - 生成不启用 TLS 的 VLESS 配置，写入 /etc/mihomo/config.yaml，打印客户端 proxies 单行 YAML。
 # - 支持传输层选择：[1] TCP [2] WebSocket [3] gRPC（默认：[3]）。
 # - 支持 VLESS Encryption 配置：[1] 原生外观 [2] 只 XOR 公钥 [3] 全随机数（默认：[3]） + [1] 仅 1-RTT [2] 1-RTT 和 600s 0-RTT（默认：[1]），多个 Base64 串联。
-# - 支持单个端口或端口段（示例：200,302 或 200,204,401-429,501-503），端口段未输入时随机从 10000-20000 选择 10 个连续端口。
+# - 支持单个端口或端口段（示例：100-200），端口段未输入时随机选择 10 个连续端口。
 # - 子菜单：[1] 生成 VLESS Encryption 配置 [2] 打印连接信息 [3] 返回主菜单。
-# - 所有选项失败后返回子菜单，[3] 返回主菜单。
 # - 默认：gRPC + mlkem768x25519plus.random.1rtt，无 flow（非 TLS 模式）。
-# - 移除 30 秒输入超时。
 # - 如果配置文件存在，询问覆盖或追加。
 # 使用方法：/usr/local/bin/script/vless_encryption.sh
 # 依赖：yq, ss, curl (for ipinfo), /proc/sys/kernel/random/uuid, mihomo。
@@ -77,7 +75,7 @@ recommend_port_range() {
             ports+=("${port}")
         done
         if $valid; then
-            echo "${ports[*]}" | tr ' ' ','
+            echo "${start_port}-$((start_port + count - 1))"
             return 0
         fi
         ((attempts++))
@@ -90,35 +88,32 @@ recommend_port_range() {
 parse_ports() {
     local input="$1"
     local port_list=()
-    IFS=',' read -r -a port_segments <<< "$input"
-    for segment in "${port_segments[@]}"; do
-        if [[ "$segment" =~ ^[0-9]+$ ]]; then
-            if check_port "$segment"; then
-                port_list+=("$segment")
-            else
-                echo -e "${RED}⚠️ 端口 $segment 已被占用！${NC}"
-                return 1
-            fi
-        elif [[ "$segment" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-            local start=${BASH_REMATCH[1]}
-            local end=${BASH_REMATCH[2]}
-            if (( start > end )); then
-                echo -e "${RED}⚠️ 端口范围 $segment 无效，起始端口必须小于等于结束端口！${NC}"
-                return 1
-            fi
-            for ((port=start; port<=end; port++)); do
-                if check_port "$port"; then
-                    port_list+=("$port")
-                else
-                    echo -e "${RED}⚠️ 端口 $port 已被占用！${NC}"
-                    return 1
-                fi
-            done
-        else
-            echo -e "${RED}⚠️ 端口格式 $segment 无效！示例：200,302 或 200,204,401-429,501-503${NC}"
+    if [[ "$input" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+        local start=${BASH_REMATCH[1]}
+        local end=${BASH_REMATCH[2]}
+        if (( start > end )); then
+            echo -e "${RED}⚠️ 端口范围 $input 无效，起始端口必须小于等于结束端口！${NC}"
             return 1
         fi
-    done
+        for ((port=start; port<=end; port++)); do
+            if check_port "$port"; then
+                port_list+=("$port")
+            else
+                echo -e "${RED}⚠️ 端口 $port 已被占用！${NC}"
+                return 1
+            fi
+        done
+    elif [[ "$input" =~ ^[0-9]+$ ]]; then
+        if check_port "$input"; then
+            port_list+=("$input")
+        else
+            echo -e "${RED}⚠️ 端口 $input 已被占用！${NC}"
+            return 1
+        fi
+    else
+        echo -e "${RED}⚠️ 端口格式 $input 无效！示例：100 或 100-200${NC}"
+        return 1
+    fi
     echo "${port_list[*]}" | tr ' ' ','
     return 0
 }
@@ -179,9 +174,23 @@ generate_vless_config() {
         return 1
     fi
 
-    echo "请选择端口类型：[1] 单个端口 [2] 端口段（示例：200,302 或 200,204,401-429,501-503）"
+    echo "请选择端口类型：[1] 单个端口（默认） [2] 端口段（示例：100-200）"
     read -r port_type
-    if [[ "$port_type" == "1" ]]; then
+    if [[ "$port_type" == "2" ]]; then
+        echo "请输入端口段（示例：100-200，按回车随机选择 10 个连续端口）："
+        read -r PORTS
+        if [ -z "$PORTS" ]; then
+            PORTS=$(recommend_port_range)
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}⚠️ 无法推荐可用端口段，请手动指定！${NC}"
+                return 1
+            fi
+        fi
+        PORTS=$(parse_ports "$PORTS")
+        if [ $? -ne 0 ]; then
+            return 1
+        fi
+    else
         echo "请输入端口（按回车随机选择可用端口）："
         read -r PORT
         if [ -z "$PORT" ]; then
@@ -196,20 +205,6 @@ generate_vless_config() {
             return 1
         fi
         PORTS="$PORT"
-    else
-        echo "请输入端口段（示例：200,302 或 200,204,401-429,501-503，按回车随机选择 10 个连续端口）："
-        read -r PORTS
-        if [ -z "$PORTS" ]; then
-            PORTS=$(recommend_port_range)
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}⚠️ 无法推荐可用端口段，请手动指定！${NC}"
-                return 1
-            fi
-        fi
-        PORTS=$(parse_ports "$PORTS")
-        if [ $? -ne 0 ]; then
-            return 1
-        fi
     fi
 
     echo "请选择传输层：[1] TCP [2] WebSocket [3] gRPC（默认：[3]）"
@@ -274,7 +269,7 @@ generate_vless_config() {
             X25519_OUTPUT=$("${MIHOMO_BIN}" generate vless-x25519 2>&1)
             if [ $? -ne 0 ]; then
                 echo -e "${RED}⚠️ 生成 X25519 私钥失败！命令输出：\n${X25519_OUTPUT}${NC}"
-                echo -e "${YELLOW}请手动输入有效的 Base64 私钥！${NC}"
+                echo -e "${YELLOW}请手动输入有效的 Base64 私钥（示例：ABCDEF1234567890==）！${NC}"
                 read -r X25519_PRIVATE
                 if [ -z "$X25519_PRIVATE" ]; then
                     echo -e "${RED}⚠️ 未提供有效的 X25519 私钥！${NC}"
@@ -284,7 +279,7 @@ generate_vless_config() {
                 X25519_PRIVATE=$(echo "$X25519_OUTPUT" | grep -i 'PrivateKey:' | sed 's/.*PrivateKey: *//' | tr -d '[:space:]')
                 if [ -z "$X25519_PRIVATE" ]; then
                     echo -e "${RED}⚠️ 解析 X25519 私钥失败！命令输出：\n${X25519_OUTPUT}${NC}"
-                    echo -e "${YELLOW}请手动输入有效的 Base64 私钥！${NC}"
+                    echo -e "${YELLOW}请手动输入有效的 Base64 私钥（示例：ABCDEF1234567890==）！${NC}"
                     read -r X25519_PRIVATE
                     if [ -z "$X25519_PRIVATE" ]; then
                         echo -e "${RED}⚠️ 未提供有效的 X25519 私钥！${NC}"
@@ -295,7 +290,7 @@ generate_vless_config() {
         fi
         if ! validate_base64 "$X25519_PRIVATE"; then
             echo -e "${RED}⚠️ X25519 私钥不是有效的 Base64 字符串：${X25519_PRIVATE}${NC}"
-            echo -e "${YELLOW}请手动输入有效的 Base64 私钥！${NC}"
+            echo -e "${YELLOW}请手动输入有效的 Base64 私钥（示例：ABCDEF1234567890==）！${NC}"
             read -r X25519_PRIVATE
             if ! validate_base64 "$X25519_PRIVATE"; then
                 echo -e "${RED}⚠️ 输入的 X25519 私钥仍无效！${NC}"
@@ -322,7 +317,7 @@ generate_vless_config() {
             MLKEM_OUTPUT=$("${MIHOMO_BIN}" generate vless-mlkem768 2>&1)
             if [ $? -ne 0 ]; then
                 echo -e "${RED}⚠️ 生成 ML-KEM-768 种子失败！命令输出：\n${MLKEM_OUTPUT}${NC}"
-                echo -e "${YELLOW}请手动输入有效的 Base64 种子！${NC}"
+                echo -e "${YELLOW}请手动输入有效的 Base64 种子（示例：GHIJKLMNOPQRSTUVWXYZ==）！${NC}"
                 read -r MLKEM_SEED
                 if [ -z "$MLKEM_SEED" ]; then
                     echo -e "${RED}⚠️ 未提供有效的 ML-KEM-768 种子！${NC}"
@@ -332,7 +327,7 @@ generate_vless_config() {
                 MLKEM_SEED=$(echo "$MLKEM_OUTPUT" | grep -i 'Seed:' | sed 's/.*Seed: *//' | tr -d '[:space:]')
                 if [ -z "$MLKEM_SEED" ]; then
                     echo -e "${RED}⚠️ 解析 ML-KEM-768 种子失败！命令输出：\n${MLKEM_OUTPUT}${NC}"
-                    echo -e "${YELLOW}请手动输入有效的 Base64 种子！${NC}"
+                    echo -e "${YELLOW}请手动输入有效的 Base64 种子（示例：GHIJKLMNOPQRSTUVWXYZ==）！${NC}"
                     read -r MLKEM_SEED
                     if [ -z "$MLKEM_SEED" ]; then
                         echo -e "${RED}⚠️ 未提供有效的 ML-KEM-768 种子！${NC}"
@@ -343,7 +338,7 @@ generate_vless_config() {
         fi
         if ! validate_base64 "$MLKEM_SEED"; then
             echo -e "${RED}⚠️ ML-KEM-768 种子不是有效的 Base64 字符串：${MLKEM_SEED}${NC}"
-            echo -e "${YELLOW}请手动输入有效的 Base64 种子！${NC}"
+            echo -e "${YELLOW}请手动输入有效的 Base64 种子（示例：GHIJKLMNOPQRSTUVWXYZ==）！${NC}"
             read -r MLKEM_SEED
             if ! validate_base64 "$MLKEM_SEED"; then
                 echo -e "${RED}⚠️ 输入的 ML-KEM-768 种子仍无效！${NC}"
@@ -355,7 +350,7 @@ generate_vless_config() {
     done
 
     DECRYPTION="mlkem768x25519plus.${DECRYPTION_TYPE}.${RTT_MODE}${X25519_PRIVATE_KEYS}${MLKEM_SEEDS}"
-    if ! [[moo [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|600s)(\.[A-Za-z0-9+/=]+)+$ ]]; then
+    if ! [[ "$DECRYPTION" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.(1rtt|600s)(\.[A-Za-z0-9+/=]+)+$ ]]; then
         echo -e "${RED}⚠️ 生成的 DECRYPTION 字符串格式无效：${DECRYPTION}${NC}"
         return 1
     fi
@@ -408,7 +403,6 @@ EOF
             echo -e "${YELLOW}📄 检测到现有配置文件 ${CONFIG_FILE}，是否覆盖整个配置文件？(y/n，默认 n): ${NC}"
             read -r response
             if [[ "$response" =~ ^[Yy]$ ]]; then
-                # 覆盖整个配置文件
                 echo "$CONFIG_YAML" > "${CONFIG_FILE}"
                 if [ $? -ne 0 ]; then
                     echo -e "${RED}⚠️ 写入 ${CONFIG_FILE} 失败，请检查权限！${NC}"
@@ -417,13 +411,11 @@ EOF
                 chmod 644 "${CONFIG_FILE}"
                 echo -e "${GREEN}✅ 配置已覆盖并保存到 ${CONFIG_FILE}${NC}"
             else
-                # 检查 listeners 字段是否存在
                 if yq eval '.listeners' "${CONFIG_FILE}" > /dev/null 2>&1; then
                     echo -e "${YELLOW}📄 检测到 listeners 字段，是否追加新的 VLESS 配置？(y/n，默认 y): ${NC}"
                     read -r append_response
                     append_response=${append_response:-y}
                     if [[ "$append_response" =~ ^[Yy]$ ]]; then
-                        # 追加 listeners
                         yq eval ".listeners += [$(yq eval -o=j -I=0 - <<< "$LISTENERS")]" -i "${CONFIG_FILE}" 2>/dev/null
                         if [ $? -ne 0 ]; then
                             echo -e "${RED}⚠️ 追加 Listener 到 ${CONFIG_FILE} 失败！${NC}"
@@ -436,7 +428,6 @@ EOF
                         return 1
                     fi
                 else
-                    # 如果没有 listeners 字段，添加 listeners 字段
                     echo -e "${YELLOW}📄 配置文件中无 listeners 字段，将添加新的 listeners 配置！${NC}"
                     yq eval ".listeners = [$(yq eval -o=j -I=0 - <<< "$LISTENERS")]" -i "${CONFIG_FILE}" 2>/dev/null
                     if [ $? -ne 0 ]; then
@@ -448,7 +439,6 @@ EOF
                 fi
             fi
         else
-            # 配置文件存在但无效，覆盖
             echo -e "${YELLOW}📄 配置文件 ${CONFIG_FILE} 存在但无效，将覆盖！${NC}"
             echo "$CONFIG_YAML" > "${CONFIG_FILE}"
             if [ $? -ne 0 ]; then
@@ -459,7 +449,6 @@ EOF
             echo -e "${GREEN}✅ 配置已覆盖并保存到 ${CONFIG_FILE}${NC}"
         fi
     else
-        # 初次创建配置文件
         echo "$CONFIG_YAML" > "${CONFIG_FILE}"
         if [ $? -ne 0 ]; then
             echo -e "${RED}⚠️ 写入 ${CONFIG_FILE} 失败，请检查权限！${NC}"
