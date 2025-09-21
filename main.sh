@@ -22,7 +22,7 @@ SCRIPT_DIR="/usr/local/bin/script"
 SERVICE_FILE="/etc/systemd/system/mihomo.service"
 MIHOMO_BIN="${INSTALL_DIR}/mihomo"
 VLESS_SCRIPT="${SCRIPT_DIR}/vless_encryption.sh"
-GITHUB_RAW_URL="https://raw.githubusercontent.com/your-repo/proxym-easy/main"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/script"
 
 # 函数: 检查 mihomo 是否安装
 check_mihomo() {
