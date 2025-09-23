@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 1.7
+# 版本: 1.8
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -233,7 +233,7 @@ function generate_config() {
 
     # 加密选项
     read -p "KEX (默认: mlkem768x25519plus): " kex_input
-    kex=${kex_input:-mlkem768x25519plus}
+    kex_input=${kex_input:-mlkem768x25519plus}
 
     read -p "方法 (native/xorpub/random, 默认: native): " method_input
     method=${method_input:-native}
@@ -244,19 +244,39 @@ function generate_config() {
     read -p "时间 (0s/300-600s/600s, 默认: 0s): " time_input
     time=${time_input:-0s}
 
+    # 根据 RTT 调整时间（服务端更新机制）
+    if [ "$rtt" = "1rtt" ]; then
+        time="0s"
+        log "对于 1-RTT，票据时间设置为 0s。"
+    fi
+
     # 生成密钥
     log "生成密钥..."
     x25519_output=$(xray x25519)
     private=$(echo "$x25519_output" | grep "Private key:" | cut -d ':' -f2- | xargs | sed 's/ //g')
-    # 假设 mlkem768 输出 "ML-KEM-768 seed: [string]"
-    mlkem_output=$(xray mlkem768)
-    seed=$(echo "$mlkem_output" | grep -i "seed:" | cut -d ':' -f2- | xargs | sed 's/ //g')
 
-    if [ -z "$private" ] || [ -z "$seed" ]; then
-        error "密钥生成失败。请确保 Xray 已安装并支持 mlkem768。"
+    if [ -z "$private" ]; then
+        error "X25519 密钥生成失败。请确保 Xray 已安装。"
     fi
 
-    encryption="$kex.$method.$rtt.$time.$private.$seed"
+    # 尝试生成 ML-KEM-768 seed
+    mlkem_output=$(xray mlkem768 2>/dev/null)
+    seed=$(echo "$mlkem_output" | grep -i "seed:" | cut -d ':' -f2- | xargs | sed 's/ //g')
+
+    if [ -n "$seed" ]; then
+        # 支持 ML-KEM
+        if [ "$kex_input" = "mlkem768x25519plus" ]; then
+            kex="mlkem768x25519plus"
+            encryption="$kex.$method.$rtt.$time.$private.$seed"
+        else
+            encryption="$kex_input.$method.$rtt.$time.$private.$seed"
+        fi
+    else
+        # 回退到 X25519
+        echo -e "${WARN} ML-KEM-768 不支持，回退到 X25519。建议更新 Xray 到 v25.5.16+。${NC}"
+        kex="x25519"
+        encryption="$kex.$method.$rtt.$time.$private"
+    fi
 
     # IP
     read -p "服务器 IP (默认: 自动检测): " ip_input
