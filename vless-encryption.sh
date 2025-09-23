@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 2.2
+# 版本: 2.3
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -342,7 +342,10 @@ function generate_config() {
     read -p "查询策略 (UseIPv4/UseIPv6/UseIP/AsIs, 默认: UseIPv4): " strategy_input
     strategy=${strategy_input:-UseIPv4}
 
-    # 保存 URI 信息 - 使用双引号包围可能包含空格的值
+    # 计算完整 URI
+    uri="vless://${uuid}@${ip}:${port}?type=tcp&encryption=${encryption}&security=none#${tag}"
+
+    # 保存所有信息，包括URI
     cat > "$VLESS_INFO" << EOF
 UUID="$uuid"
 PORT="$port"
@@ -350,6 +353,7 @@ DECRYPTION="$decryption"
 ENCRYPTION="$encryption"
 IP="$ip"
 TAG="$tag"
+URI="$uri"
 EOF
 
     # 生成 config.json
@@ -409,17 +413,12 @@ function print_uri() {
     fi
 
     # 安全 source，确保变量正确加载
-    UUID=""
-    PORT=""
-    ENCRYPTION=""
-    IP=""
-    TAG=""
+    URI=""
     source "$VLESS_INFO" 2>/dev/null || error "加载配置信息失败，请重新生成配置。"
 
-    uri="vless://${UUID}@${IP}:${PORT}?type=tcp&encryption=${ENCRYPTION}&security=none#${TAG}"
     echo -e "${GREEN}VLESS URI:${NC}"
     echo -e "${YELLOW}============================${NC}"
-    echo "$uri"
+    echo "$URI"
     echo -e "${YELLOW}============================${NC}"
     echo -e "${YELLOW}复制以上 URI 用于客户端配置。${NC}"
     read -p "按 Enter 返回菜单..."
