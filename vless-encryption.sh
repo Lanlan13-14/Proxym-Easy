@@ -384,7 +384,6 @@ EOF
       },
       "streamSettings": {
         "network": "tcp"
-        "packetEncoding": "xudp"
       }
     }
   ],
