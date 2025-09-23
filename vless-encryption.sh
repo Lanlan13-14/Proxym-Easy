@@ -21,7 +21,7 @@ WARN="${YELLOW}⚠️${NC}"
 CONFIG="/usr/local/etc/xray/config.json"
 VLESS_INFO="/etc/proxym/vless.info"
 SCRIPT_PATH="/usr/local/bin/proxym-easy"
-UPDATE_URL="https://www.example.com/proxym-easy"  # 更新此为您的托管脚本 URL
+UPDATE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/vless-encryption.sh"  # 更新此为您的托管脚本 URL
 CRON_FILE="/tmp/proxym_cron.tmp"
 
 # 国家代码到国旗的完整映射（基于 ISO 3166-1 alpha-2）
