@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 2.1
+# 版本: 2.2
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -342,14 +342,14 @@ function generate_config() {
     read -p "查询策略 (UseIPv4/UseIPv6/UseIP/AsIs, 默认: UseIPv4): " strategy_input
     strategy=${strategy_input:-UseIPv4}
 
-    # 保存 URI 信息 - 确保格式正确，无多余空格
+    # 保存 URI 信息 - 使用双引号包围可能包含空格的值
     cat > "$VLESS_INFO" << EOF
-UUID=$uuid
-PORT=$port
-DECRYPTION=$decryption
-ENCRYPTION=$encryption
-IP=$ip
-TAG=$tag
+UUID="$uuid"
+PORT="$port"
+DECRYPTION="$decryption"
+ENCRYPTION="$encryption"
+IP="$ip"
+TAG="$tag"
 EOF
 
     # 生成 config.json
