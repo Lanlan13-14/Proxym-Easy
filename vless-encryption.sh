@@ -127,16 +127,20 @@ function update_script() {
 
     # 检查语法
     if bash -n "${SCRIPT_PATH}.new" 2>/dev/null; then
-        mv "${SCRIPT_PATH}.new" "$SCRIPT_PATH"
-        chmod +x "$SCRIPT_PATH"
-        log "更新成功！已重新加载新脚本。"
-        rm -f "${SCRIPT_PATH}.bak"
+        # 创建 updater.sh
+        cat > updater.sh << EOF
+mv "${SCRIPT_PATH}.new" "$SCRIPT_PATH"
+chmod +x "$SCRIPT_PATH"
+rm -f "${SCRIPT_PATH}.bak"
+exec "$SCRIPT_PATH"
+EOF
+        chmod +x updater.sh
+        exec updater.sh
     else
         rm -f "${SCRIPT_PATH}.new"
         mv "${SCRIPT_PATH}.bak" "$SCRIPT_PATH"
         error "更新语法错误！已回滚到备份。"
     fi
-    read -p "按 Enter 返回菜单..."
 }
 
 function install_dependencies() {
