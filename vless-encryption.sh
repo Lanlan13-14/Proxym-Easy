@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 1.4
+# 版本: 1.5
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -383,19 +383,19 @@ function show_menu() {
     clear
     echo -e "${BLUE}🚀 proxym-easy - VLESS 加密管理器${NC}"
     echo -e "================================"
-    echo "1) 🔧 安装 Xray"
-    echo "2) ⚙️ 生成新配置"
-    echo "3) ▶️ 启动 Xray"
-    echo "4) ⏹️ 停止 Xray"
-    echo "5) 🔄 重启 Xray"
-    echo "6) 📊 查看状态"
-    echo "7) 📝 查看日志"
-    echo "8) ⏰ 设置 Cron 重启"
-    echo "9) 🗑️ 删除 Cron"
-    echo "10) 🖨️ 打印 VLESS URI"
-    echo "11) 🔄 更新脚本"
-    echo "12) 🗑️ 卸载"
-    echo "13) ❌ 退出"
+    echo "[1] 🔧 安装 Xray"
+    echo "[2] ⚙️ 生成新配置"
+    echo "[3] ▶️ 启动 Xray"
+    echo "[4] ⏹️ 停止 Xray"
+    echo "[5] 🔄 重启 Xray"
+    echo "[6] 📊 查看状态"
+    echo "[7] 📝 查看日志"
+    echo "[8] ⏰ 设置 Cron 重启"
+    echo "[9] 🗑️ 删除 Cron"
+    echo "[10] 🖨️ 打印 VLESS URI"
+    echo "[11] 🔄 更新脚本"
+    echo "[12] 🗑️ 卸载"
+    echo "[13] ❌ 退出"
     echo -e "${YELLOW}请选择选项 (1-13): ${NC}"
     read -p "" choice
     case $choice in
