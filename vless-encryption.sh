@@ -442,14 +442,66 @@ function delete_cron() {
 }
 
 function uninstall() {
-    read -p "确定吗？这将移除 Xray 和配置 (y/N): " confirm
-    if [[ $confirm =~ ^[Yy]$ ]]; then
-        sudo systemctl stop xray
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
-        sudo rm -f "$CONFIG" "$VLESS_INFO"
-        sudo rm -rf /etc/proxym
-        log "已卸载。"
-    fi
+    echo -e "${YELLOW}卸载选项:${NC}"
+    echo "[1] 只卸载脚本和配置 (保留 Xray)"
+    echo "[2] 卸载 Xray 但保留脚本和配置"
+    echo "[3] 卸载全部 (包括 Xray)"
+    echo "[0] 取消返回菜单"
+    echo -e "${YELLOW}请选择 (0-3): ${NC}"
+    read uninstall_choice
+
+    case $uninstall_choice in
+        1)
+            read -p "确定只卸载脚本和配置吗？ (y/N): " confirm
+            if [[ $confirm =~ ^[Yy]$ ]]; then
+                # 备份脚本（可选）
+                if [ -f "$SCRIPT_PATH" ]; then
+                    sudo cp "$SCRIPT_PATH" "${SCRIPT_PATH}.backup"
+                    log "脚本备份已创建: ${SCRIPT_PATH}.backup"
+                fi
+                # 移除配置和目录
+                sudo rm -f "$CONFIG" "$VLESS_INFO"
+                sudo rm -rf /etc/proxym
+                sudo rm -f "$SCRIPT_PATH"
+                log "脚本和配置已卸载（Xray 保留）。"
+                echo -e "${GREEN}如需恢复脚本，从备份复制: sudo cp ${SCRIPT_PATH}.backup $SCRIPT_PATH && sudo chmod +x $SCRIPT_PATH${NC}"
+            fi
+            ;;
+        2)
+            read -p "确定卸载 Xray 但保留脚本和配置吗？ (y/N): " confirm
+            if [[ $confirm =~ ^[Yy]$ ]]; then
+                # 停止 Xray
+                sudo systemctl stop xray 2>/dev/null || true
+                # 移除 Xray
+                bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
+                # 保留配置、目录和脚本
+                log "Xray 已卸载（脚本和配置保留）。"
+                echo -e "${YELLOW}Xray 已移除。如需重新安装 Xray，请运行 [1] 安装 Xray 选项。${NC}"
+            fi
+            ;;
+        3)
+            read -p "确定卸载全部吗？这将移除 Xray 和所有配置 (y/N): " confirm
+            if [[ $confirm =~ ^[Yy]$ ]]; then
+                sudo systemctl stop xray 2>/dev/null || true
+                bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
+                # 移除配置和目录
+                sudo rm -f "$CONFIG" "$VLESS_INFO"
+                sudo rm -rf /etc/proxym
+                sudo rm -f "$SCRIPT_PATH"
+                log "全部已卸载。"
+                echo -e "${YELLOW}Xray 已移除。如需重新安装 Xray，请运行安装脚本。${NC}"
+            fi
+            ;;
+        0)
+            log "取消卸载。"
+            ;;
+        *)
+            echo -e "${RED}无效选项，请重试。${NC}"
+            sleep 1
+            uninstall  # 递归调用以重试
+            return
+            ;;
+    esac
     read -p "按 Enter 返回菜单..."
 }
 
