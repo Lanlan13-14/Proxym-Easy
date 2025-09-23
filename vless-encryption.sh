@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 1.5
+# 版本: 1.7
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -161,8 +161,13 @@ function install_dependencies() {
 }
 
 function install_xray() {
+    local pause=${1:-1}
     if command -v xray &> /dev/null; then
         log "Xray 已安装。"
+        if [ $pause -eq 1 ]; then
+            read -p "按 Enter 返回菜单..."
+        fi
+        return 0
     else
         install_dependencies  # 安装依赖
         log "安装 Xray..."
@@ -172,8 +177,10 @@ function install_xray() {
         else
             error "Xray 安装失败。"
         fi
+        if [ $pause -eq 1 ]; then
+            read -p "按 Enter 返回菜单..."
+        fi
     fi
-    read -p "按 Enter 返回菜单..."
 }
 
 function start_xray() {
@@ -206,7 +213,7 @@ function view_logs() {
 }
 
 function generate_config() {
-    install_xray  # 确保已安装
+    install_xray 0  # 确保已安装，但不暂停
 
     log "生成新的 VLESS 配置..."
     echo -e "${YELLOW}按 Enter 使用默认值。${NC}"
@@ -266,8 +273,8 @@ function generate_config() {
     log "根据 IP $ip 获取地理位置..."
     tag=$(get_location_from_ip "$ip")
     if [ "$tag" = "Unknown" ]; then
-        read -p "无法获取位置，请手动输入标签 (默认: Singapore): " tag_input
-        tag=${tag_input:-Singapore}
+        read -p "无法获取位置，请手动输入标签 (默认: Unknown): " tag_input
+        tag=${tag_input:-Unknown}
     fi
     log "标签: $tag"
 
@@ -397,9 +404,9 @@ function show_menu() {
     echo "[12] 🗑️ 卸载"
     echo "[13] ❌ 退出"
     echo -e "${YELLOW}请选择选项 (1-13): ${NC}"
-    read -p "" choice
+    read choice
     case $choice in
-        1) install_xray ;;
+        1) install_xray 1 ;;
         2) generate_config ;;
         3) start_xray ;;
         4) stop_xray ;;
