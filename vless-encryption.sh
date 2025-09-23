@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 2.5
+# 版本: 2.4
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -30,7 +30,7 @@ declare -A FLAGS=(
     [AL]="🇦🇱" [AM]="🇦🇲" [AO]="🇦🇴" [AQ]="🇦🇶" [AR]="🇦🇷"
     [AS]="🇦🇸" [AT]="🇦🇹" [AU]="🇦🇺" [AW]="🇦🇼" [AX]="🇦🇽"
     [AZ]="🇦🇿" [BA]="🇧🇦" [BB]="🇧🇧" [BD]="🇧🇩" [BE]="🇧🇪"
-    [BF]="🇧🇫" [BG]="🇧🇬" [BH]="🇧🇭" [BI]="🇧🇮" [BJ]="🇧🇯"
+    [BF]="🇧🇫" [BG]="🇬🇬" [BH]="🇧🇭" [BI]="🇧🇮" [BJ]="🇧🇯"
     [BL]="🇧🇱" [BM]="🇧🇲" [BN]="🇧🇳" [BO]="🇧🇴" [BQ]="🇧🇶"
     [BR]="🇧🇷" [BS]="🇧🇸" [BT]="🇧🇹" [BV]="🇧🇻" [BW]="🇧🇼"
     [BY]="🇧🇾" [BZ]="🇧🇿" [CA]="🇨🇦" [CC]="🇨🇨" [CD]="🇨🇩"
@@ -265,24 +265,18 @@ function generate_config() {
         use_mlkem=true
     fi
 
-    # 方法 (选一个)
     read -p "方法 (native/xorpub/random, 默认: native): " method_input
     method=${method_input:-native}
 
-    # RTT for client
-    read -p "客户端 RTT (0rtt/1rtt, 默认: 0rtt): " rtt_input
+    read -p "RTT (0rtt/1rtt, 默认: 0rtt): " rtt_input
     rtt=${rtt_input:-0rtt}
 
-    # 服务端 time 根据 RTT
+    # 根据 RTT 设置服务端 time
     if [ "$rtt" = "0rtt" ]; then
         time_server="600s"
     else
         time_server="0s"
     fi
-
-    # Padding (可选)
-    read -p "Padding 参数 (默认: 100-111-1111.75-0-111.50-0-3333): " padding_input
-    padding=${padding_input:-100-111-1111.75-0-111.50-0-3333}
 
     # 生成 x25519 密钥
     log "生成 X25519 密钥..."
@@ -310,13 +304,13 @@ function generate_config() {
     fi
 
     # 构建服务端 decryption
-    decryption="${kex}.${method}.${time_server}.${padding}.${private}"
+    decryption="${kex}.${method}.${time_server}.${private}"
     if [ "$use_mlkem" = true ]; then
         decryption="${decryption}.${seed}"
     fi
 
     # 构建客户端 encryption
-    encryption="${kex}.${method}.${rtt}.${padding}.${password}"
+    encryption="${kex}.${method}.${rtt}.${password}"
     if [ "$use_mlkem" = true ]; then
         encryption="${encryption}.${client_param}"
     fi
