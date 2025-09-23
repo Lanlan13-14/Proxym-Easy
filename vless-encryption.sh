@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 1.3
+# 版本: 1.4
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -21,7 +21,7 @@ WARN="${YELLOW}⚠️${NC}"
 CONFIG="/usr/local/etc/xray/config.json"
 VLESS_INFO="/etc/proxym/vless.info"
 SCRIPT_PATH="/usr/local/bin/proxym-easy"
-UPDATE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/vless-encryption.sh"  # 更新此为您的托管脚本 URL
+UPDATE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/vless-encryption.sh"  # 更新 URL
 CRON_FILE="/tmp/proxym_cron.tmp"
 
 # 国家代码到国旗的完整映射（基于 ISO 3166-1 alpha-2）
@@ -163,39 +163,46 @@ function install_dependencies() {
 function install_xray() {
     if command -v xray &> /dev/null; then
         log "Xray 已安装。"
-        return
-    fi
-    install_dependencies  # 安装依赖
-    log "安装 Xray..."
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
-    if [ $? -eq 0 ]; then
-        log "Xray 安装成功。"
     else
-        error "Xray 安装失败。"
+        install_dependencies  # 安装依赖
+        log "安装 Xray..."
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
+        if [ $? -eq 0 ]; then
+            log "Xray 安装成功。"
+        else
+            error "Xray 安装失败。"
+        fi
     fi
+    read -p "按 Enter 返回菜单..."
 }
 
 function start_xray() {
     sudo systemctl start xray
     log "Xray 已启动。"
+    read -p "按 Enter 返回菜单..."
 }
 
 function stop_xray() {
     sudo systemctl stop xray
     log "Xray 已停止。"
+    read -p "按 Enter 返回菜单..."
 }
 
 function restart_xray() {
     sudo systemctl restart xray
     log "Xray 已重启。"
+    read -p "按 Enter 返回菜单..."
 }
 
 function status_xray() {
     sudo systemctl status xray --no-pager
+    read -p "按 Enter 返回菜单..."
 }
 
 function view_logs() {
     sudo journalctl -u xray -f --no-pager
+    # 对于跟随日志，按 Ctrl+C 退出后返回
+    read -p "按 Enter 返回菜单..."
 }
 
 function generate_config() {
@@ -328,6 +335,7 @@ EOF
     else
         error "配置测试失败！"
     fi
+    read -p "按 Enter 返回菜单..."
 }
 
 function print_uri() {
@@ -339,6 +347,7 @@ function print_uri() {
     uri="vless://${UUID}@${IP}:${PORT}?type=tcp&encryption=${ENCRYPTION}&security=none#${TAG}"
     echo -e "${GREEN}$uri${NC}"
     echo -e "${YELLOW}复制此 URI 用于客户端。${NC}"
+    read -p "按 Enter 返回菜单..."
 }
 
 function set_cron() {
@@ -349,11 +358,13 @@ function set_cron() {
     cron_cmd="$schedule /usr/bin/systemctl restart xray"
     (crontab -l 2>/dev/null; echo "$cron_cmd") | crontab -
     log "Cron 已设置: $cron_cmd"
+    read -p "按 Enter 返回菜单..."
 }
 
 function delete_cron() {
     crontab -l | grep -v "systemctl restart xray" | crontab -
     log "Xray 重启 Cron 已删除。"
+    read -p "按 Enter 返回菜单..."
 }
 
 function uninstall() {
@@ -365,47 +376,44 @@ function uninstall() {
         sudo rm -rf /etc/proxym
         log "已卸载。"
     fi
+    read -p "按 Enter 返回菜单..."
 }
 
 function show_menu() {
     clear
     echo -e "${BLUE}🚀 proxym-easy - VLESS 加密管理器${NC}"
     echo -e "================================"
-    PS3="${YELLOW}选择选项: ${NC}"
-    options=(
-        "🔧 安装 Xray"
-        "⚙️ 生成新配置"
-        "▶️ 启动 Xray"
-        "⏹️ 停止 Xray"
-        "🔄 重启 Xray"
-        "📊 查看状态"
-        "📝 查看日志"
-        "⏰ 设置 Cron 重启"
-        "🗑️ 删除 Cron"
-        "🖨️ 打印 VLESS URI"
-        "🔄 更新脚本"
-        "🗑️ 卸载"
-        "❌ 退出"
-    )
-    select opt in "${options[@]}"; do
-        case $REPLY in
-            1) install_xray ;;
-            2) generate_config ;;
-            3) start_xray ;;
-            4) stop_xray ;;
-            5) restart_xray ;;
-            6) status_xray; read -p "按 Enter 继续..." ;;
-            7) view_logs; read -p "按 Enter 继续..." ;;
-            8) set_cron ;;
-            9) delete_cron ;;
-            10) print_uri; read -p "按 Enter 继续..." ;;
-            11) update_script; read -p "按 Enter 继续..." ;;
-            12) uninstall ;;
-            13) break ;;
-            *) echo "无效选项。" ;;
-        esac
-        break  # 单次操作后退出，或移除以循环菜单
-    done
+    echo "1) 🔧 安装 Xray"
+    echo "2) ⚙️ 生成新配置"
+    echo "3) ▶️ 启动 Xray"
+    echo "4) ⏹️ 停止 Xray"
+    echo "5) 🔄 重启 Xray"
+    echo "6) 📊 查看状态"
+    echo "7) 📝 查看日志"
+    echo "8) ⏰ 设置 Cron 重启"
+    echo "9) 🗑️ 删除 Cron"
+    echo "10) 🖨️ 打印 VLESS URI"
+    echo "11) 🔄 更新脚本"
+    echo "12) 🗑️ 卸载"
+    echo "13) ❌ 退出"
+    echo -e "${YELLOW}请选择选项 (1-13): ${NC}"
+    read -p "" choice
+    case $choice in
+        1) install_xray ;;
+        2) generate_config ;;
+        3) start_xray ;;
+        4) stop_xray ;;
+        5) restart_xray ;;
+        6) status_xray ;;
+        7) view_logs ;;
+        8) set_cron ;;
+        9) delete_cron ;;
+        10) print_uri ;;
+        11) update_script; read -p "按 Enter 返回菜单..." ;;
+        12) uninstall ;;
+        13) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
+        *) echo -e "${RED}无效选项，请重试。${NC}"; sleep 1 ;;
+    esac
 }
 
 # 主程序
@@ -415,6 +423,4 @@ fi
 
 while true; do
     show_menu
-    echo -e "${YELLOW}下次使用: sudo proxym-easy${NC}"
-    break  # 单次运行，移除以持久菜单
 done
