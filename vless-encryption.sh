@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 1.9
+# 版本: 2.0
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -92,13 +92,13 @@ function error() {
 
 function get_location_from_ip() {
     local ip=$1
-    local location_info=$(curl -s "https://ipinfo.io/$ip/json" 2>/dev/null)
+    local location_info=$(curl -s "http://ip-api.com/json/$ip" 2>/dev/null)
     if [ -z "$location_info" ]; then
         echo "Unknown"
         return
     fi
 
-    local country=$(echo "$location_info" | grep -o '"country":"[^"]*"' | sed 's/.*"country":"\([^"]*\)".*/\1/')
+    local country=$(echo "$location_info" | grep -o '"countryCode":"[^"]*"' | sed 's/.*"countryCode":"\([^"]*\)".*/\1/')
     local city=$(echo "$location_info" | grep -o '"city":"[^"]*"' | sed 's/.*"city":"\([^"]*\)".*/\1/')
 
     if [ -z "$country" ] || [ -z "$city" ]; then
@@ -258,12 +258,14 @@ function generate_config() {
     port=${port_input:-443}
 
     # KEX 选择 (二选一)
-    read -p "KEX (x25519/mlkem768x25519plus, 默认: mlkem768x25519plus): " kex_input
-    kex_input=${kex_input:-mlkem768x25519plus}
-    if [ "$kex_input" = "x25519" ]; then
+    read -p "KEX (x25519/mlkem768x25519plus, 默认: mlkem768x25519plus): " kex_choice
+    kex_choice=${kex_choice:-mlkem768x25519plus}
+    if [ "$kex_choice" = "x25519" ]; then
         kex="x25519"
+        use_mlkem=false
     else
         kex="mlkem768x25519plus"
+        use_mlkem=true
     fi
 
     read -p "方法 (native/xorpub/random, 默认: native): " method_input
@@ -272,38 +274,48 @@ function generate_config() {
     read -p "RTT (0rtt/1rtt, 默认: 0rtt): " rtt_input
     rtt=${rtt_input:-0rtt}
 
-    read -p "时间 (0s/300-600s/600s, 默认: 0s): " time_input
-    time=${time_input:-0s}
-
-    # 根据 RTT 调整时间（服务端更新机制：1rtt 为 0s）
-    if [ "$rtt" = "1rtt" ]; then
-        time="0s"
-        log "对于 1-RTT，票据时间设置为 0s。"
+    # 根据 RTT 设置服务端 time
+    if [ "$rtt" = "0rtt" ]; then
+        time_server="600s"
+    else
+        time_server="0s"
     fi
 
-    # 生成密钥
-    log "生成密钥..."
+    # 生成 x25519 密钥
+    log "生成 X25519 密钥..."
     x25519_output=$(xray x25519)
     private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+    password=$(echo "$x25519_output" | grep "Password:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
 
-    if [ -z "$private" ]; then
+    if [ -z "$private" ] || [ -z "$password" ]; then
         error "X25519 密钥生成失败。请确保 Xray 已安装。"
     fi
 
+    # 生成 MLKEM 如果选择
     seed=""
-    if [ "$kex" = "mlkem768x25519plus" ]; then
+    client_param=""
+    if [ "$use_mlkem" = true ]; then
+        log "生成 ML-KEM-768 密钥..."
         mlkem_output=$(xray mlkem768 2>/dev/null)
         seed=$(echo "$mlkem_output" | grep "Seed:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
-        if [ -z "$seed" ]; then
+        client_param=$(echo "$mlkem_output" | grep "Client:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+        if [ -z "$seed" ] || [ -z "$client_param" ]; then
             echo -e "${WARN} ML-KEM-768 不支持，回退到 X25519。建议更新 Xray 到 v25.5.16+。${NC}"
             kex="x25519"
+            use_mlkem=false
         fi
     fi
 
-    if [ "$kex" = "x25519" ]; then
-        encryption="${kex}.${method}.${rtt}.${time}.${private}"
-    else
-        encryption="${kex}.${method}.${rtt}.${time}.${private}.${seed}"
+    # 构建服务端 decryption
+    decryption="${kex}.${method}.${time_server}.${private}"
+    if [ "$use_mlkem" = true ]; then
+        decryption="${decryption}.${seed}"
+    fi
+
+    # 构建客户端 encryption
+    encryption="${kex}.${method}.${rtt}.${password}"
+    if [ "$use_mlkem" = true ]; then
+        encryption="${kex}.${method}.${rtt}.${client_param}"
     fi
 
     # IP
@@ -337,6 +349,7 @@ function generate_config() {
     cat > "$VLESS_INFO" << EOF
 UUID=$uuid
 PORT=$port
+DECRYPTION=$decryption
 ENCRYPTION=$encryption
 IP=$ip
 TAG=$tag
@@ -366,7 +379,7 @@ EOF
             "id": "$uuid"
           }
         ],
-        "decryption": "none"
+        "decryption": "$decryption"
       },
       "streamSettings": {
         "network": "tcp"
