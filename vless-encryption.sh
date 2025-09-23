@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 2.0
+# 版本: 2.1
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -92,8 +92,8 @@ function error() {
 
 function get_location_from_ip() {
     local ip=$1
-    local location_info=$(curl -s "http://ip-api.com/json/$ip" 2>/dev/null)
-    if [ -z "$location_info" ]; then
+    local location_info=$(curl -s "http://ip-api.com/json/$ip?fields=status,message,countryCode,city" 2>/dev/null)
+    if echo "$location_info" | grep -q '"status":"fail"'; then
         echo "Unknown"
         return
     fi
@@ -127,15 +127,12 @@ function update_script() {
 
     # 检查语法
     if bash -n "${SCRIPT_PATH}.new" 2>/dev/null; then
-        # 创建 updater.sh
-        cat > updater.sh << EOF
-mv "${SCRIPT_PATH}.new" "$SCRIPT_PATH"
-chmod +x "$SCRIPT_PATH"
-rm -f "${SCRIPT_PATH}.bak"
-exec "$SCRIPT_PATH"
-EOF
-        chmod +x updater.sh
-        exec updater.sh
+        mv "${SCRIPT_PATH}.new" "$SCRIPT_PATH"
+        chmod +x "$SCRIPT_PATH"
+        log "更新成功！"
+        rm -f "${SCRIPT_PATH}.bak"
+        # 直接 exec 新脚本
+        exec bash "$SCRIPT_PATH"
     else
         rm -f "${SCRIPT_PATH}.new"
         mv "${SCRIPT_PATH}.bak" "$SCRIPT_PATH"
@@ -315,7 +312,7 @@ function generate_config() {
     # 构建客户端 encryption
     encryption="${kex}.${method}.${rtt}.${password}"
     if [ "$use_mlkem" = true ]; then
-        encryption="${kex}.${method}.${rtt}.${client_param}"
+        encryption="${encryption}.${client_param}"
     fi
 
     # IP
@@ -345,7 +342,7 @@ function generate_config() {
     read -p "查询策略 (UseIPv4/UseIPv6/UseIP/AsIs, 默认: UseIPv4): " strategy_input
     strategy=${strategy_input:-UseIPv4}
 
-    # 保存 URI 信息
+    # 保存 URI 信息 - 确保格式正确，无多余空格
     cat > "$VLESS_INFO" << EOF
 UUID=$uuid
 PORT=$port
@@ -411,10 +408,20 @@ function print_uri() {
         error "未找到配置信息。请先生成配置。"
     fi
 
-    source "$VLESS_INFO"
+    # 安全 source，确保变量正确加载
+    UUID=""
+    PORT=""
+    ENCRYPTION=""
+    IP=""
+    TAG=""
+    source "$VLESS_INFO" 2>/dev/null || error "加载配置信息失败，请重新生成配置。"
+
     uri="vless://${UUID}@${IP}:${PORT}?type=tcp&encryption=${ENCRYPTION}&security=none#${TAG}"
-    echo -e "${GREEN}$uri${NC}"
-    echo -e "${YELLOW}复制此 URI 用于客户端。${NC}"
+    echo -e "${GREEN}VLESS URI:${NC}"
+    echo -e "${YELLOW}============================${NC}"
+    echo "$uri"
+    echo -e "${YELLOW}============================${NC}"
+    echo -e "${YELLOW}复制以上 URI 用于客户端配置。${NC}"
     read -p "按 Enter 返回菜单..."
 }
 
