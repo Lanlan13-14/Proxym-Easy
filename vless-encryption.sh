@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 1.8
+# 版本: 1.9
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -136,6 +136,7 @@ function update_script() {
         mv "${SCRIPT_PATH}.bak" "$SCRIPT_PATH"
         error "更新语法错误！已回滚到备份。"
     fi
+    read -p "按 Enter 返回菜单..."
 }
 
 function install_dependencies() {
@@ -212,6 +213,27 @@ function view_logs() {
     read -p "按 Enter 返回菜单..."
 }
 
+function edit_config() {
+    if [ ! -f "$CONFIG" ]; then
+        error "配置文件不存在。请先生成配置。"
+    fi
+    sudo vim "$CONFIG"
+    log "编辑完成。"
+    read -p "按 Enter 返回菜单..."
+}
+
+function test_config() {
+    if [ ! -f "$CONFIG" ]; then
+        error "配置文件不存在。请先生成配置。"
+    fi
+    if xray -test -config "$CONFIG" &> /dev/null; then
+        log "配置测试通过！"
+    else
+        error "配置测试失败！请检查配置文件。"
+    fi
+    read -p "按 Enter 返回菜单..."
+}
+
 function generate_config() {
     install_xray 0  # 确保已安装，但不暂停
 
@@ -231,9 +253,14 @@ function generate_config() {
     read -p "端口 (默认: 443): " port_input
     port=${port_input:-443}
 
-    # 加密选项
-    read -p "KEX (默认: mlkem768x25519plus): " kex_input
+    # KEX 选择 (二选一)
+    read -p "KEX (x25519/mlkem768x25519plus, 默认: mlkem768x25519plus): " kex_input
     kex_input=${kex_input:-mlkem768x25519plus}
+    if [ "$kex_input" = "x25519" ]; then
+        kex="x25519"
+    else
+        kex="mlkem768x25519plus"
+    fi
 
     read -p "方法 (native/xorpub/random, 默认: native): " method_input
     method=${method_input:-native}
@@ -244,7 +271,7 @@ function generate_config() {
     read -p "时间 (0s/300-600s/600s, 默认: 0s): " time_input
     time=${time_input:-0s}
 
-    # 根据 RTT 调整时间（服务端更新机制）
+    # 根据 RTT 调整时间（服务端更新机制：1rtt 为 0s）
     if [ "$rtt" = "1rtt" ]; then
         time="0s"
         log "对于 1-RTT，票据时间设置为 0s。"
@@ -253,29 +280,26 @@ function generate_config() {
     # 生成密钥
     log "生成密钥..."
     x25519_output=$(xray x25519)
-    private=$(echo "$x25519_output" | grep "Private key:" | cut -d ':' -f2- | xargs | sed 's/ //g')
+    private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
 
     if [ -z "$private" ]; then
         error "X25519 密钥生成失败。请确保 Xray 已安装。"
     fi
 
-    # 尝试生成 ML-KEM-768 seed
-    mlkem_output=$(xray mlkem768 2>/dev/null)
-    seed=$(echo "$mlkem_output" | grep -i "seed:" | cut -d ':' -f2- | xargs | sed 's/ //g')
-
-    if [ -n "$seed" ]; then
-        # 支持 ML-KEM
-        if [ "$kex_input" = "mlkem768x25519plus" ]; then
-            kex="mlkem768x25519plus"
-            encryption="$kex.$method.$rtt.$time.$private.$seed"
-        else
-            encryption="$kex_input.$method.$rtt.$time.$private.$seed"
+    seed=""
+    if [ "$kex" = "mlkem768x25519plus" ]; then
+        mlkem_output=$(xray mlkem768 2>/dev/null)
+        seed=$(echo "$mlkem_output" | grep "Seed:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+        if [ -z "$seed" ]; then
+            echo -e "${WARN} ML-KEM-768 不支持，回退到 X25519。建议更新 Xray 到 v25.5.16+。${NC}"
+            kex="x25519"
         fi
+    fi
+
+    if [ "$kex" = "x25519" ]; then
+        encryption="${kex}.${method}.${rtt}.${time}.${private}"
     else
-        # 回退到 X25519
-        echo -e "${WARN} ML-KEM-768 不支持，回退到 X25519。建议更新 Xray 到 v25.5.16+。${NC}"
-        kex="x25519"
-        encryption="$kex.$method.$rtt.$time.$private"
+        encryption="${kex}.${method}.${rtt}.${time}.${private}.${seed}"
     fi
 
     # IP
@@ -422,8 +446,10 @@ function show_menu() {
     echo "[10] 🖨️ 打印 VLESS URI"
     echo "[11] 🔄 更新脚本"
     echo "[12] 🗑️ 卸载"
-    echo "[13] ❌ 退出"
-    echo -e "${YELLOW}请选择选项 (1-13): ${NC}"
+    echo "[13] 📝 编辑配置"
+    echo "[14] 🧪 测试配置"
+    echo "[15] ❌ 退出"
+    echo -e "${YELLOW}请选择选项 (1-15): ${NC}"
     read choice
     case $choice in
         1) install_xray 1 ;;
@@ -436,9 +462,11 @@ function show_menu() {
         8) set_cron ;;
         9) delete_cron ;;
         10) print_uri ;;
-        11) update_script; read -p "按 Enter 返回菜单..." ;;
+        11) update_script ;;
         12) uninstall ;;
-        13) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
+        13) edit_config ;;
+        14) test_config ;;
+        15) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
         *) echo -e "${RED}无效选项，请重试。${NC}"; sleep 1 ;;
     esac
 }
