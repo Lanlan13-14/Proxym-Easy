@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 2.5
+# 版本: 2.6
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -73,7 +73,7 @@ declare -A FLAGS=(
     [TL]="🇹🇱" [TM]="🇹🇲" [TN]="🇹🇳" [TO]="🇹🇴" [TR]="🇹🇷"
     [TT]="🇹🇹" [TV]="🇹🇻" [TW]="🇹🇼" [TZ]="🇹🇿" [UA]="🇺🇦"
     [UG]="🇺🇬" [UM]="🇺🇲" [US]="🇺🇸" [UY]="🇺🇾" [UZ]="🇺🇿"
-    [VA]="🇻🇦" [VC]="🇻🇨" [VE]="🇻🇪" [VG]="🇻🇬" [VI]="🇻🇮"
+    [VA]="🇻🇦" [VC]="🇻🇨" [VE]="🇻🇪" [VG]="🇬🇬" [VI]="🇻🇮"
     [VN]="🇻🇳" [VU]="🇻🇺" [WF]="🇼🇫" [WS]="🇼🇸" [YE]="🇾🇪"
     [YT]="🇾🇹" [ZA]="🇿🇦" [ZM]="🇿🇲" [ZW]="🇿🇼"
 )
@@ -92,7 +92,8 @@ function error() {
 
 function get_location_from_ip() {
     local ip=$1
-    local location_info=$(curl -s "http://ip-api.com/json/$ip?fields=status,message,countryCode,city" 2>/dev/null)
+    # 添加超时机制：10 秒超时，避免 curl 卡住
+    local location_info=$(curl -s --max-time 10 "http://ip-api.com/json/$ip?fields=status,message,countryCode,city" 2>/dev/null)
     if echo "$location_info" | grep -q '"status":"fail"'; then
         echo "Unknown"
         return
