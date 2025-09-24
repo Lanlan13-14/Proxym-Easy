@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 2.6
+# proxym-easy - Xray VLESS Encryption一键脚本
+# 版本: 2.7
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -352,8 +352,8 @@ function generate_config() {
     strategy=${strategy_input:-UseIPv4}
 
     # 出站域名策略
-    read -p "出站域名策略 (UseIPv4/UseIPv6/AsIs/ForceIPv4, 默认: UseIPv4): " domain_strategy_input
-    domain_strategy=${domain_strategy_input:-UseIPv4}
+    read -p "出站域名策略 (UseIPv4v6/UseIPv6v4/ForceIPv4/ForceIPv6, 默认: UseIPv4v6): " domain_strategy_input
+    domain_strategy=${domain_strategy_input:-UseIPv4v6}
 
     # URI 构建 - 修改：IPv6 加 []
     host="${ip}"
@@ -408,8 +408,10 @@ EOF
   "outbounds": [
     {
       "protocol": "freedom",
-      "settings": {},
-      "domainStrategy": "$domain_strategy"
+      "settings": {
+        "domainStrategy": "$domain_strategy"
+      },
+      "tag": "direct"
     }
   ]
 }
