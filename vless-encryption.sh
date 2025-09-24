@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# proxym-easy - Xray VLESS 加密管理器一键脚本
-# 版本: 2.7
+# proxym-easy - Xray VLESS Encryption一键脚本
+# 版本: 2.8
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
