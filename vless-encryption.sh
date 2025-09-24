@@ -438,18 +438,55 @@ function print_uri() {
 }
 
 function set_cron() {
-    read -p "Cron 调度 (例如 '0 2 * * *' 表示每天凌晨 2 点): " schedule
-    if [ -z "$schedule" ]; then
-        error "无效调度。"
-    fi
-    cron_cmd="$schedule /usr/bin/systemctl restart xray"
-    (crontab -l 2>/dev/null; echo "$cron_cmd") | crontab -
+    echo "请选择定时重启方式："
+    echo "1. 运行 X 小时后重启 ⏳"
+    echo "2. 每天某时间重启 🌞"
+    echo "3. 每周某天某时间重启 📅"
+    echo "4. 每月某天某时间重启 📆"
+    read -p "请输入选项 (1-4): " choice
+
+    case "$choice" in
+        1)
+            read -p "请输入间隔小时数 (例如 6 表示每 6 小时重启一次): " hours
+            if [[ "$hours" =~ ^[0-9]+$ ]] && [ "$hours" -gt 0 ]; then
+                cron_cmd="0 */$hours * * * /usr/bin/systemctl restart xray"
+            else
+                error "无效的小时数。"
+                return
+            fi
+            ;;
+        2)
+            read -p "请输入每天的小时 (0-23): " h
+            read -p "请输入每天的分钟 (0-59): " m
+            cron_cmd="$m $h * * * /usr/bin/systemctl restart xray"
+            ;;
+        3)
+            echo "周几 (0=周日,1=周一,...,6=周六)"
+            read -p "请输入周几: " w
+            read -p "请输入小时 (0-23): " h
+            read -p "请输入分钟 (0-59): " m
+            cron_cmd="$m $h * * $w /usr/bin/systemctl restart xray"
+            ;;
+        4)
+            read -p "请输入每月的日期 (1-31): " d
+            read -p "请输入小时 (0-23): " h
+            read -p "请输入分钟 (0-59): " m
+            cron_cmd="$m $h $d * * /usr/bin/systemctl restart xray"
+            ;;
+        *)
+            error "无效选择。"
+            return
+            ;;
+    esac
+
+    # 设置 cron
+    (crontab -l 2>/dev/null | grep -v "systemctl restart xray"; echo "$cron_cmd") | crontab -
     log "Cron 已设置: $cron_cmd"
     read -p "按 Enter 返回菜单..."
 }
 
 function delete_cron() {
-    crontab -l | grep -v "systemctl restart xray" | crontab -
+    (crontab -l 2>/dev/null | grep -v "systemctl restart xray") | crontab -
     log "Xray 重启 Cron 已删除。"
     read -p "按 Enter 返回菜单..."
 }
