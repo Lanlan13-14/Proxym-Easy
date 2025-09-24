@@ -251,8 +251,8 @@ function generate_config() {
     log "UUID: $uuid"
 
     # 端口
-    read -p "端口 (默认: 443): " port_input
-    port=${port_input:-443}
+    read -p "端口 (默认: 8443): " port_input
+    port=${port_input:-8443}
 
     # KEX 选择 (二选一)
     read -p "KEX (x25519/mlkem768x25519plus, 默认: mlkem768x25519plus): " kex_choice
@@ -315,12 +315,20 @@ function generate_config() {
         encryption="${encryption}.${client_param}"
     fi
 
-    # IP
+    # IP - 修改：优先 IPv4，fallback IPv6
     read -p "服务器 IP (默认: 自动检测): " ip_input
     if [ -z "$ip_input" ]; then
-        ip=$(curl -s ifconfig.me)
-        if [ -z "$ip" ]; then
-            error "IP 检测失败。请手动输入。"
+        # 优先尝试 IPv4
+        ip=$(curl -s -4 ifconfig.me 2>/dev/null)
+        if [ -z "$ip" ] || [ "$ip" = "0.0.0.0" ]; then
+            log "IPv4 检测失败，尝试 IPv6..."
+            ip=$(curl -s -6 ifconfig.me 2>/dev/null)
+            if [ -z "$ip" ]; then
+                error "IP 检测失败。请手动输入。"
+            fi
+            log "使用 IPv6: $ip"
+        else
+            log "使用 IPv4: $ip"
         fi
     else
         ip="$ip_input"
@@ -342,8 +350,13 @@ function generate_config() {
     read -p "查询策略 (UseIPv4/UseIPv6/UseIP/AsIs, 默认: UseIPv4): " strategy_input
     strategy=${strategy_input:-UseIPv4}
 
-    # 计算完整 URI，包含 packetEncoding=xudp
-    uri="vless://${uuid}@${ip}:${port}?type=tcp&encryption=${encryption}&packetEncoding=xudp&security=none#${tag}"
+    # URI 构建 - 修改：IPv6 加 []
+    host="${ip}"
+    if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then  # 检测 IPv6 (含: 且无 [])，包围
+        host="[${ip}]"
+        log "IPv6 检测到，已在 URI 中添加 [] 包围。"
+    fi
+    uri="vless://${uuid}@${host}:${port}?type=tcp&encryption=${encryption}&packetEncoding=xudp&security=none#${tag}"
 
     # 保存所有信息，包括URI
     cat > "$VLESS_INFO" << EOF
@@ -404,40 +417,6 @@ EOF
     else
         error "配置测试失败！"
     fi
-    read -p "按 Enter 返回菜单..."
-}
-
-function print_uri() {
-    if [ ! -f "$VLESS_INFO" ]; then
-        error "未找到配置信息。请先生成配置。"
-    fi
-
-    # 安全 source，确保变量正确加载
-    URI=""
-    source "$VLESS_INFO" 2>/dev/null || error "加载配置信息失败，请重新生成配置。"
-
-    echo -e "${GREEN}VLESS URI:${NC}"
-    echo -e "${YELLOW}============================${NC}"
-    echo "$URI"
-    echo -e "${YELLOW}============================${NC}"
-    echo -e "${YELLOW}复制以上 URI 用于客户端配置。${NC}"
-    read -p "按 Enter 返回菜单..."
-}
-
-function set_cron() {
-    read -p "Cron 调度 (例如 '0 2 * * *' 表示每天凌晨 2 点): " schedule
-    if [ -z "$schedule" ]; then
-        error "无效调度。"
-    fi
-    cron_cmd="$schedule /usr/bin/systemctl restart xray"
-    (crontab -l 2>/dev/null; echo "$cron_cmd") | crontab -
-    log "Cron 已设置: $cron_cmd"
-    read -p "按 Enter 返回菜单..."
-}
-
-function delete_cron() {
-    crontab -l | grep -v "systemctl restart xray" | crontab -
-    log "Xray 重启 Cron 已删除。"
     read -p "按 Enter 返回菜单..."
 }
 
