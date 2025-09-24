@@ -420,6 +420,40 @@ EOF
     read -p "按 Enter 返回菜单..."
 }
 
+function print_uri() {
+    if [ ! -f "$VLESS_INFO" ]; then
+        error "未找到配置信息。请先生成配置。"
+    fi
+
+    # 安全 source，确保变量正确加载
+    URI=""
+    source "$VLESS_INFO" 2>/dev/null || error "加载配置信息失败，请重新生成配置。"
+
+    echo -e "${GREEN}VLESS URI:${NC}"
+    echo -e "${YELLOW}============================${NC}"
+    echo "$URI"
+    echo -e "${YELLOW}============================${NC}"
+    echo -e "${YELLOW}复制以上 URI 用于客户端配置。${NC}"
+    read -p "按 Enter 返回菜单..."
+}
+
+function set_cron() {
+    read -p "Cron 调度 (例如 '0 2 * * *' 表示每天凌晨 2 点): " schedule
+    if [ -z "$schedule" ]; then
+        error "无效调度。"
+    fi
+    cron_cmd="$schedule /usr/bin/systemctl restart xray"
+    (crontab -l 2>/dev/null; echo "$cron_cmd") | crontab -
+    log "Cron 已设置: $cron_cmd"
+    read -p "按 Enter 返回菜单..."
+}
+
+function delete_cron() {
+    crontab -l | grep -v "systemctl restart xray" | crontab -
+    log "Xray 重启 Cron 已删除。"
+    read -p "按 Enter 返回菜单..."
+}
+
 function uninstall() {
     echo -e "${YELLOW}卸载选项:${NC}"
     echo "[1] 只卸载脚本和配置 (保留 Xray)"
