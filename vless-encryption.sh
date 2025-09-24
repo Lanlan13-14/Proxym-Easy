@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# proxym-easy - Xray VLESS Encryption一键脚本
+# proxym-easy - Xray VLESS 加密管理器一键脚本
 # 版本: 2.7
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
@@ -78,6 +78,16 @@ declare -A FLAGS=(
     [YT]="🇾🇹" [ZA]="🇿🇦" [ZM]="🇿🇲" [ZW]="🇿🇼"
 )
 
+# URL 编码函数（使用 Python3 进行 URL 编码，支持 Unicode 如 emoji）
+url_encode() {
+    if command -v python3 &> /dev/null; then
+        python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read().strip(), safe=''), end='')" <<< "$1"
+    else
+        echo -e "${WARN} Python3 未找到，无法 URL 编码标签。使用原始标签。${NC}"
+        echo "$1"
+    fi
+}
+
 # 确保 proxym 目录存在
 sudo mkdir -p /etc/proxym
 
@@ -146,20 +156,20 @@ function install_dependencies() {
     if command -v apt &> /dev/null; then
         # Debian/Ubuntu
         sudo apt update
-        sudo apt install -y curl unzip ca-certificates wget gnupg lsb-release
+        sudo apt install -y curl unzip ca-certificates wget gnupg lsb-release python3
         log "Debian/Ubuntu 依赖安装完成。"
     elif command -v yum &> /dev/null; then
         # CentOS/RHEL
         sudo yum update -y
-        sudo yum install -y curl unzip ca-certificates wget gnupg
+        sudo yum install -y curl unzip ca-certificates wget gnupg python3
         log "CentOS/RHEL 依赖安装完成。"
     elif command -v dnf &> /dev/null; then
         # Fedora
         sudo dnf update -y
-        sudo dnf install -y curl unzip ca-certificates wget gnupg
+        sudo dnf install -y curl unzip ca-certificates wget gnupg python3
         log "Fedora 依赖安装完成。"
     else
-        echo -e "${WARN} 未检测到包管理器，请手动安装 curl、unzip、ca-certificates。${NC}"
+        echo -e "${WARN} 未检测到包管理器，请手动安装 curl、unzip、ca-certificates、python3。${NC}"
     fi
 }
 
@@ -361,7 +371,10 @@ function generate_config() {
         host="[${ip}]"
         log "IPv6 检测到，已在 URI 中添加 [] 包围。"
     fi
-    uri="vless://${uuid}@${host}:${port}?type=tcp&encryption=${encryption}&packetEncoding=xudp&security=none#${tag}"
+
+    # URL 编码标签
+    encoded_tag=$(url_encode "$tag")
+    uri="vless://${uuid}@${host}:${port}?type=tcp&encryption=${encryption}&packetEncoding=xudp&security=none#${encoded_tag}"
 
     # 保存所有信息，包括URI
     cat > "$VLESS_INFO" << EOF
