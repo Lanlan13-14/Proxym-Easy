@@ -351,6 +351,10 @@ function generate_config() {
     read -p "查询策略 (UseIPv4/UseIPv6/UseIP/AsIs, 默认: UseIPv4): " strategy_input
     strategy=${strategy_input:-UseIPv4}
 
+    # 出站域名策略
+    read -p "出站域名策略 (UseIPv4/UseIPv6/AsIs/ForceIPv4, 默认: UseIPv4): " domain_strategy_input
+    domain_strategy=${domain_strategy_input:-UseIPv4}
+
     # URI 构建 - 修改：IPv6 加 []
     host="${ip}"
     if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then  # 检测 IPv6 (含: 且无 [])，包围
@@ -403,7 +407,9 @@ EOF
   ],
   "outbounds": [
     {
-      "protocol": "freedom"
+      "protocol": "freedom",
+      "settings": {},
+      "domainStrategy": "$domain_strategy"
     }
   ]
 }
