@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 2.9.5
+# 版本: 2.9.6
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -479,7 +479,7 @@ function generate_config() {
     # 传输层选择
     echo "请选择传输层:"
     echo "[1] TCP (默认)"
-    echo "[2] HTTP/2 + TLS"
+    echo "[2] WebSocket + TLS"
     read -p "请输入选项 (1-2, 默认: 1): " transport_choice_input
     if [ -z "$transport_choice_input" ]; then
         transport_choice_input="1"
@@ -495,8 +495,8 @@ function generate_config() {
             ;;
         2)
             use_tls=true
-            network="h2"
-            type_uri="h2"
+            network="ws"
+            type_uri="ws"
             security_uri="tls"
             read -p "输入域名: " domain
             if [ -z "$domain" ]; then
@@ -539,14 +539,14 @@ function generate_config() {
                 read -p "输入私钥路径 (privkey.key): " key_path
             fi
 
-            read -p "HTTP/2 Path (默认随机生成): " h2_path_input
-            if [ -z "$h2_path_input" ]; then
-                h2_path="/$(generate_random_path)"
+            read -p "WebSocket Path (默认随机生成): " ws_path_input
+            if [ -z "$ws_path_input" ]; then
+                ws_path="/$(generate_random_path)"
             else
-                h2_path="/$h2_path_input"
+                ws_path="/$ws_path_input"
             fi
-            log "Path: $h2_path"
-            path="$h2_path"
+            log "Path: $ws_path"
+            path="$ws_path"
             host_uri="$domain"
             ;;
         *)
@@ -573,6 +573,9 @@ function generate_config() {
     uri_params="type=${type_uri}&encryption=${encryption}&packetEncoding=xudp"
     if [ "$use_tls" = true ]; then
         uri_params="${uri_params}&security=${security_uri}&sni=${domain}"
+        if [ "$network" = "ws" ]; then
+            uri_params="${uri_params}&path=${path}"
+        fi
     else
         uri_params="${uri_params}&security=none"
     fi
@@ -618,15 +621,17 @@ EOF
             }
           ]
         }'
-        transport_settings='{
+        ws_settings='{
           "path": "'"$path"'",
-          "host": ["'"$domain"'"]
+          "headers": {
+            "Host": "'"$domain"'"
+          }
         }'
         stream_settings='{
           "network": "'"$network"'",
           "security": "tls",
           "tlsSettings": '"$tls_settings"',
-          "httpSettings": '"$transport_settings"'
+          "wsSettings": '"$ws_settings"'
         }'
     else
         stream_settings='{"network": "'"$network"'"}'
