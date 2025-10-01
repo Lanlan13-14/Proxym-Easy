@@ -156,20 +156,20 @@ function install_dependencies() {
     if command -v apt &> /dev/null; then
         # Debian/Ubuntu
         sudo apt update
-        sudo apt install -y curl unzip ca-certificates wget gnupg lsb-release python3
+        sudo apt install -y curl unzip ca-certificates wget gnupg lsb-release python3 cron
         log "Debian/Ubuntu 依赖安装完成。"
     elif command -v yum &> /dev/null; then
         # CentOS/RHEL
         sudo yum update -y
-        sudo yum install -y curl unzip ca-certificates wget gnupg python3
+        sudo yum install -y curl unzip ca-certificates wget gnupg python3 cronie
         log "CentOS/RHEL 依赖安装完成。"
     elif command -v dnf &> /dev/null; then
         # Fedora
         sudo dnf update -y
-        sudo dnf install -y curl unzip ca-certificates wget gnupg python3
+        sudo dnf install -y curl unzip ca-certificates wget gnupg python3 cronie
         log "Fedora 依赖安装完成。"
     else
-        echo -e "${WARN} 未检测到包管理器，请手动安装 curl、unzip、ca-certificates、python3。${NC}"
+        echo -e "${WARN} 未检测到包管理器，请手动安装 curl、unzip、ca-certificates、python3、cron。${NC}"
     fi
 }
 
@@ -265,22 +265,52 @@ function generate_config() {
     read -p "端口 (默认: 8443): " port_input
     port=${port_input:-8443}
 
-    # KEX 选择 (二选一)
-    read -p "KEX (x25519/mlkem768x25519plus, 默认: mlkem768x25519plus): " kex_choice
-    kex_choice=${kex_choice:-mlkem768x25519plus}
-    if [ "$kex_choice" = "x25519" ]; then
-        kex="x25519"
-        use_mlkem=false
-    else
-        kex="mlkem768x25519plus"
-        use_mlkem=true
+    # KEX 选择 (菜单)
+    echo "请选择 KEX:"
+    echo "[1] x25519"
+    echo "[2] mlkem768x25519plus (默认)"
+    read -p "请输入选项 (1-2, 默认: 2): " kex_choice_input
+    if [ -z "$kex_choice_input" ]; then
+        kex_choice_input="2"
     fi
+    case "$kex_choice_input" in
+        1) kex="x25519"; use_mlkem=false ;;
+        2) kex="mlkem768x25519plus"; use_mlkem=true ;;
+        *) kex="mlkem768x25519plus"; use_mlkem=true ;;
+    esac
+    log "KEX: $kex"
 
-    read -p "方法 (native/xorpub/random, 默认: native): " method_input
-    method=${method_input:-native}
+    # 方法选择 (菜单，默认 random)
+    echo "请选择方法:"
+    echo "[1] native"
+    echo "[2] xorpub"
+    echo "[3] random (默认)"
+    read -p "请输入选项 (1-3, 默认: 3): " method_choice_input
+    if [ -z "$method_choice_input" ]; then
+        method_choice_input="3"
+    fi
+    case "$method_choice_input" in
+        1) method="native" ;;
+        2) method="xorpub" ;;
+        3) method="random" ;;
+        *) method="random" ;;
+    esac
+    log "方法: $method"
 
-    read -p "RTT (0rtt/1rtt, 默认: 0rtt): " rtt_input
-    rtt=${rtt_input:-0rtt}
+    # RTT 选择 (菜单)
+    echo "请选择 RTT:"
+    echo "[1] 0rtt (默认)"
+    echo "[2] 1rtt"
+    read -p "请输入选项 (1-2, 默认: 1): " rtt_choice_input
+    if [ -z "$rtt_choice_input" ]; then
+        rtt_choice_input="1"
+    fi
+    case "$rtt_choice_input" in
+        1) rtt="0rtt" ;;
+        2) rtt="1rtt" ;;
+        *) rtt="0rtt" ;;
+    esac
+    log "RTT: $rtt"
 
     # 根据 RTT 设置服务端 time
     if [ "$rtt" = "0rtt" ]; then
@@ -358,12 +388,43 @@ function generate_config() {
     read -p "DNS 服务器 (默认: 8.8.8.8): " dns_server_input
     dns_server=${dns_server_input:-8.8.8.8}
 
-    read -p "查询策略 (UseIPv4/UseIPv6/UseIP/AsIs, 默认: UseIPv4): " strategy_input
-    strategy=${strategy_input:-UseIPv4}
+    # 查询策略选择 (菜单)
+    echo "请选择查询策略:"
+    echo "[1] UseIPv4 (默认)"
+    echo "[2] UseIPv6"
+    echo "[3] UseIP"
+    echo "[4] AsIs"
+    read -p "请输入选项 (1-4, 默认: 1): " strategy_choice_input
+    if [ -z "$strategy_choice_input" ]; then
+        strategy_choice_input="1"
+    fi
+    case "$strategy_choice_input" in
+        1) strategy="UseIPv4" ;;
+        2) strategy="UseIPv6" ;;
+        3) strategy="UseIP" ;;
+        4) strategy="AsIs" ;;
+        *) strategy="UseIPv4" ;;
+    esac
+    log "查询策略: $strategy"
 
-    # 出站域名策略
-    read -p "出站域名策略 (UseIPv4v6/UseIPv6v4/ForceIPv4/ForceIPv6, 默认: UseIPv4v6): " domain_strategy_input
-    domain_strategy=${domain_strategy_input:-UseIPv4v6}
+    # 出站域名策略选择 (菜单)
+    echo "请选择出站域名策略:"
+    echo "[1] UseIPv4v6 (默认)"
+    echo "[2] UseIPv6v4"
+    echo "[3] ForceIPv4"
+    echo "[4] ForceIPv6"
+    read -p "请输入选项 (1-4, 默认: 1): " domain_strategy_choice_input
+    if [ -z "$domain_strategy_choice_input" ]; then
+        domain_strategy_choice_input="1"
+    fi
+    case "$domain_strategy_choice_input" in
+        1) domain_strategy="UseIPv4v6" ;;
+        2) domain_strategy="UseIPv6v4" ;;
+        3) domain_strategy="ForceIPv4" ;;
+        4) domain_strategy="ForceIPv6" ;;
+        *) domain_strategy="UseIPv4v6" ;;
+    esac
+    log "出站域名策略: $domain_strategy"
 
     # URI 构建 - 修改：IPv6 加 []
     host="${ip}"
@@ -436,6 +497,7 @@ EOF
         restart_xray
         log "配置已应用，Xray 已重启。"
         log "VLESS URI 已生成并保存。"
+        log "节点信息已保存在 /etc/proxym/vless.info"
     else
         error "配置测试失败！"
     fi
@@ -459,7 +521,32 @@ function print_uri() {
     read -p "按 Enter 返回菜单..."
 }
 
+function check_cron_installed() {
+    if ! command -v crontab &> /dev/null; then
+        log "Cron 未安装，正在安装..."
+        install_dependencies  # 这会安装 cron
+        if ! command -v crontab &> /dev/null; then
+            error "Cron 安装失败。"
+        fi
+        log "Cron 已安装。"
+    fi
+}
+
+function view_cron() {
+    check_cron_installed
+    echo -e "${YELLOW}当前 Xray 重启 Cron 任务:${NC}"
+    if crontab -l 2>/dev/null | grep -q "systemctl restart xray"; then
+        echo -e "${GREEN}已设置自动重启任务:${NC}"
+        crontab -l 2>/dev/null | grep "systemctl restart xray"
+    else
+        echo -e "${RED}未设置自动重启任务。${NC}"
+    fi
+    read -p "按 Enter 返回菜单..."
+}
+
 function set_cron() {
+    check_cron_installed
+    view_cron  # 先显示当前状态
     echo "请选择定时重启方式："
     echo "1. 运行 X 小时后重启 ⏳"
     echo "2. 每天某时间重启 🌞"
@@ -508,6 +595,7 @@ function set_cron() {
 }
 
 function delete_cron() {
+    check_cron_installed
     (crontab -l 2>/dev/null | grep -v "systemctl restart xray") | crontab -
     log "Xray 重启 Cron 已删除。"
     read -p "按 Enter 返回菜单..."
@@ -589,14 +677,15 @@ function show_menu() {
     echo "[6] 📊 查看状态"
     echo "[7] 📝 查看日志"
     echo "[8] ⏰ 设置 Cron 重启"
-    echo "[9] 🗑️ 删除 Cron"
-    echo "[10] 🖨️ 打印 VLESS URI"
-    echo "[11] 🔄 更新脚本"
-    echo "[12] 🗑️ 卸载"
-    echo "[13] 📝 编辑配置"
-    echo "[14] 🧪 测试配置"
-    echo "[15] ❌ 退出"
-    echo -e "${YELLOW}请选择选项 (1-15): ${NC}"
+    echo "[9] 👁️  查看 Cron 任务"
+    echo "[10] 🗑️ 删除 Cron"
+    echo "[11] 🖨️ 打印 VLESS URI"
+    echo "[12] 🔄 更新脚本"
+    echo "[13] 🗑️ 卸载"
+    echo "[14] 📝 编辑配置"
+    echo "[15] 🧪 测试配置"
+    echo "[16] ❌ 退出"
+    echo -e "${YELLOW}请选择选项 (1-16): ${NC}"
     read choice
     case $choice in
         1) install_xray 1 ;;
@@ -607,13 +696,14 @@ function show_menu() {
         6) status_xray ;;
         7) view_logs ;;
         8) set_cron ;;
-        9) delete_cron ;;
-        10) print_uri ;;
-        11) update_script ;;
-        12) uninstall ;;
-        13) edit_config ;;
-        14) test_config ;;
-        15) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
+        9) view_cron ;;
+        10) delete_cron ;;
+        11) print_uri ;;
+        12) update_script ;;
+        13) uninstall ;;
+        14) edit_config ;;
+        15) test_config ;;
+        16) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
         *) echo -e "${RED}无效选项，请重试。${NC}"; sleep 1 ;;
     esac
 }
