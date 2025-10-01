@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 2.9.3
+# 版本: 2.9.5
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -157,29 +157,58 @@ function update_script() {
 }
 
 function install_dependencies() {
-    log "安装 Xray 依赖..."
-    if command -v apt &> /dev/null; then
-        # Debian/Ubuntu
-        sudo apt update
-        sudo apt install -y curl unzip ca-certificates wget gnupg lsb-release python3 cron jq
-        log "Debian/Ubuntu 依赖安装完成。"
-    elif command -v yum &> /dev/null; then
-        # CentOS/RHEL
-        sudo yum update -y
-        sudo yum install -y curl unzip ca-certificates wget gnupg python3 cronie jq
-        log "CentOS/RHEL 依赖安装完成。"
-    elif command -v dnf &> /dev/null; then
-        # Fedora
-        sudo dnf update -y
-        sudo dnf install -y curl unzip ca-certificates wget gnupg python3 cronie jq
-        log "Fedora 依赖安装完成。"
+    local force_update=${1:-false}
+    if [ "$force_update" = true ]; then
+        log "安装 Xray 依赖..."
+        if command -v apt &> /dev/null; then
+            # Debian/Ubuntu
+            sudo apt update
+            sudo apt install -y curl unzip ca-certificates wget gnupg lsb-release python3 cron jq
+            log "Debian/Ubuntu 依赖安装完成。"
+        elif command -v yum &> /dev/null; then
+            # CentOS/RHEL
+            sudo yum update -y
+            sudo yum install -y curl unzip ca-certificates wget gnupg python3 cronie jq
+            log "CentOS/RHEL 依赖安装完成。"
+        elif command -v dnf &> /dev/null; then
+            # Fedora
+            sudo dnf update -y
+            sudo dnf install -y curl unzip ca-certificates wget gnupg python3 cronie jq
+            log "Fedora 依赖安装完成。"
+        else
+            echo -e "${WARN} 未检测到包管理器，请手动安装 curl、unzip、ca-certificates、python3、cron、jq。${NC}"
+        fi
     else
-        echo -e "${WARN} 未检测到包管理器，请手动安装 curl、unzip、ca-certificates、python3、cron、jq。${NC}"
+        # 只检查并安装缺少的依赖，不 update
+        local deps=("curl" "unzip" "ca-certificates" "wget" "gnupg" "python3" "cron" "jq")
+        local missing_deps=()
+        for dep in "${deps[@]}"; do
+            if ! command -v "$dep" &> /dev/null; then
+                missing_deps+=("$dep")
+            fi
+        done
+        if [ ${#missing_deps[@]} -gt 0 ]; then
+            log "检测到缺少依赖: ${missing_deps[*]}，正在安装..."
+            if command -v apt &> /dev/null; then
+                sudo apt update
+                sudo apt install -y "${missing_deps[@]}"
+                log "Debian/Ubuntu 依赖安装完成。"
+            elif command -v yum &> /dev/null; then
+                sudo yum install -y "${missing_deps[@]}"
+                log "CentOS/RHEL 依赖安装完成。"
+            elif command -v dnf &> /dev/null; then
+                sudo dnf install -y "${missing_deps[@]}"
+                log "Fedora 依赖安装完成。"
+            else
+                echo -e "${WARN} 未检测到包管理器，请手动安装缺少的依赖: ${missing_deps[*]}。${NC}"
+            fi
+        fi
     fi
 }
 
 function install_xray() {
     local pause=${1:-1}
+    local force_deps=${2:-false}
     if command -v xray &> /dev/null; then
         log "Xray 已安装。"
         if [ $pause -eq 1 ]; then
@@ -187,7 +216,7 @@ function install_xray() {
         fi
         return 0
     else
-        install_dependencies  # 安装依赖
+        install_dependencies "$force_deps"  # 安装依赖，如果 force_deps=true 则 update
         log "安装 Xray..."
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
         if [ $? -eq 0 ]; then
@@ -252,14 +281,18 @@ function test_config() {
 }
 
 function generate_config() {
-    install_xray 0  # 确保已安装，但不暂停
-    install_dependencies  # 确保 jq 可用
+    install_xray 0 false  # 确保已安装，但不暂停，且不 force update 依赖
+
+    # 确保 Xray 配置目录存在
+    sudo mkdir -p /usr/local/etc/xray
 
     log "生成新的 VLESS 配置..."
     echo -e "${YELLOW}按 Enter 使用默认值。${NC}"
 
     # 检查现有配置
-    if [ -f "$CONFIG" ]; then
+    if [ ! -f "$CONFIG" ]; then
+        overwrite=true
+    else
         read -p "配置文件已存在。覆盖 (Y) 还是附加节点 (N)? (默认 Y): " overwrite_choice
         if [[ ! "$overwrite_choice" =~ ^[Nn]$ ]]; then
             overwrite=true
@@ -267,8 +300,6 @@ function generate_config() {
             overwrite=false
             log "附加模式：仅更新节点相关内容。"
         fi
-    else
-        overwrite=true
     fi
 
     # UUID
@@ -686,7 +717,7 @@ function print_uri() {
 function check_cron_installed() {
     if ! command -v crontab &> /dev/null; then
         log "Cron 未安装，正在安装..."
-        install_dependencies  # 这会安装 cron
+        install_dependencies false  # 不 force update
         if ! command -v crontab &> /dev/null; then
             error "Cron 安装失败。"
         fi
@@ -850,7 +881,7 @@ function show_menu() {
     echo -e "${YELLOW}请选择选项 (1-16): ${NC}"
     read choice
     case $choice in
-        1) install_xray 1 ;;
+        1) install_xray 1 true ;;  # 安装 Xray 时 force update 依赖
         2) generate_config ;;
         3) start_xray ;;
         4) stop_xray ;;
