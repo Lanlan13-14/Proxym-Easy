@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 2.9.6
+# 版本: 2.9.7
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -29,7 +29,7 @@ declare -A FLAGS=(
     [AD]="🇦🇩" [AE]="🇦🇪" [AF]="🇦🇫" [AG]="🇦🇬" [AI]="🇦🇮"
     [AL]="🇦🇱" [AM]="🇦🇲" [AO]="🇦🇴" [AQ]="🇦🇶" [AR]="🇦🇷"
     [AS]="🇦🇸" [AT]="🇦🇹" [AU]="🇦🇺" [AW]="🇦🇼" [AX]="🇦🇽"
-    [AZ]="🇦🇿" [BA]="🇧🇦" [BB]="🇧🇧" [BD]="🇧🇩" [BE]="🇧🇪"
+    [AZ]="🇦🇿" [BA]="🇧🇦" [BB]="🇧🇭" [BD]="🇧🇩" [BE]="🇧🇪"
     [BF]="🇧🇫" [BG]="🇬🇬" [BH]="🇧🇭" [BI]="🇧🇮" [BJ]="🇧🇯"
     [BL]="🇧🇱" [BM]="🇧🇲" [BN]="🇧🇳" [BO]="🇧🇴" [BQ]="🇧🇶"
     [BR]="🇧🇷" [BS]="🇧🇸" [BT]="🇧🇹" [BV]="🇧🇻" [BW]="🇧🇼"
@@ -491,7 +491,7 @@ function generate_config() {
             type_uri="tcp"
             security_uri="none"
             path=""
-            host_uri=""
+            host=""
             ;;
         2)
             use_tls=true
@@ -502,6 +502,7 @@ function generate_config() {
             if [ -z "$domain" ]; then
                 error "域名不能为空。"
             fi
+            host="$domain"
             log "[?] 输入域名以显示证书路径: $domain"
 
             acme_dir="/etc/ssl/acme/$domain"
@@ -541,13 +542,11 @@ function generate_config() {
 
             read -p "WebSocket Path (默认随机生成): " ws_path_input
             if [ -z "$ws_path_input" ]; then
-                ws_path="/$(generate_random_path)"
+                path="/$(generate_random_path)"
             else
-                ws_path="/$ws_path_input"
+                path="/$ws_path_input"
             fi
-            log "Path: $ws_path"
-            path="$ws_path"
-            host_uri="$domain"
+            log "Path: $path"
             ;;
         *)
             use_tls=false
@@ -555,14 +554,14 @@ function generate_config() {
             type_uri="tcp"
             security_uri="none"
             path=""
-            host_uri=""
+            host=""
             ;;
     esac
 
     # URI 构建 - 修改：IPv6 加 []
-    host="${ip}"
+    host_address="${ip}"
     if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then  # 检测 IPv6 (含: 且无 [])，包围
-        host="[${ip}]"
+        host_address="[${ip}]"
         log "IPv6 检测到，已在 URI 中添加 [] 包围。"
     fi
 
@@ -574,12 +573,13 @@ function generate_config() {
     if [ "$use_tls" = true ]; then
         uri_params="${uri_params}&security=${security_uri}&sni=${domain}"
         if [ "$network" = "ws" ]; then
-            uri_params="${uri_params}&path=${path}"
+            encoded_path=$(url_encode "$path")
+            uri_params="${uri_params}&host=${host}&path=${encoded_path}"
         fi
     else
         uri_params="${uri_params}&security=none"
     fi
-    uri="vless://${uuid}@${host}:${port}?${uri_params}#${encoded_tag}"
+    uri="vless://${uuid}@${host_address}:${port}?${uri_params}#${encoded_tag}"
 
     # 准备新节点信息 JSON
     new_node_info=$(cat << EOF
@@ -624,7 +624,7 @@ EOF
         ws_settings='{
           "path": "'"$path"'",
           "headers": {
-            "Host": "'"$domain"'"
+            "Host": "'"$host"'"
           }
         }'
         stream_settings='{
