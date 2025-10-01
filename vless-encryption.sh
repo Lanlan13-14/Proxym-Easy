@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 2.9.8
+# 版本: 2.9.9
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -496,6 +496,7 @@ function generate_config() {
             if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
                 server_address="[${ip}]"
             fi
+            flow=""
             ;;
         2)
             use_tls=true
@@ -552,6 +553,7 @@ function generate_config() {
                 path="/$ws_path_input"
             fi
             log "Path: $path"
+            flow="xtls-rprx-vision"
             ;;
         *)
             use_tls=false
@@ -564,6 +566,7 @@ function generate_config() {
             if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
                 server_address="[${ip}]"
             fi
+            flow=""
             ;;
     esac
 
@@ -577,6 +580,9 @@ function generate_config() {
         if [ "$network" = "ws" ]; then
             encoded_path=$(url_encode "$path")
             uri_params="${uri_params}&host=${host}&path=${encoded_path}"
+        fi
+        if [ -n "$flow" ]; then
+            uri_params="${uri_params}&flow=${flow}"
         fi
     else
         uri_params="${uri_params}&security=none"
@@ -639,16 +645,27 @@ EOF
         stream_settings='{"network": "'"$network"'"}'
     fi
 
+    # 准备 clients JSON
+    clients='[
+      {
+        "id": "'"$uuid"'"
+      }
+    ]'
+    if [ -n "$flow" ]; then
+        clients='[
+          {
+            "id": "'"$uuid"'",
+            "flow": "'"$flow"'"
+          }
+        ]'
+    fi
+
     new_inbounds='[
       {
         "port": '"$port"',
         "protocol": "vless",
         "settings": {
-          "clients": [
-            {
-              "id": "'"$uuid"'"
-            }
-          ],
+          "clients": '"$clients"',
           "decryption": "'"$decryption"'"
         },
         "streamSettings": '"$stream_settings"'
