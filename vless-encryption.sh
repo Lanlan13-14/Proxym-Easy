@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 2.9
+# 版本: 2.9.2
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -19,7 +19,7 @@ WARN="${YELLOW}⚠️${NC}"
 
 # 路径
 CONFIG="/usr/local/etc/xray/config.json"
-VLESS_INFO="/etc/proxym/vless.info"
+VLESS_JSON="/etc/proxym/vless.json"
 SCRIPT_PATH="/usr/local/bin/proxym-easy"
 UPDATE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/vless-encryption.sh"  # 更新 URL
 CRON_FILE="/tmp/proxym_cron.tmp"
@@ -86,6 +86,11 @@ url_encode() {
         echo -e "${WARN} Python3 未找到，无法 URL 编码标签。使用原始标签。${NC}"
         echo "$1"
     fi
+}
+
+# 随机生成10位字符串
+generate_random_path() {
+    openssl rand -hex 5 2>/dev/null || echo "defaultpath$(date +%s | cut -c1-5)"
 }
 
 # 确保 proxym 目录存在
@@ -156,20 +161,20 @@ function install_dependencies() {
     if command -v apt &> /dev/null; then
         # Debian/Ubuntu
         sudo apt update
-        sudo apt install -y curl unzip ca-certificates wget gnupg lsb-release python3 cron
+        sudo apt install -y curl unzip ca-certificates wget gnupg lsb-release python3 cron jq
         log "Debian/Ubuntu 依赖安装完成。"
     elif command -v yum &> /dev/null; then
         # CentOS/RHEL
         sudo yum update -y
-        sudo yum install -y curl unzip ca-certificates wget gnupg python3 cronie
+        sudo yum install -y curl unzip ca-certificates wget gnupg python3 cronie jq
         log "CentOS/RHEL 依赖安装完成。"
     elif command -v dnf &> /dev/null; then
         # Fedora
         sudo dnf update -y
-        sudo dnf install -y curl unzip ca-certificates wget gnupg python3 cronie
+        sudo dnf install -y curl unzip ca-certificates wget gnupg python3 cronie jq
         log "Fedora 依赖安装完成。"
     else
-        echo -e "${WARN} 未检测到包管理器，请手动安装 curl、unzip、ca-certificates、python3、cron。${NC}"
+        echo -e "${WARN} 未检测到包管理器，请手动安装 curl、unzip、ca-certificates、python3、cron、jq。${NC}"
     fi
 }
 
@@ -248,9 +253,23 @@ function test_config() {
 
 function generate_config() {
     install_xray 0  # 确保已安装，但不暂停
+    install_dependencies  # 确保 jq 可用
 
     log "生成新的 VLESS 配置..."
     echo -e "${YELLOW}按 Enter 使用默认值。${NC}"
+
+    # 检查现有配置
+    if [ -f "$CONFIG" ]; then
+        read -p "配置文件已存在。覆盖 (Y) 还是附加节点 (N)? (默认 Y): " overwrite_choice
+        if [[ ! "$overwrite_choice" =~ ^[Nn]$ ]]; then
+            overwrite=true
+        else
+            overwrite=false
+            log "附加模式：仅更新节点相关内容。"
+        fi
+    else
+        overwrite=true
+    fi
 
     # UUID
     read -p "UUID (默认: 新生成): " uuid_input
@@ -426,6 +445,145 @@ function generate_config() {
     esac
     log "出站域名策略: $domain_strategy"
 
+    # 传输层选择
+    echo "请选择传输层:"
+    echo "[1] TCP (默认)"
+    echo "[2] HTTP/2 + TLS"
+    echo "[3] HTTP Upgrade + TLS"
+    read -p "请输入选项 (1-3, 默认: 1): " transport_choice_input
+    if [ -z "$transport_choice_input" ]; then
+        transport_choice_input="1"
+    fi
+    case "$transport_choice_input" in
+        1)
+            use_tls=false
+            network="tcp"
+            type_uri="tcp"
+            security_uri="none"
+            path=""
+            host_uri=""
+            ;;
+        2)
+            use_tls=true
+            network="http"
+            type_uri="http"
+            security_uri="tls"
+            read -p "输入域名: " domain
+            if [ -z "$domain" ]; then
+                error "域名不能为空。"
+            fi
+            log "[?] 输入域名以显示证书路径: $domain"
+
+            acme_dir="/etc/ssl/acme/$domain"
+            if [ -d "$acme_dir" ]; then
+                log "[✔] 证书路径：$acme_dir"
+                ls -la "$acme_dir" | head -n 5
+                cert_path="$acme_dir/fullchain.pem"
+                key_path="$acme_dir/privkey.key"
+                if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
+                    echo -e "${WARN} 证书文件不存在，请手动输入。${NC}"
+                    cert_path=""
+                fi
+            else
+                log "未找到 /etc/ssl/acme/$domain"
+                if [ -d "/etc/ssl/acme" ]; then
+                    echo "可用证书文件夹："
+                    ls -1 /etc/ssl/acme/ | nl -w1 -s') '
+                    read -p "选择文件夹编号 (或 0 手动输入): " folder_choice
+                    if [[ "$folder_choice" =~ ^[0-9]+$ ]] && [ "$folder_choice" -gt 0 ]; then
+                        selected_folder=$(ls -1 /etc/ssl/acme/ | sed -n "${folder_choice}p")
+                        if [ -n "$selected_folder" ]; then
+                            acme_dir="/etc/ssl/acme/$selected_folder"
+                            cert_path="$acme_dir/fullchain.pem"
+                            key_path="$acme_dir/privkey.key"
+                            log "[✔] 选择: $acme_dir"
+                        fi
+                    fi
+                fi
+            fi
+
+            if [ -z "$cert_path" ] || [ ! -f "$cert_path" ]; then
+                read -p "输入证书路径 (fullchain.pem): " cert_path
+            fi
+            if [ -z "$key_path" ] || [ ! -f "$key_path" ]; then
+                read -p "输入私钥路径 (privkey.key): " key_path
+            fi
+
+            read -p "HTTP/2 Path (默认随机生成): " h2_path_input
+            if [ -z "$h2_path_input" ]; then
+                h2_path="/$(generate_random_path)"
+            else
+                h2_path="/$h2_path_input"
+            fi
+            log "Path: $h2_path"
+            path="$h2_path"
+            host_uri="$domain"
+            ;;
+        3)
+            use_tls=true
+            network="httpupgrade"
+            type_uri="httpupgrade"
+            security_uri="tls"
+            read -p "输入域名: " domain
+            if [ -z "$domain" ]; then
+                error "域名不能为空。"
+            fi
+            log "[?] 输入域名以显示证书路径: $domain"
+
+            acme_dir="/etc/ssl/acme/$domain"
+            if [ -d "$acme_dir" ]; then
+                log "[✔] 证书路径：$acme_dir"
+                ls -la "$acme_dir" | head -n 5
+                cert_path="$acme_dir/fullchain.pem"
+                key_path="$acme_dir/privkey.key"
+                if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
+                    echo -e "${WARN} 证书文件不存在，请手动输入。${NC}"
+                    cert_path=""
+                fi
+            else
+                log "未找到 /etc/ssl/acme/$domain"
+                if [ -d "/etc/ssl/acme" ]; then
+                    echo "可用证书文件夹："
+                    ls -1 /etc/ssl/acme/ | nl -w1 -s') '
+                    read -p "选择文件夹编号 (或 0 手动输入): " folder_choice
+                    if [[ "$folder_choice" =~ ^[0-9]+$ ]] && [ "$folder_choice" -gt 0 ]; then
+                        selected_folder=$(ls -1 /etc/ssl/acme/ | sed -n "${folder_choice}p")
+                        if [ -n "$selected_folder" ]; then
+                            acme_dir="/etc/ssl/acme/$selected_folder"
+                            cert_path="$acme_dir/fullchain.pem"
+                            key_path="$acme_dir/privkey.key"
+                            log "[✔] 选择: $acme_dir"
+                        fi
+                    fi
+                fi
+            fi
+
+            if [ -z "$cert_path" ] || [ ! -f "$cert_path" ]; then
+                read -p "输入证书路径 (fullchain.pem): " cert_path
+            fi
+            if [ -z "$key_path" ] || [ ! -f "$key_path" ]; then
+                read -p "输入私钥路径 (privkey.key): " key_path
+            fi
+
+            read -p "HTTP Upgrade Path (默认 /?ed=2560): " hu_path_input
+            if [ -z "$hu_path_input" ]; then
+                path="/?ed=2560"
+            else
+                path="$hu_path_input"
+            fi
+            log "Path: $path"
+            host_uri="$domain"
+            ;;
+        *)
+            use_tls=false
+            network="tcp"
+            type_uri="tcp"
+            security_uri="none"
+            path=""
+            host_uri=""
+            ;;
+    esac
+
     # URI 构建 - 修改：IPv6 加 []
     host="${ip}"
     if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then  # 检测 IPv6 (含: 且无 [])，包围
@@ -435,21 +593,102 @@ function generate_config() {
 
     # URL 编码标签
     encoded_tag=$(url_encode "$tag")
-    uri="vless://${uuid}@${host}:${port}?type=tcp&encryption=${encryption}&packetEncoding=xudp&security=none#${encoded_tag}"
 
-    # 保存所有信息，包括URI
-    cat > "$VLESS_INFO" << EOF
-UUID="$uuid"
-PORT="$port"
-DECRYPTION="$decryption"
-ENCRYPTION="$encryption"
-IP="$ip"
-TAG="$tag"
-URI="$uri"
+    # 构建 URI 参数
+    uri_params="type=${type_uri}&encryption=${encryption}&packetEncoding=xudp"
+    if [ "$use_tls" = true ]; then
+        uri_params="${uri_params}&security=${security_uri}&sni=${domain}"
+    else
+        uri_params="${uri_params}&security=none"
+    fi
+    uri="vless://${uuid}@${host}:${port}?${uri_params}#${encoded_tag}"
+
+    # 准备新节点信息 JSON
+    new_node_info=$(cat << EOF
+{
+  "uuid": "$uuid",
+  "port": $port,
+  "decryption": "$decryption",
+  "encryption": "$encryption",
+  "ip": "$ip",
+  "tag": "$tag",
+  "uri": "$uri",
+  "domain": "$domain",
+  "network": "$network",
+  "path": "$path"
+}
 EOF
+)
 
-    # 生成 config.json
-    cat > "$CONFIG" << EOF
+    # 更新 vless.json
+    if [ "$overwrite" = true ]; then
+        echo "[$new_node_info]" > "$VLESS_JSON"
+    else
+        if [ -f "$VLESS_JSON" ]; then
+            temp_json=$(mktemp)
+            jq --argjson new "$new_node_info" '. += [$new]' "$VLESS_JSON" > "$temp_json"
+            mv "$temp_json" "$VLESS_JSON"
+        else
+            echo "[$new_node_info]" > "$VLESS_JSON"
+        fi
+    fi
+
+    # 准备 streamSettings JSON
+    if [ "$use_tls" = true ]; then
+        tls_settings='{
+          "certificates": [
+            {
+              "certificateFile": "'"$cert_path"'",
+              "keyFile": "'"$key_path"'"
+            }
+          ]
+        }'
+        if [ "$network" = "http" ]; then
+            transport_settings='{
+              "path": "'"$path"'",
+              "host": ["'"$domain"'"]
+            }'
+            stream_settings='{
+              "network": "'"$network"'",
+              "security": "tls",
+              "tlsSettings": '"$tls_settings"',
+              "httpSettings": '"$transport_settings"' 
+            }'
+        else
+            transport_settings='{
+              "path": "'"$path"'",
+              "host": "'"$domain"'"
+            }'
+            stream_settings='{
+              "network": "'"$network"'",
+              "security": "tls",
+              "tlsSettings": '"$tls_settings"',
+              "httpupgradeSettings": '"$transport_settings"' 
+            }'
+        fi
+    else
+        stream_settings='{"network": "'"$network"'"}'
+    fi
+
+    new_inbounds='[
+      {
+        "port": '"$port"',
+        "protocol": "vless",
+        "settings": {
+          "clients": [
+            {
+              "id": "'"$uuid"'"
+            }
+          ],
+          "decryption": "'"$decryption"'"
+        },
+        "streamSettings": '"$stream_settings"' 
+      }
+    ]'
+
+    if [ "$overwrite" = true ]; then
+        # 覆盖整个配置
+        cat > "$CONFIG" << EOF
 {
   "log": {
     "loglevel": "warning"
@@ -462,23 +701,7 @@ EOF
     ],
     "queryStrategy": "$strategy"
   },
-  "inbounds": [
-    {
-      "port": $port,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "$uuid"
-          }
-        ],
-        "decryption": "$decryption"
-      },
-      "streamSettings": {
-        "network": "tcp"
-      }
-    }
-  ],
+  "inbounds": $new_inbounds,
   "outbounds": [
     {
       "protocol": "freedom",
@@ -490,6 +713,16 @@ EOF
   ]
 }
 EOF
+    else
+        # 附加：使用 jq 追加到 inbounds
+        if ! jq . "$CONFIG" > /dev/null 2>&1; then
+            error "现有配置不是有效 JSON，无法附加。"
+        fi
+        temp_config=$(mktemp)
+        jq --argjson inbounds "$new_inbounds" '.inbounds += $inbounds' "$CONFIG" > "$temp_config"
+        mv "$temp_config" "$CONFIG"
+        log "节点配置已附加到现有配置文件。"
+    fi
 
     # 测试配置
     if xray -test -config "$CONFIG" &> /dev/null; then
@@ -497,7 +730,7 @@ EOF
         restart_xray
         log "配置已应用，Xray 已重启。"
         log "VLESS URI 已生成并保存。"
-        log "节点信息已保存在 /etc/proxym/vless.info"
+        log "节点信息已保存在 /etc/proxym/vless.json"
     else
         error "配置测试失败！"
     fi
@@ -505,17 +738,15 @@ EOF
 }
 
 function print_uri() {
-    if [ ! -f "$VLESS_INFO" ]; then
+    if [ ! -f "$VLESS_JSON" ]; then
         error "未找到配置信息。请先生成配置。"
     fi
 
-    # 安全 source，确保变量正确加载
-    URI=""
-    source "$VLESS_INFO" 2>/dev/null || error "加载配置信息失败，请重新生成配置。"
-
-    echo -e "${GREEN}VLESS URI:${NC}"
+    echo -e "${GREEN}VLESS URIs:${NC}"
     echo -e "${YELLOW}============================${NC}"
-    echo "$URI"
+    jq -r '.[] | .uri' "$VLESS_JSON" | while read uri; do
+        echo "$uri"
+    done
     echo -e "${YELLOW}============================${NC}"
     echo -e "${YELLOW}复制以上 URI 用于客户端配置。${NC}"
     read -p "按 Enter 返回菜单..."
@@ -620,7 +851,7 @@ function uninstall() {
                     log "脚本备份已创建: ${SCRIPT_PATH}.backup"
                 fi
                 # 移除配置和目录
-                sudo rm -f "$CONFIG" "$VLESS_INFO"
+                sudo rm -f "$CONFIG" "$VLESS_JSON"
                 sudo rm -rf /etc/proxym
                 sudo rm -f "$SCRIPT_PATH"
                 log "脚本和配置已卸载（Xray 保留）。"
@@ -645,7 +876,7 @@ function uninstall() {
                 sudo systemctl stop xray 2>/dev/null || true
                 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
                 # 移除配置和目录
-                sudo rm -f "$CONFIG" "$VLESS_INFO"
+                sudo rm -f "$CONFIG" "$VLESS_JSON"
                 sudo rm -rf /etc/proxym
                 sudo rm -f "$SCRIPT_PATH"
                 log "全部已卸载。"
