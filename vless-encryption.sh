@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 2.9.2
+# 版本: 2.9.3
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -449,8 +449,7 @@ function generate_config() {
     echo "请选择传输层:"
     echo "[1] TCP (默认)"
     echo "[2] HTTP/2 + TLS"
-    echo "[3] HTTP Upgrade + TLS"
-    read -p "请输入选项 (1-3, 默认: 1): " transport_choice_input
+    read -p "请输入选项 (1-2, 默认: 1): " transport_choice_input
     if [ -z "$transport_choice_input" ]; then
         transport_choice_input="1"
     fi
@@ -465,8 +464,8 @@ function generate_config() {
             ;;
         2)
             use_tls=true
-            network="http"
-            type_uri="http"
+            network="h2"
+            type_uri="h2"
             security_uri="tls"
             read -p "输入域名: " domain
             if [ -z "$domain" ]; then
@@ -517,61 +516,6 @@ function generate_config() {
             fi
             log "Path: $h2_path"
             path="$h2_path"
-            host_uri="$domain"
-            ;;
-        3)
-            use_tls=true
-            network="httpupgrade"
-            type_uri="httpupgrade"
-            security_uri="tls"
-            read -p "输入域名: " domain
-            if [ -z "$domain" ]; then
-                error "域名不能为空。"
-            fi
-            log "[?] 输入域名以显示证书路径: $domain"
-
-            acme_dir="/etc/ssl/acme/$domain"
-            if [ -d "$acme_dir" ]; then
-                log "[✔] 证书路径：$acme_dir"
-                ls -la "$acme_dir" | head -n 5
-                cert_path="$acme_dir/fullchain.pem"
-                key_path="$acme_dir/privkey.key"
-                if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
-                    echo -e "${WARN} 证书文件不存在，请手动输入。${NC}"
-                    cert_path=""
-                fi
-            else
-                log "未找到 /etc/ssl/acme/$domain"
-                if [ -d "/etc/ssl/acme" ]; then
-                    echo "可用证书文件夹："
-                    ls -1 /etc/ssl/acme/ | nl -w1 -s') '
-                    read -p "选择文件夹编号 (或 0 手动输入): " folder_choice
-                    if [[ "$folder_choice" =~ ^[0-9]+$ ]] && [ "$folder_choice" -gt 0 ]; then
-                        selected_folder=$(ls -1 /etc/ssl/acme/ | sed -n "${folder_choice}p")
-                        if [ -n "$selected_folder" ]; then
-                            acme_dir="/etc/ssl/acme/$selected_folder"
-                            cert_path="$acme_dir/fullchain.pem"
-                            key_path="$acme_dir/privkey.key"
-                            log "[✔] 选择: $acme_dir"
-                        fi
-                    fi
-                fi
-            fi
-
-            if [ -z "$cert_path" ] || [ ! -f "$cert_path" ]; then
-                read -p "输入证书路径 (fullchain.pem): " cert_path
-            fi
-            if [ -z "$key_path" ] || [ ! -f "$key_path" ]; then
-                read -p "输入私钥路径 (privkey.key): " key_path
-            fi
-
-            read -p "HTTP Upgrade Path (默认 /?ed=2560): " hu_path_input
-            if [ -z "$hu_path_input" ]; then
-                path="/?ed=2560"
-            else
-                path="$hu_path_input"
-            fi
-            log "Path: $path"
             host_uri="$domain"
             ;;
         *)
@@ -643,29 +587,16 @@ EOF
             }
           ]
         }'
-        if [ "$network" = "http" ]; then
-            transport_settings='{
-              "path": "'"$path"'",
-              "host": ["'"$domain"'"]
-            }'
-            stream_settings='{
-              "network": "'"$network"'",
-              "security": "tls",
-              "tlsSettings": '"$tls_settings"',
-              "httpSettings": '"$transport_settings"' 
-            }'
-        else
-            transport_settings='{
-              "path": "'"$path"'",
-              "host": "'"$domain"'"
-            }'
-            stream_settings='{
-              "network": "'"$network"'",
-              "security": "tls",
-              "tlsSettings": '"$tls_settings"',
-              "httpupgradeSettings": '"$transport_settings"' 
-            }'
-        fi
+        transport_settings='{
+          "path": "'"$path"'",
+          "host": ["'"$domain"'"]
+        }'
+        stream_settings='{
+          "network": "'"$network"'",
+          "security": "tls",
+          "tlsSettings": '"$tls_settings"',
+          "httpSettings": '"$transport_settings"'
+        }'
     else
         stream_settings='{"network": "'"$network"'"}'
     fi
@@ -682,7 +613,7 @@ EOF
           ],
           "decryption": "'"$decryption"'"
         },
-        "streamSettings": '"$stream_settings"' 
+        "streamSettings": '"$stream_settings"'
       }
     ]'
 
