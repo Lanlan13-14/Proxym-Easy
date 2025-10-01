@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 2.9.7
+# 版本: 2.9.8
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -492,6 +492,10 @@ function generate_config() {
             security_uri="none"
             path=""
             host=""
+            server_address="${ip}"
+            if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
+                server_address="[${ip}]"
+            fi
             ;;
         2)
             use_tls=true
@@ -503,6 +507,7 @@ function generate_config() {
                 error "域名不能为空。"
             fi
             host="$domain"
+            server_address="$domain"
             log "[?] 输入域名以显示证书路径: $domain"
 
             acme_dir="/etc/ssl/acme/$domain"
@@ -555,15 +560,12 @@ function generate_config() {
             security_uri="none"
             path=""
             host=""
+            server_address="${ip}"
+            if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
+                server_address="[${ip}]"
+            fi
             ;;
     esac
-
-    # URI 构建 - 修改：IPv6 加 []
-    host_address="${ip}"
-    if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then  # 检测 IPv6 (含: 且无 [])，包围
-        host_address="[${ip}]"
-        log "IPv6 检测到，已在 URI 中添加 [] 包围。"
-    fi
 
     # URL 编码标签
     encoded_tag=$(url_encode "$tag")
@@ -579,7 +581,7 @@ function generate_config() {
     else
         uri_params="${uri_params}&security=none"
     fi
-    uri="vless://${uuid}@${host_address}:${port}?${uri_params}#${encoded_tag}"
+    uri="vless://${uuid}@${server_address}:${port}?${uri_params}#${encoded_tag}"
 
     # 准备新节点信息 JSON
     new_node_info=$(cat << EOF
