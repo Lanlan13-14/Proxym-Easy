@@ -12,4 +12,4 @@ sudo proxym-easy
 ##### 卸载选项在脚本中已提供
 Tips
 URI保存在本机
-/etc/proxym/vless.info
+/etc/proxym/vless.json
