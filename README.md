@@ -1,5 +1,4 @@
 # Proxym-Easy
-# 置顶/Precautions
 
 > [!Caution]
 > 禁止任何形式的转载或发布至🇨🇳大陆平台
