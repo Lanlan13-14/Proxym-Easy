@@ -42,6 +42,7 @@ sudo proxym-easy
 ### 3. 卸载
 ##### 卸载选项在脚本中已提供
 ***Tips***
+>
 URI保存在本机
 ```
 /etc/proxym/vless.json
@@ -50,5 +51,5 @@ URI保存在本机
 ```
 /usr/local/etc/xray/config.json
 ```
-VLESS Encryption与VLESS Version Reality无法同时启
-用当你选择VLESS Version Reality那么前面生成的VLESS Encryption相关内容不会生效
+***VLESS Encryption与VLESS Version Reality无法同时启
+用当你选择VLESS Version Reality那么前面生成的VLESS Encryption相关内容不会生效***
