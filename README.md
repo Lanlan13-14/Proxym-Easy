@@ -44,3 +44,5 @@ sudo proxym-easy
 Tips
 URI保存在本机
 /etc/proxym/vless.json
+配置文件保存在本机
+/usr/local/etc/xray/config.json
