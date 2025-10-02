@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 2.9.8
+# 版本: 2.9.11
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -311,11 +311,7 @@ function generate_config() {
     fi
     log "UUID: $uuid"
 
-    # 端口
-    read -p "端口 (默认: 8443): " port_input
-    port=${port_input:-8443}
-
-    # KEX 选择 (菜单)
+    # KEX 选择 (菜单) - 先 VLESS Encryption
     echo "请选择 KEX:"
     echo "[1] x25519"
     echo "[2] mlkem768x25519plus (默认)"
@@ -394,17 +390,85 @@ function generate_config() {
         fi
     fi
 
-    # 构建服务端 decryption
+    # 构建服务端 decryption 和客户端 encryption (默认)
     decryption="${kex}.${method}.${time_server}.${private}"
     if [ "$use_mlkem" = true ]; then
         decryption="${decryption}.${seed}"
     fi
 
-    # 构建客户端 encryption
     encryption="${kex}.${method}.${rtt}.${password}"
     if [ "$use_mlkem" = true ]; then
         encryption="${encryption}.${client_param}"
     fi
+
+    # REALITY 选择 - 后 VLESS Encryption
+    echo "是否启用 REALITY (Xray 官方推荐用于 TCP):"
+    echo "[1] 是 (仅支持 TCP)"
+    echo "[2] 否 (支持 TCP 或 WebSocket + TLS)"
+    read -p "请输入选项 (1-2, 默认: 2): " reality_choice_input
+    if [ -z "$reality_choice_input" ]; then
+        reality_choice_input="2"
+    fi
+    case "$reality_choice_input" in
+        1) use_reality=true ;;
+        *) use_reality=false ;;
+    esac
+    log "启用 REALITY: $( [ "$use_reality" = true ] && echo "是" || echo "否" )"
+
+    if [ "$use_reality" = true ]; then
+        # 对于 REALITY，重设 decryption 和 encryption 为 none
+        decryption="none"
+        encryption="none"
+        flow="xtls-rprx-vision"
+        log "REALITY 模式下 VLESS Encryption 设置为 none"
+        read -p "REALITY 伪装目标 dest (默认: www.cloudflare.com:443): " dest_input
+        dest=${dest_input:-"www.cloudflare.com:443"}
+        read -p "serverNames (逗号分隔 SNI 列表, 默认: www.cloudflare.com): " servernames_input
+        if [ -z "$servernames_input" ]; then
+            servernames_input="www.cloudflare.com"
+        fi
+        IFS=',' read -ra servernames_array <<< "$servernames_input"
+        sni="${servernames_array[0]}"
+        read -p "shortIds (逗号分隔, 每个 0-16 hex 字符, 默认随机生成一个): " shortids_input
+        if [ -z "$shortids_input" ]; then
+            shortid=$(openssl rand -hex 4 2>/dev/null || echo "a1b2c3d4")
+            shortids_input="$shortid"
+        fi
+        IFS=',' read -ra shortids <<< "$shortids_input"
+        shortId="${shortids[0]}"
+
+        # uTLS fingerprint for REALITY
+        echo "请选择 uTLS Fingerprint (用于伪装):"
+        echo "[1] chrome (默认)"
+        echo "[2] firefox"
+        echo "[3] safari"
+        echo "[4] ios"
+        read -p "请输入选项 (1-4, 默认: 1): " fp_choice_input
+        if [ -z "$fp_choice_input" ]; then
+            fp_choice_input="1"
+        fi
+        case "$fp_choice_input" in
+            1) fingerprint="chrome" ;;
+            2) fingerprint="firefox" ;;
+            3) fingerprint="safari" ;;
+            4) fingerprint="ios" ;;
+            *) fingerprint="chrome" ;;
+        esac
+        log "REALITY 配置: dest=$dest, sni=$sni, shortId=$shortId, fingerprint=$fingerprint"
+        public_key_base64="$password"  # 使用 x25519 的 password 作为 pbk
+    else
+        fingerprint="chrome"  # 默认
+    fi
+
+    echo "vless reality推荐端口为443"
+    # 端口
+    default_port=8443
+    if [ "$use_reality" = true ]; then
+        default_port=443
+    fi
+    read -p "端口 (默认: $default_port): " port_input
+    port=${port_input:-$default_port}
+    log "端口: $port"
 
     # IP - 修改：优先 IPv4，fallback IPv6
     read -p "服务器 IP (默认: 自动检测): " ip_input
@@ -477,114 +541,173 @@ function generate_config() {
     log "出站域名策略: $domain_strategy"
 
     # 传输层选择
-    echo "请选择传输层:"
-    echo "[1] TCP (默认)"
-    echo "[2] WebSocket + TLS"
-    read -p "请输入选项 (1-2, 默认: 1): " transport_choice_input
-    if [ -z "$transport_choice_input" ]; then
-        transport_choice_input="1"
-    fi
-    case "$transport_choice_input" in
-        1)
-            use_tls=false
-            network="tcp"
-            type_uri="tcp"
-            security_uri="none"
-            path=""
-            host=""
-            server_address="${ip}"
-            if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
-                server_address="[${ip}]"
-            fi
-            ;;
-        2)
-            use_tls=true
-            network="ws"
-            type_uri="ws"
-            security_uri="tls"
-            read -p "输入域名: " domain
-            if [ -z "$domain" ]; then
-                error "域名不能为空。"
-            fi
-            host="$domain"
-            server_address="$domain"
-            log "[?] 输入域名以显示证书路径: $domain"
-
-            acme_dir="/etc/ssl/acme/$domain"
-            if [ -d "$acme_dir" ]; then
-                log "[✔] 证书路径：$acme_dir"
-                ls -la "$acme_dir" | head -n 5
-                cert_path="$acme_dir/fullchain.pem"
-                key_path="$acme_dir/privkey.key"
-                if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
-                    echo -e "${WARN} 证书文件不存在，请手动输入。${NC}"
-                    cert_path=""
+    if [ "$use_reality" = true ]; then
+        network="tcp"
+        type_uri="tcp"
+        security_uri="reality"
+        path=""
+        host=""
+        server_address="${ip}"
+        if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
+            server_address="[${ip}]"
+        fi
+        uri_params="type=${type_uri}&encryption=${encryption}&flow=${flow}&security=${security_uri}&sni=${sni}&fp=${fingerprint}&sid=${shortId}&pbk=${public_key_base64}&packetEncoding=xudp"
+        domain=""
+    else
+        echo "请选择传输层:"
+        echo "[1] TCP (默认)"
+        echo "[2] WebSocket + TLS"
+        read -p "请输入选项 (1-2, 默认: 1): " transport_choice_input
+        if [ -z "$transport_choice_input" ]; then
+            transport_choice_input="1"
+        fi
+        case "$transport_choice_input" in
+            1)
+                use_tls=false
+                network="tcp"
+                type_uri="tcp"
+                security_uri="none"
+                path=""
+                host=""
+                server_address="${ip}"
+                if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
+                    server_address="[${ip}]"
                 fi
-            else
-                log "未找到 /etc/ssl/acme/$domain"
-                if [ -d "/etc/ssl/acme" ]; then
-                    echo "可用证书文件夹："
-                    ls -1 /etc/ssl/acme/ | nl -w1 -s') '
-                    read -p "选择文件夹编号 (或 0 手动输入): " folder_choice
-                    if [[ "$folder_choice" =~ ^[0-9]+$ ]] && [ "$folder_choice" -gt 0 ]; then
-                        selected_folder=$(ls -1 /etc/ssl/acme/ | sed -n "${folder_choice}p")
-                        if [ -n "$selected_folder" ]; then
-                            acme_dir="/etc/ssl/acme/$selected_folder"
-                            cert_path="$acme_dir/fullchain.pem"
-                            key_path="$acme_dir/privkey.key"
-                            log "[✔] 选择: $acme_dir"
+                ;;
+            2)
+                use_tls=true
+                network="ws"
+                type_uri="ws"
+                security_uri="tls"
+                read -p "输入域名: " domain
+                if [ -z "$domain" ]; then
+                    error "域名不能为空。"
+                fi
+                host="$domain"
+                server_address="$domain"
+                log "[?] 输入域名以显示证书路径: $domain"
+
+                # uTLS fingerprint for TLS
+                echo "请选择 uTLS Fingerprint (用于伪装):"
+                echo "[1] chrome (默认)"
+                echo "[2] firefox"
+                echo "[3] safari"
+                echo "[4] ios"
+                read -p "请输入选项 (1-4, 默认: 1): " fp_choice_input
+                if [ -z "$fp_choice_input" ]; then
+                    fp_choice_input="1"
+                fi
+                case "$fp_choice_input" in
+                    1) fingerprint="chrome" ;;
+                    2) fingerprint="firefox" ;;
+                    3) fingerprint="safari" ;;
+                    4) fingerprint="ios" ;;
+                    *) fingerprint="chrome" ;;
+                esac
+                log "Fingerprint: $fingerprint"
+
+                acme_dir="/etc/ssl/acme/$domain"
+                if [ -d "$acme_dir" ]; then
+                    log "[✔] 证书路径：$acme_dir"
+                    ls -la "$acme_dir" | head -n 5
+                    cert_path="$acme_dir/fullchain.pem"
+                    key_path="$acme_dir/privkey.key"
+                    if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
+                        echo -e "${WARN} 证书文件不存在，请手动输入。${NC}"
+                        cert_path=""
+                    fi
+                else
+                    log "未找到 /etc/ssl/acme/$domain"
+                    if [ -d "/etc/ssl/acme" ]; then
+                        echo "可用证书文件夹："
+                        ls -1 /etc/ssl/acme/ | nl -w1 -s') '
+                        read -p "选择文件夹编号 (或 0 手动输入): " folder_choice
+                        if [[ "$folder_choice" =~ ^[0-9]+$ ]] && [ "$folder_choice" -gt 0 ]; then
+                            selected_folder=$(ls -1 /etc/ssl/acme/ | sed -n "${folder_choice}p")
+                            if [ -n "$selected_folder" ]; then
+                                acme_dir="/etc/ssl/acme/$selected_folder"
+                                cert_path="$acme_dir/fullchain.pem"
+                                key_path="$acme_dir/privkey.key"
+                                log "[✔] 选择: $acme_dir"
+                            fi
                         fi
                     fi
                 fi
-            fi
 
-            if [ -z "$cert_path" ] || [ ! -f "$cert_path" ]; then
-                read -p "输入证书路径 (fullchain.pem): " cert_path
-            fi
-            if [ -z "$key_path" ] || [ ! -f "$key_path" ]; then
-                read -p "输入私钥路径 (privkey.key): " key_path
-            fi
+                if [ -z "$cert_path" ] || [ ! -f "$cert_path" ]; then
+                    read -p "输入证书路径 (fullchain.pem): " cert_path
+                fi
+                if [ -z "$key_path" ] || [ ! -f "$key_path" ]; then
+                    read -p "输入私钥路径 (privkey.key): " key_path
+                fi
 
-            read -p "WebSocket Path (默认随机生成): " ws_path_input
-            if [ -z "$ws_path_input" ]; then
-                path="/$(generate_random_path)"
-            else
-                path="/$ws_path_input"
-            fi
-            log "Path: $path"
-            ;;
-        *)
-            use_tls=false
-            network="tcp"
-            type_uri="tcp"
-            security_uri="none"
-            path=""
-            host=""
-            server_address="${ip}"
-            if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
-                server_address="[${ip}]"
-            fi
-            ;;
-    esac
+                read -p "WebSocket Path (默认随机生成): " ws_path_input
+                if [ -z "$ws_path_input" ]; then
+                    path="/$(generate_random_path)"
+                else
+                    path="/$ws_path_input"
+                fi
+                log "Path: $path"
+                ;;
+            *)
+                use_tls=false
+                network="tcp"
+                type_uri="tcp"
+                security_uri="none"
+                path=""
+                host=""
+                server_address="${ip}"
+                if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
+                    server_address="[${ip}]"
+                fi
+                ;;
+        esac
+        # URL 编码标签
+        encoded_tag=$(url_encode "$tag")
 
-    # URL 编码标签
-    encoded_tag=$(url_encode "$tag")
-
-    # 构建 URI 参数
-    uri_params="type=${type_uri}&encryption=${encryption}&packetEncoding=xudp"
-    if [ "$use_tls" = true ]; then
-        uri_params="${uri_params}&security=${security_uri}&sni=${domain}"
-        if [ "$network" = "ws" ]; then
-            encoded_path=$(url_encode "$path")
-            uri_params="${uri_params}&host=${host}&path=${encoded_path}"
+        # 构建 URI 参数
+        uri_params="type=${type_uri}&encryption=${encryption}&packetEncoding=xudp"
+        if [ "$use_tls" = true ]; then
+            uri_params="${uri_params}&security=${security_uri}&sni=${domain}&fp=${fingerprint}"
+            if [ "$network" = "ws" ]; then
+                encoded_path=$(url_encode "$path")
+                uri_params="${uri_params}&host=${host}&path=${encoded_path}"
+            fi
+        else
+            uri_params="${uri_params}&security=none"
         fi
-    else
-        uri_params="${uri_params}&security=none"
     fi
+    encoded_tag=$(url_encode "$tag")
     uri="vless://${uuid}@${server_address}:${port}?${uri_params}#${encoded_tag}"
 
     # 准备新节点信息 JSON
-    new_node_info=$(cat << EOF
+    if [ "$use_reality" = true ]; then
+        servernames_json=$(IFS=','; echo "[\"${servernames_array[*]}\"]")
+        shortids_json=$(IFS=','; echo "[\"${shortids[*]}\"]")
+        new_node_info=$(cat << EOF
+{
+  "uuid": "$uuid",
+  "port": $port,
+  "decryption": "$decryption",
+  "encryption": "$encryption",
+  "ip": "$ip",
+  "tag": "$tag",
+  "uri": "$uri",
+  "domain": "",
+  "network": "$network",
+  "path": "$path",
+  "use_reality": true,
+  "dest": "$dest",
+  "sni": "$sni",
+  "shortIds": $shortids_json,
+  "public_key": "$public_key_base64",
+  "flow": "$flow",
+  "fingerprint": "$fingerprint"
+}
+EOF
+)
+    else
+        new_node_info=$(cat << EOF
 {
   "uuid": "$uuid",
   "port": $port,
@@ -595,10 +718,12 @@ function generate_config() {
   "uri": "$uri",
   "domain": "$domain",
   "network": "$network",
-  "path": "$path"
+  "path": "$path",
+  "fingerprint": "$fingerprint"
 }
 EOF
 )
+    fi
 
     # 更新 vless.json
     if [ "$overwrite" = true ]; then
@@ -614,29 +739,48 @@ EOF
     fi
 
     # 准备 streamSettings JSON
-    if [ "$use_tls" = true ]; then
-        tls_settings='{
-          "certificates": [
-            {
-              "certificateFile": "'"$cert_path"'",
-              "keyFile": "'"$key_path"'"
-            }
-          ]
-        }'
-        ws_settings='{
-          "path": "'"$path"'",
-          "headers": {
-            "Host": "'"$host"'"
+    if [ "$use_reality" = true ]; then
+        servernames_json=$(IFS=','; echo "[\"${servernames_array[*]}\"]")
+        shortids_json=$(IFS=','; echo "[\"${shortids[*]}\"]")
+        stream_settings='{
+          "network": "tcp",
+          "security": "reality",
+          "realitySettings": {
+            "dest": "'"$dest"'",
+            "serverNames": '"$servernames_json"',
+            "privateKey": "'"$private"'",
+            "shortIds": '"$shortids_json"',
+            "fingerprint": "'"$fingerprint"'"
           }
         }'
-        stream_settings='{
-          "network": "'"$network"'",
-          "security": "tls",
-          "tlsSettings": '"$tls_settings"',
-          "wsSettings": '"$ws_settings"'
-        }'
+        client_flow='{"id":"'"$uuid"'","flow":"'"$flow"'"}'
     else
-        stream_settings='{"network": "'"$network"'"}'
+        if [ "$use_tls" = true ]; then
+            tls_settings='{
+              "certificates": [
+                {
+                  "certificateFile": "'"$cert_path"'",
+                  "keyFile": "'"$key_path"'"
+                }
+              ],
+              "fingerprint": "'"$fingerprint"'"
+            }'
+            ws_settings='{
+              "path": "'"$path"'",
+              "headers": {
+                "Host": "'"$host"'"
+              }
+            }'
+            stream_settings='{
+              "network": "'"$network"'",
+              "security": "tls",
+              "tlsSettings": '"$tls_settings"',
+              "wsSettings": '"$ws_settings"'
+            }'
+        else
+            stream_settings='{"network": "'"$network"'"}'
+        fi
+        client_flow='{"id":"'"$uuid"'"}'
     fi
 
     new_inbounds='[
@@ -645,9 +789,7 @@ EOF
         "protocol": "vless",
         "settings": {
           "clients": [
-            {
-              "id": "'"$uuid"'"
-            }
+            '"$client_flow"'
           ],
           "decryption": "'"$decryption"'"
         },
