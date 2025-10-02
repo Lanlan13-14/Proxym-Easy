@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 3.0
+# 版本: 3.1
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -21,7 +21,7 @@ WARN="${YELLOW}⚠️${NC}"
 CONFIG="/usr/local/etc/xray/config.json"
 VLESS_JSON="/etc/proxym/vless.json"
 SCRIPT_PATH="/usr/local/bin/proxym-easy"
-UPDATE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/vless-encryption.sh"  # 更新 URL
+UPDATE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/vless-encryption.sh"
 CRON_FILE="/tmp/proxym_cron.tmp"
 
 # 国家代码到国旗的完整映射（基于 ISO 3166-1 alpha-2）
@@ -107,7 +107,6 @@ function error() {
 
 function get_location_from_ip() {
     local ip=$1
-    # 添加超时机制：10 秒超时，避免 curl 卡住
     local location_info=$(curl -s --max-time 10 "http://ip-api.com/json/$ip?fields=status,message,countryCode,city" 2>/dev/null)
     if echo "$location_info" | grep -q '"status":"fail"'; then
         echo "Unknown"
@@ -132,22 +131,18 @@ function update_script() {
         error "脚本未在 $SCRIPT_PATH 找到"
     fi
 
-    # 备份当前脚本
     cp "$SCRIPT_PATH" "${SCRIPT_PATH}.bak"
     log "备份已创建: ${SCRIPT_PATH}.bak"
 
-    # 下载新版本
     if ! curl -s -o "${SCRIPT_PATH}.new" "$UPDATE_URL"; then
         error "从 $UPDATE_URL 下载更新失败"
     fi
 
-    # 检查语法
     if bash -n "${SCRIPT_PATH}.new" 2>/dev/null; then
         mv "${SCRIPT_PATH}.new" "$SCRIPT_PATH"
         chmod +x "$SCRIPT_PATH"
         log "更新成功！"
         rm -f "${SCRIPT_PATH}.bak"
-        # 直接 exec 新脚本
         exec bash "$SCRIPT_PATH"
     else
         rm -f "${SCRIPT_PATH}.new"
@@ -156,59 +151,120 @@ function update_script() {
     fi
 }
 
+function detect_package_manager() {
+    if command -v apt &> /dev/null; then
+        echo "apt"
+    elif command -v yum &> /dev/null; then
+        echo "yum"
+    elif command -v dnf &> /dev/null; then
+        echo "dnf"
+    elif command -v apk &> /dev/null; then
+        echo "apk"
+    elif command -v pacman &> /dev/null; then
+        echo "pacman"
+    else
+        echo "none"
+    fi
+}
+
 function install_dependencies() {
     local force_update=${1:-false}
+    local pkg_manager=$(detect_package_manager)
+    local deps=("curl" "unzip" "ca-certificates" "wget" "gnupg" "python3" "jq")
+    local cron_pkg="cron"
+
+    if [ "$pkg_manager" = "apk" ]; then
+        cron_pkg="dcron"
+    elif [ "$pkg_manager" = "pacman" ] || [ "$pkg_manager" = "yum" ] || [ "$pkg_manager" = "dnf" ]; then
+        cron_pkg="cronie"
+    fi
+    deps+=("$cron_pkg")
+
     if [ "$force_update" = true ]; then
         log "安装 Xray 依赖..."
-        if command -v apt &> /dev/null; then
-            # Debian/Ubuntu
-            sudo apt update
-            sudo apt install -y curl unzip ca-certificates wget gnupg lsb-release python3 cron jq
-            log "Debian/Ubuntu 依赖安装完成。"
-        elif command -v yum &> /dev/null; then
-            # CentOS/RHEL
-            sudo yum update -y
-            sudo yum install -y curl unzip ca-certificates wget gnupg python3 cronie jq
-            log "CentOS/RHEL 依赖安装完成。"
-        elif command -v dnf &> /dev/null; then
-            # Fedora
-            sudo dnf update -y
-            sudo dnf install -y curl unzip ca-certificates wget gnupg python3 cronie jq
-            log "Fedora 依赖安装完成。"
-        else
-            echo -e "${WARN} 未检测到包管理器，请手动安装 curl、unzip、ca-certificates、python3、cron、jq。${NC}"
-        fi
+        case "$pkg_manager" in
+            apt)
+                sudo apt update
+                sudo apt install -y "${deps[@]}"
+                log "Debian/Ubuntu 依赖安装完成。"
+                ;;
+            yum)
+                sudo yum update -y
+                sudo yum install -y "${deps[@]}"
+                log "CentOS/RHEL 依赖安装完成。"
+                ;;
+            dnf)
+                sudo dnf update -y
+                sudo dnf install -y "${deps[@]}"
+                log "Fedora 依赖安装完成。"
+                ;;
+            apk)
+                sudo apk update
+                sudo apk add --no-cache "${deps[@]}"
+                log "Alpine 依赖安装完成。"
+                ;;
+            pacman)
+                sudo pacman -Syu --noconfirm "${deps[@]}"
+                log "Arch 依赖安装完成。"
+                ;;
+            *)
+                echo -e "${WARN} 未检测到包管理器，请手动安装 curl、unzip、ca-certificates、python3、cron、jq。${NC}"
+                ;;
+        esac
     else
-        # 只检查并安装缺少的依赖，不 update
-        local deps=("curl" "unzip" "ca-certificates" "wget" "gnupg" "python3" "cron" "jq")
         local missing_deps=()
         for dep in "${deps[@]}"; do
-            if ! command -v "$dep" &> /dev/null; then
+            if ! command -v "${dep% *}" &> /dev/null; then
                 missing_deps+=("$dep")
             fi
         done
         if [ ${#missing_deps[@]} -gt 0 ]; then
             log "检测到缺少依赖: ${missing_deps[*]}，正在安装..."
-            if command -v apt &> /dev/null; then
-                sudo apt update
-                sudo apt install -y "${missing_deps[@]}"
-                log "Debian/Ubuntu 依赖安装完成。"
-            elif command -v yum &> /dev/null; then
-                sudo yum install -y "${missing_deps[@]}"
-                log "CentOS/RHEL 依赖安装完成。"
-            elif command -v dnf &> /dev/null; then
-                sudo dnf install -y "${missing_deps[@]}"
-                log "Fedora 依赖安装完成。"
-            else
-                echo -e "${WARN} 未检测到包管理器，请手动安装缺少的依赖: ${missing_deps[*]}。${NC}"
-            fi
+            case "$pkg_manager" in
+                apt)
+                    sudo apt update
+                    sudo apt install -y "${missing_deps[@]}"
+                    log "Debian/Ubuntu 依赖安装完成。"
+                    ;;
+                yum)
+                    sudo yum install -y "${missing_deps[@]}"
+                    log "CentOS/RHEL 依赖安装完成。"
+                    ;;
+                dnf)
+                    sudo dnf install -y "${missing_deps[@]}"
+                    log "Fedora 依赖安装完成。"
+                    ;;
+                apk)
+                    sudo apk update
+                    sudo apk add --no-cache "${missing_deps[@]}"
+                    log "Alpine 依赖安装完成。"
+                    ;;
+                pacman)
+                    sudo pacman -S --noconfirm "${missing_deps[@]}"
+                    log "Arch 依赖安装完成。"
+                    ;;
+                *)
+                    echo -e "${WARN} 未检测到包管理器，请手动安装缺少的依赖: ${missing_deps[*]}。${NC}"
+                    ;;
+            esac
         fi
+    fi
+}
+
+function detect_init_system() {
+    if command -v systemctl &> /dev/null; then
+        echo "systemd"
+    elif command -v rc-service &> /dev/null; then
+        echo "openrc"
+    else
+        echo "none"
     fi
 }
 
 function install_xray() {
     local pause=${1:-1}
     local force_deps=${2:-false}
+    local init_system=$(detect_init_system)
     if command -v xray &> /dev/null; then
         log "Xray 已安装。"
         if [ $pause -eq 1 ]; then
@@ -216,9 +272,21 @@ function install_xray() {
         fi
         return 0
     else
-        install_dependencies "$force_deps"  # 安装依赖，如果 force_deps=true 则 update
+        install_dependencies "$force_deps"
         log "安装 Xray..."
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
+        if [ "$init_system" = "openrc" ]; then
+            curl -L https://github.com/XTLS/Xray-install/raw/main/alpinelinux/install-release.sh -o /tmp/install-release.sh
+            ash /tmp/install-release.sh
+            rm -f /tmp/install-release.sh
+            # 可选：为节点降低攻击面
+            read -p "是否为 Xray 节点降低网络特权（仅保留 cap_net_bind_service）？(y/N): " reduce_priv
+            if [[ $reduce_priv =~ ^[Yy]$ ]]; then
+                sudo sed -i 's/^capabilities="^cap_net_bind_service,^cap_net_admin,^cap_net_raw"$/capabilities="^cap_net_bind_service"/g' /etc/init.d/xray
+                log "已调整 Xray 网络特权，仅保留 cap_net_bind_service。"
+            fi
+        else
+            bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
+        fi
         if [ $? -eq 0 ]; then
             log "Xray 安装成功。"
         else
@@ -231,31 +299,69 @@ function install_xray() {
 }
 
 function start_xray() {
-    sudo systemctl start xray
+    local init_system=$(detect_init_system)
+    if [ "$init_system" = "systemd" ]; then
+        sudo systemctl start xray
+    elif [ "$init_system" = "openrc" ]; then
+        sudo rc-service xray start
+    else
+        error "不支持的 init 系统。"
+    fi
     log "Xray 已启动。"
     read -p "按 Enter 返回菜单..."
 }
 
 function stop_xray() {
-    sudo systemctl stop xray
+    local init_system=$(detect_init_system)
+    if [ "$init_system" = "systemd" ]; then
+        sudo systemctl stop xray
+    elif [ "$init_system" = "openrc" ]; then
+        sudo rc-service xray stop
+    else
+        error "不支持的 init 系统。"
+    fi
     log "Xray 已停止。"
     read -p "按 Enter 返回菜单..."
 }
 
 function restart_xray() {
-    sudo systemctl restart xray
+    local init_system=$(detect_init_system)
+    if [ "$init_system" = "systemd" ]; then
+        sudo systemctl restart xray
+    elif [ "$init_system" = "openrc" ]; then
+        sudo rc-service xray restart
+    else
+        error "不支持的 init 系统。"
+    fi
     log "Xray 已重启。"
     read -p "按 Enter 返回菜单..."
 }
 
 function status_xray() {
-    sudo systemctl status xray --no-pager
+    local init_system=$(detect_init_system)
+    if [ "$init_system" = "systemd" ]; then
+        sudo systemctl status xray --no-pager
+    elif [ "$init_system" = "openrc" ]; then
+        sudo rc-service xray status
+    else
+        error "不支持的 init 系统。"
+    fi
     read -p "按 Enter 返回菜单..."
 }
 
 function view_logs() {
-    sudo journalctl -u xray -f --no-pager
-    # 对于跟随日志，按 Ctrl+C 退出后返回
+    local init_system=$(detect_init_system)
+    if [ "$init_system" = "systemd" ]; then
+        sudo journalctl -u xray -f --no-pager
+    elif [ "$init_system" = "openrc" ]; then
+        if [ -f /var/log/xray.log ]; then
+            tail -f /var/log/xray.log
+        else
+            error "Xray 日志文件未找到（/var/log/xray.log）。请检查配置。"
+        fi
+    else
+        error "不支持的 init 系统。"
+    fi
     read -p "按 Enter 返回菜单..."
 }
 
@@ -281,15 +387,13 @@ function test_config() {
 }
 
 function generate_config() {
-    install_xray 0 false  # 确保已安装，但不暂停，且不 force update 依赖
+    install_xray 0 false
 
-    # 确保 Xray 配置目录存在
     sudo mkdir -p /usr/local/etc/xray
 
     log "生成新的 VLESS 配置..."
     echo -e "${YELLOW}按 Enter 使用默认值。${NC}"
 
-    # 检查现有配置
     if [ ! -f "$CONFIG" ]; then
         overwrite=true
     else
@@ -302,7 +406,6 @@ function generate_config() {
         fi
     fi
 
-    # UUID
     read -p "UUID (默认: 新生成): " uuid_input
     if [ -z "$uuid_input" ]; then
         uuid=$(xray uuid)
@@ -311,7 +414,6 @@ function generate_config() {
     fi
     log "UUID: $uuid"
 
-    # KEX 选择 (菜单) - 先 VLESS Encryption
     echo "请选择 KEX:"
     echo "[1] x25519"
     echo "[2] mlkem768x25519plus (默认)"
@@ -326,7 +428,6 @@ function generate_config() {
     esac
     log "KEX: $kex"
 
-    # 方法选择 (菜单，默认 random)
     echo "请选择方法:"
     echo "[1] native"
     echo "[2] xorpub"
@@ -343,7 +444,6 @@ function generate_config() {
     esac
     log "方法: $method"
 
-    # RTT 选择 (菜单)
     echo "请选择 RTT:"
     echo "[1] 0rtt (默认)"
     echo "[2] 1rtt"
@@ -358,14 +458,12 @@ function generate_config() {
     esac
     log "RTT: $rtt"
 
-    # 根据 RTT 设置服务端 time
     if [ "$rtt" = "0rtt" ]; then
         time_server="600s"
     else
         time_server="0s"
     fi
 
-    # 生成 x25519 密钥
     log "生成 X25519 密钥..."
     x25519_output=$(xray x25519)
     private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
@@ -375,7 +473,6 @@ function generate_config() {
         error "X25519 密钥生成失败。请确保 Xray 已安装。"
     fi
 
-    # 生成 MLKEM 如果选择
     seed=""
     client_param=""
     if [ "$use_mlkem" = true ]; then
@@ -390,7 +487,6 @@ function generate_config() {
         fi
     fi
 
-    # 构建服务端 decryption 和客户端 encryption (默认)
     decryption="${kex}.${method}.${time_server}.${private}"
     if [ "$use_mlkem" = true ]; then
         decryption="${decryption}.${seed}"
@@ -401,7 +497,6 @@ function generate_config() {
         encryption="${encryption}.${client_param}"
     fi
 
-    # REALITY 选择 - 后 VLESS Encryption
     echo "是否启用 REALITY (Xray 官方推荐用于 TCP):"
     echo "[1] 是 (仅支持 TCP)"
     echo "[2] 否 (支持 TCP 或 WebSocket + TLS)"
@@ -416,7 +511,6 @@ function generate_config() {
     log "启用 REALITY: $( [ "$use_reality" = true ] && echo "是" || echo "否" )"
 
     if [ "$use_reality" = true ]; then
-        # 对于 REALITY，重设 decryption 和 encryption 为 none
         decryption="none"
         encryption="none"
         flow="xtls-rprx-vision"
@@ -437,7 +531,6 @@ function generate_config() {
         IFS=',' read -ra shortids <<< "$shortids_input"
         shortId="${shortids[0]}"
 
-        # uTLS fingerprint for REALITY
         echo "请选择 uTLS Fingerprint (用于伪装):"
         echo "[1] chrome (默认)"
         echo "[2] firefox"
@@ -455,13 +548,12 @@ function generate_config() {
             *) fingerprint="chrome" ;;
         esac
         log "REALITY 配置: dest=$dest, sni=$sni, shortId=$shortId, fingerprint=$fingerprint"
-        public_key_base64="$password"  # 使用 x25519 的 password 作为 pbk
+        public_key_base64="$password"
     else
-        fingerprint="chrome"  # 默认
+        fingerprint="chrome"
     fi
 
     echo "vless reality推荐端口为443"
-    # 端口
     default_port=8443
     if [ "$use_reality" = true ]; then
         default_port=443
@@ -470,10 +562,8 @@ function generate_config() {
     port=${port_input:-$default_port}
     log "端口: $port"
 
-    # IP - 修改：优先 IPv4，fallback IPv6
     read -p "服务器 IP (默认: 自动检测): " ip_input
     if [ -z "$ip_input" ]; then
-        # 优先尝试 IPv4
         ip=$(curl -s -4 ifconfig.me 2>/dev/null)
         if [ -z "$ip" ] || [ "$ip" = "0.0.0.0" ]; then
             log "IPv4 检测失败，尝试 IPv6..."
@@ -489,7 +579,6 @@ function generate_config() {
         ip="$ip_input"
     fi
 
-    # 自动获取标签基于IP
     log "根据 IP $ip 获取地理位置..."
     tag=$(get_location_from_ip "$ip")
     if [ "$tag" = "Unknown" ]; then
@@ -498,11 +587,9 @@ function generate_config() {
     fi
     log "标签: $tag"
 
-    # DNS
     read -p "DNS 服务器 (默认: 8.8.8.8): " dns_server_input
     dns_server=${dns_server_input:-8.8.8.8}
 
-    # 查询策略选择 (菜单)
     echo "请选择查询策略:"
     echo "[1] UseIPv4 (默认)"
     echo "[2] UseIPv6"
@@ -521,7 +608,6 @@ function generate_config() {
     esac
     log "查询策略: $strategy"
 
-    # 出站域名策略选择 (菜单)
     echo "请选择出站域名策略:"
     echo "[1] UseIPv4v6 (默认)"
     echo "[2] UseIPv6v4"
@@ -540,7 +626,6 @@ function generate_config() {
     esac
     log "出站域名策略: $domain_strategy"
 
-    # 传输层选择
     if [ "$use_reality" = true ]; then
         network="tcp"
         type_uri="tcp"
@@ -587,7 +672,6 @@ function generate_config() {
                 server_address="$domain"
                 log "[?] 输入域名以显示证书路径: $domain"
 
-                # uTLS fingerprint for TLS
                 echo "请选择 uTLS Fingerprint (用于伪装):"
                 echo "[1] chrome (默认)"
                 echo "[2] firefox"
@@ -662,10 +746,7 @@ function generate_config() {
                 fi
                 ;;
         esac
-        # URL 编码标签
         encoded_tag=$(url_encode "$tag")
-
-        # 构建 URI 参数
         uri_params="type=${type_uri}&encryption=${encryption}&packetEncoding=xudp"
         if [ "$use_tls" = true ]; then
             uri_params="${uri_params}&security=${security_uri}&sni=${domain}&fp=${fingerprint}"
@@ -680,7 +761,6 @@ function generate_config() {
     encoded_tag=$(url_encode "$tag")
     uri="vless://${uuid}@${server_address}:${port}?${uri_params}#${encoded_tag}"
 
-    # 准备新节点信息 JSON
     if [ "$use_reality" = true ]; then
         servernames_json=$(IFS=','; echo "[\"${servernames_array[*]}\"]")
         shortids_json=$(IFS=','; echo "[\"${shortids[*]}\"]")
@@ -725,7 +805,6 @@ EOF
 )
     fi
 
-    # 更新 vless.json
     if [ "$overwrite" = true ]; then
         echo "[$new_node_info]" > "$VLESS_JSON"
     else
@@ -738,7 +817,6 @@ EOF
         fi
     fi
 
-    # 准备 streamSettings JSON
     if [ "$use_reality" = true ]; then
         servernames_json=$(IFS=','; echo "[\"${servernames_array[*]}\"]")
         shortids_json=$(IFS=','; echo "[\"${shortids[*]}\"]")
@@ -798,7 +876,6 @@ EOF
     ]'
 
     if [ "$overwrite" = true ]; then
-        # 覆盖整个配置
         cat > "$CONFIG" << EOF
 {
   "log": {
@@ -825,7 +902,6 @@ EOF
 }
 EOF
     else
-        # 附加：使用 jq 追加到 inbounds
         if ! jq . "$CONFIG" > /dev/null 2>&1; then
             error "现有配置不是有效 JSON，无法附加。"
         fi
@@ -835,7 +911,6 @@ EOF
         log "节点配置已附加到现有配置文件。"
     fi
 
-    # 测试配置
     if xray -test -config "$CONFIG" &> /dev/null; then
         log "配置有效！"
         restart_xray
@@ -866,7 +941,7 @@ function print_uri() {
 function check_cron_installed() {
     if ! command -v crontab &> /dev/null; then
         log "Cron 未安装，正在安装..."
-        install_dependencies false  # 不 force update
+        install_dependencies false
         if ! command -v crontab &> /dev/null; then
             error "Cron 安装失败。"
         fi
@@ -877,9 +952,9 @@ function check_cron_installed() {
 function view_cron() {
     check_cron_installed
     echo -e "${YELLOW}当前 Xray 重启 Cron 任务:${NC}"
-    if crontab -l 2>/dev/null | grep -q "systemctl restart xray"; then
+    if crontab -l 2>/dev/null | grep -q "rc-service xray restart\|systemctl restart xray"; then
         echo -e "${GREEN}已设置自动重启任务:${NC}"
-        crontab -l 2>/dev/null | grep "systemctl restart xray"
+        crontab -l 2>/dev/null | grep "rc-service xray restart\|systemctl restart xray"
     else
         echo -e "${RED}未设置自动重启任务。${NC}"
     fi
@@ -888,7 +963,7 @@ function view_cron() {
 
 function set_cron() {
     check_cron_installed
-    view_cron  # 先显示当前状态
+    view_cron
     echo "请选择定时重启方式："
     echo "1. 运行 X 小时后重启 ⏳"
     echo "2. 每天某时间重启 🌞"
@@ -896,11 +971,21 @@ function set_cron() {
     echo "4. 每月某天某时间重启 📆"
     read -p "请输入选项 (1-4): " choice
 
+    local init_system=$(detect_init_system)
+    local restart_cmd=""
+    if [ "$init_system" = "systemd" ]; then
+        restart_cmd="/usr/bin/systemctl restart xray"
+    elif [ "$init_system" = "openrc" ]; then
+        restart_cmd="/sbin/rc-service xray restart"
+    else
+        error "不支持的 init 系统。"
+    fi
+
     case "$choice" in
         1)
             read -p "请输入间隔小时数 (例如 6 表示每 6 小时重启一次): " hours
             if [[ "$hours" =~ ^[0-9]+$ ]] && [ "$hours" -gt 0 ]; then
-                cron_cmd="0 */$hours * * * /usr/bin/systemctl restart xray"
+                cron_cmd="0 */$hours * * * $restart_cmd"
             else
                 error "无效的小时数。"
                 return
@@ -909,20 +994,20 @@ function set_cron() {
         2)
             read -p "请输入每天的小时 (0-23): " h
             read -p "请输入每天的分钟 (0-59): " m
-            cron_cmd="$m $h * * * /usr/bin/systemctl restart xray"
+            cron_cmd="$m $h * * * $restart_cmd"
             ;;
         3)
             echo "周几 (0=周日,1=周一,...,6=周六)"
             read -p "请输入周几: " w
             read -p "请输入小时 (0-23): " h
             read -p "请输入分钟 (0-59): " m
-            cron_cmd="$m $h * * $w /usr/bin/systemctl restart xray"
+            cron_cmd="$m $h * * $w $restart_cmd"
             ;;
         4)
             read -p "请输入每月的日期 (1-31): " d
             read -p "请输入小时 (0-23): " h
             read -p "请输入分钟 (0-59): " m
-            cron_cmd="$m $h $d * * /usr/bin/systemctl restart xray"
+            cron_cmd="$m $h $d * * $restart_cmd"
             ;;
         *)
             error "无效选择。"
@@ -930,20 +1015,20 @@ function set_cron() {
             ;;
     esac
 
-    # 设置 cron
-    (crontab -l 2>/dev/null | grep -v "systemctl restart xray"; echo "$cron_cmd") | crontab -
+    (crontab -l 2>/dev/null | grep -v "systemctl restart xray\|rc-service xray restart"; echo "$cron_cmd") | crontab -
     log "Cron 已设置: $cron_cmd"
     read -p "按 Enter 返回菜单..."
 }
 
 function delete_cron() {
     check_cron_installed
-    (crontab -l 2>/dev/null | grep -v "systemctl restart xray") | crontab -
+    (crontab -l 2>/dev/null | grep -v "systemctl restart xray\|rc-service xray restart") | crontab -
     log "Xray 重启 Cron 已删除。"
     read -p "按 Enter 返回菜单..."
 }
 
 function uninstall() {
+    local init_system=$(detect_init_system)
     echo -e "${YELLOW}卸载选项:${NC}"
     echo "[1] 只卸载脚本和配置 (保留 Xray)"
     echo "[2] 卸载 Xray 但保留脚本和配置"
@@ -956,12 +1041,10 @@ function uninstall() {
         1)
             read -p "确定只卸载脚本和配置吗？ (y/N): " confirm
             if [[ $confirm =~ ^[Yy]$ ]]; then
-                # 备份脚本（可选）
                 if [ -f "$SCRIPT_PATH" ]; then
                     sudo cp "$SCRIPT_PATH" "${SCRIPT_PATH}.backup"
                     log "脚本备份已创建: ${SCRIPT_PATH}.backup"
                 fi
-                # 移除配置和目录
                 sudo rm -f "$CONFIG" "$VLESS_JSON"
                 sudo rm -rf /etc/proxym
                 sudo rm -f "$SCRIPT_PATH"
@@ -972,11 +1055,15 @@ function uninstall() {
         2)
             read -p "确定卸载 Xray 但保留脚本和配置吗？ (y/N): " confirm
             if [[ $confirm =~ ^[Yy]$ ]]; then
-                # 停止 Xray
-                sudo systemctl stop xray 2>/dev/null || true
-                # 移除 Xray
-                bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
-                # 保留配置、目录和脚本
+                if [ "$init_system" = "systemd" ]; then
+                    sudo systemctl stop xray 2>/dev/null || true
+                    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
+                elif [ "$init_system" = "openrc" ]; then
+                    sudo rc-service xray stop 2>/dev/null || true
+                    curl -L https://github.com/XTLS/Xray-install/raw/main/alpinelinux/install-release.sh -o /tmp/install-release.sh
+                    ash /tmp/install-release.sh remove
+                    rm -f /tmp/install-release.sh
+                fi
                 log "Xray 已卸载（脚本和配置保留）。"
                 echo -e "${YELLOW}Xray 已移除。如需重新安装 Xray，请运行 [1] 安装 Xray 选项。${NC}"
             fi
@@ -984,9 +1071,15 @@ function uninstall() {
         3)
             read -p "确定卸载全部吗？这将移除 Xray 和所有配置 (y/N): " confirm
             if [[ $confirm =~ ^[Yy]$ ]]; then
-                sudo systemctl stop xray 2>/dev/null || true
-                bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
-                # 移除配置和目录
+                if [ "$init_system" = "systemd" ]; then
+                    sudo systemctl stop xray 2>/dev/null || true
+                    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
+                elif [ "$init_system" = "openrc" ]; then
+                    sudo rc-service xray stop 2>/dev/null || true
+                    curl -L https://github.com/XTLS/Xray-install/raw/main/alpinelinux/install-release.sh -o /tmp/install-release.sh
+                    ash /tmp/install-release.sh remove
+                    rm -f /tmp/install-release.sh
+                fi
                 sudo rm -f "$CONFIG" "$VLESS_JSON"
                 sudo rm -rf /etc/proxym
                 sudo rm -f "$SCRIPT_PATH"
@@ -1000,7 +1093,7 @@ function uninstall() {
         *)
             echo -e "${RED}无效选项，请重试。${NC}"
             sleep 1
-            uninstall  # 递归调用以重试
+            uninstall
             return
             ;;
     esac
@@ -1019,7 +1112,7 @@ function show_menu() {
     echo "[6] 📊 查看状态"
     echo "[7] 📝 查看日志"
     echo "[8] ⏰ 设置 Cron 重启"
-    echo "[9] 👁️  查看 Cron 任务"
+    echo "[9] 👁️ 查看 Cron 任务"
     echo "[10] 🗑️ 删除 Cron"
     echo "[11] 🖨️ 打印 VLESS URI"
     echo "[12] 🔄 更新脚本"
@@ -1030,7 +1123,7 @@ function show_menu() {
     echo -e "${YELLOW}请选择选项 (1-16): ${NC}"
     read choice
     case $choice in
-        1) install_xray 1 true ;;  # 安装 Xray 时 force update 依赖
+        1) install_xray 1 true ;;
         2) generate_config ;;
         3) start_xray ;;
         4) stop_xray ;;
@@ -1050,7 +1143,6 @@ function show_menu() {
     esac
 }
 
-# 主程序
 if [ "$EUID" -ne 0 ]; then
     error "请使用 sudo 运行: sudo proxym-easy"
 fi
