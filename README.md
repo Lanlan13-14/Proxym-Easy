@@ -56,3 +56,6 @@ VLESS Encryption与VLESS Version Reality***无法同时启用***当你选择VLES
 >
 若使用
 VLESS Encryption+ws传输推荐搭配[Cert-Easy](https://github.com/Lanlan13-14/Cert-Easy)使用，可实现仅输入域名后自动填充相关内容
+>
+Reality域名选择推荐查看
+https://www.v2ray-agent.com/archives/1689439383686
