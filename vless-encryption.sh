@@ -515,11 +515,11 @@ function generate_config() {
         encryption="none"
         flow="xtls-rprx-vision"
         log "REALITY 模式下 VLESS Encryption 设置为 none"
-        read -p "REALITY 伪装目标 dest (默认: www.cloudflare.com:443): " dest_input
-        dest=${dest_input:-"www.cloudflare.com:443"}
-        read -p "serverNames (逗号分隔 SNI 列表, 默认: www.cloudflare.com): " servernames_input
+        read -p "REALITY 伪装目标 dest (默认: swdist.apple.com:443): " dest_input
+        dest=${dest_input:-"swdist.apple.com:443"}
+        read -p "serverNames (逗号分隔 SNI 列表, 默认: swdist.apple.com): " servernames_input
         if [ -z "$servernames_input" ]; then
-            servernames_input="www.cloudflare.com"
+            servernames_input="swdist.apple.com"
         fi
         IFS=',' read -ra servernames_array <<< "$servernames_input"
         sni="${servernames_array[0]}"
