@@ -24,6 +24,9 @@ SCRIPT_PATH="/usr/local/bin/proxym-easy"
 UPDATE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/vless-encryption.sh"
 CRON_FILE="/tmp/proxym_cron.tmp"
 
+# 确保 UTF-8 编码
+export LC_ALL=C.UTF-8
+
 # 国家代码到国旗的完整映射（基于 ISO 3166-1 alpha-2）
 declare -A FLAGS=(
     [AD]="🇦🇩" [AE]="🇦🇪" [AF]="🇦🇫" [AG]="🇦🇬" [AI]="🇦🇮"
@@ -81,7 +84,7 @@ declare -A FLAGS=(
 # URL 编码函数（使用 Python3 进行 URL 编码，支持 Unicode 如 emoji）
 url_encode() {
     if command -v python3 &> /dev/null; then
-        python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read().strip(), safe=''), end='')" <<< "$1"
+        python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.buffer.read().decode('utf-8').strip(), safe=''), end='')" <<< "$1"
     else
         echo -e "${WARN} Python3 未找到，无法 URL 编码标签。使用原始标签。${NC}"
         echo "$1"
