@@ -499,7 +499,7 @@ function generate_config() {
 
     echo "是否启用 REALITY (Xray 官方推荐用于 TCP):"
     echo "[1] 是 (仅支持 TCP)"
-    echo "[2] 否 (支持 TCP 或 WebSocket + TLS)"
+    echo "[2] 否 (支持 TCP 或 WebSocket + TLS 或 WebSocket 无 TLS)"
     read -p "请输入选项 (1-2, 默认: 2): " reality_choice_input
     if [ -z "$reality_choice_input" ]; then
         reality_choice_input="2"
@@ -642,7 +642,8 @@ function generate_config() {
         echo "请选择传输层:"
         echo "[1] TCP (默认)"
         echo "[2] WebSocket + TLS"
-        read -p "请输入选项 (1-2, 默认: 1): " transport_choice_input
+        echo "[3] WebSocket (无 TLS)"
+        read -p "请输入选项 (1-3, 默认: 1): " transport_choice_input
         if [ -z "$transport_choice_input" ]; then
             transport_choice_input="1"
         fi
@@ -733,6 +734,27 @@ function generate_config() {
                 fi
                 log "Path: $path"
                 ;;
+            3)
+                use_tls=false
+                network="ws"
+                type_uri="ws"
+                security_uri="none"
+                read -p "输入 Host (可为域名或 IP, 默认: $ip): " host_input
+                host=${host_input:-$ip}
+                server_address="${ip}"
+                if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
+                    server_address="[${ip}]"
+                fi
+                read -p "WebSocket Path (默认随机生成): " ws_path_input
+                if [ -z "$ws_path_input" ]; then
+                    path="/$(generate_random_path)"
+                else
+                    path="/$ws_path_input"
+                fi
+                log "Host: $host"
+                log "Path: $path"
+                domain=""
+                ;;
             *)
                 use_tls=false
                 network="tcp"
@@ -748,12 +770,13 @@ function generate_config() {
         esac
         encoded_tag=$(url_encode "$tag")
         uri_params="type=${type_uri}&encryption=${encryption}&packetEncoding=xudp"
+        if [ "$network" = "ws" ]; then
+            encoded_path=$(url_encode "$path")
+            encoded_host=$(url_encode "$host")
+            uri_params="${uri_params}&host=${encoded_host}&path=${encoded_path}"
+        fi
         if [ "$use_tls" = true ]; then
             uri_params="${uri_params}&security=${security_uri}&sni=${domain}&fp=${fingerprint}"
-            if [ "$network" = "ws" ]; then
-                encoded_path=$(url_encode "$path")
-                uri_params="${uri_params}&host=${host}&path=${encoded_path}"
-            fi
         else
             uri_params="${uri_params}&security=none"
         fi
@@ -799,6 +822,7 @@ EOF
   "domain": "$domain",
   "network": "$network",
   "path": "$path",
+  "host": "$host",
   "fingerprint": "$fingerprint"
 }
 EOF
@@ -833,6 +857,12 @@ EOF
         }'
         client_flow='{"id":"'"$uuid"'","flow":"'"$flow"'"}'
     else
+        ws_settings='{
+          "path": "'"$path"'",
+          "headers": {
+            "Host": "'"$host"'"
+          }
+        }'
         if [ "$use_tls" = true ]; then
             tls_settings='{
               "certificates": [
@@ -843,12 +873,6 @@ EOF
               ],
               "fingerprint": "'"$fingerprint"'"
             }'
-            ws_settings='{
-              "path": "'"$path"'",
-              "headers": {
-                "Host": "'"$host"'"
-              }
-            }'
             stream_settings='{
               "network": "'"$network"'",
               "security": "tls",
@@ -856,7 +880,14 @@ EOF
               "wsSettings": '"$ws_settings"'
             }'
         else
-            stream_settings='{"network": "'"$network"'"}'
+            if [ "$network" = "ws" ]; then
+                stream_settings='{
+                  "network": "'"$network"'",
+                  "wsSettings": '"$ws_settings"'
+                }'
+            else
+                stream_settings='{"network": "'"$network"'"}'
+            fi
         fi
         client_flow='{"id":"'"$uuid"'"}'
     fi
