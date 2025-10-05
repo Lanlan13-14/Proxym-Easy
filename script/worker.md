@@ -28,7 +28,12 @@ Workers & Pages → Create
 ✅ 3️⃣ 复制 Worker 代码
 
 注意:
-SERVER_TOKENS
+SERVER_TOKEN
+>
+CLIENT_TOKEN
+>
+UA
+必须修改，若不修改后果自负
 
 ✅ 4️⃣ 创建 KV 命名空间
 
@@ -74,3 +79,77 @@ https://substore.yourname.workers.dev
 
 答案就是：
 👉 你在 Worker 代码里 SERVER_TOKENS 这块添加新的 token 即可👇
+
+✅ 7️⃣ 示例
+假设：
+
+Worker 域名：https://example.workers.dev
+
+Sub-Store 拉取 token（CLIENT_TOKEN）：supersecretclienttoken123456
+
+后端 push token（服务器标识）：hk01、sg01、us01
+
+UA：Iclash/1.0
+
+
+
+---
+
+1️⃣ Push 节点（服务器端）
+
+
+curl -X POST 'https://example.workers.dev/push' \
+  -H "Content-Type: application/json" \
+  -d '{"token":"hk01","uri":"vmess://AAAAAA"}'
+
+> 替换 "hk01" 和 "vmess://AAAAAA" “https://example.workers.dev/push”为对应服务器和节点 URI
+
+
+
+
+---
+
+2️⃣ 拉取订阅（Sub-Store 用）
+
+拉取所有节点（拼接）
+
+curl -A 'Iclash/1.0' 'https://example.workers.dev/sub?token=supersecretclienttoken123456'
+
+拉取单个服务器节点
+
+curl -A 'Iclash/1.0' 'https://example.workers.dev/sub?token=supersecretclienttoken123456&server=hk01'
+
+> 注意：UA 必须包含 Iclash，token 必须和 CLIENT_TOKEN 匹配, 单个节点拉取必须和 SERVER_TOKEN 匹配
+
+
+
+
+---
+
+3️⃣ 删除单个服务器节点
+
+curl 'https://example.workers.dev/delete?token=supersecretclienttoken123456&server=hk01'
+
+> 删除指定 push token 节点
+不需要 UA 校验，只要 CLIENT_TOKEN 正确即可
+
+
+
+
+---
+
+4️⃣ 删除全部节点
+
+curl -A 'Iclash/1.0' 'https://example.workers.dev/delete?token=supersecretclienttoken123456'
+
+> 会删除 KV 中所有服务器节点
+必须 UA 包含 Iclash，且 token 是 Sub-Store 拉取 token
+
+
+
+
+---
+
+✅ 这样就完成了 多服务器 push + 安全拉取 + 单个/全部删除 全流程的 curl 操作
+
+> 可以直接放在服务器脚本里做定时更新或清理
