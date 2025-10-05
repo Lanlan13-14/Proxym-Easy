@@ -413,6 +413,10 @@ function generate_node_info() {
     local push_token=${22}
     local servernames_json=${23}
     local private_key=${24:-""}
+    local kex=${25}
+    local method=${26}
+    local rtt=${27}
+    local use_mlkem=${28}
 
     if [ "$use_reality" = true ]; then
         cat << EOF
@@ -439,7 +443,11 @@ function generate_node_info() {
   "push_url": "$push_url",
   "push_token": "$push_token",
   "serverNames": $servernames_json,
-  "privateKey": "$private_key"
+  "privateKey": "$private_key",
+  "kex": "$kex",
+  "method": "$method",
+  "rtt": "$rtt",
+  "use_mlkem": $use_mlkem
 }
 EOF
     else
@@ -460,7 +468,11 @@ EOF
   "is_custom_tag": $is_custom,
   "push_enabled": $push_enabled,
   "push_url": "$push_url",
-  "push_token": "$push_token"
+  "push_token": "$push_token",
+  "kex": "$kex",
+  "method": "$method",
+  "rtt": "$rtt",
+  "use_mlkem": $use_mlkem
 }
 EOF
     fi
@@ -513,33 +525,39 @@ function reset_all() {
         local push_token=$(echo "$node" | jq -r '.push_token // ""')
         local servernames_json=$(echo "$node" | jq -r '.serverNames // []')
         local private_key=$(echo "$node" | jq -r '.privateKey // ""')
+        local kex=$(echo "$node" | jq -r '.kex // ""')
+        local method=$(echo "$node" | jq -r '.method // ""')
+        local rtt=$(echo "$node" | jq -r '.rtt // ""')
+        local use_mlkem=$(echo "$node" | jq -r '.use_mlkem // false')
 
         local decryption
         local encryption
         local public_key_base64
 
         if [ "$use_reality" = false ]; then
-            local kex=$(echo "$node" | jq -r '.decryption' | cut -d'.' -f1)
-            local method=$(echo "$node" | jq -r '.decryption' | cut -d'.' -f2)
-            local time_server=$(echo "$node" | jq -r '.decryption' | cut -d'.' -f3)
-            local use_mlkem=false
-            if [[ "$kex" == "mlkem768x25519plus" ]]; then
-                use_mlkem=true
+            if [ "$rtt" = "0rtt" ]; then
+                time_server="600s"
+            else
+                time_server="0s"
+            fi
+            x25519_output=$(xray x25519)
+            private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+            password=$(echo "$x25519_output" | grep "Password:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+
+            local seed=""
+            local client_param=""
+            if [ "$use_mlkem" = true ]; then
                 mlkem_output=$(xray mlkem768 2>/dev/null)
                 seed=$(echo "$mlkem_output" | grep "Seed:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
                 client_param=$(echo "$mlkem_output" | grep "Client:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
             fi
-
-            x25519_output=$(xray x25519)
-            private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
-            password=$(echo "$x25519_output" | grep "Password:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
 
             decryption="${kex}.${method}.${time_server}.${private}"
             if [ "$use_mlkem" = true ]; then
                 decryption="${decryption}.${seed}"
             fi
 
-            encryption="${kex}.${method}.${time_server/0s/0rtt}.${password}"  # 假设 rtt 基于 time_server
+            encryption="${kex}.${method}.${rtt}.${password}"
             if [ "$use_mlkem" = true ]; then
                 encryption="${encryption}.${client_param}"
             fi
@@ -586,7 +604,7 @@ function reset_all() {
         encoded_tag=$(url_encode "$tag")
         local uri="vless://${uuid}@${server_address}:${port}?${uri_params}#${encoded_tag}"
 
-        new_nodes+=("$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$ip" "$tag" "$uri" "$domain" "$network" "$path" "$host" "$fingerprint" "$is_custom" "$use_reality" "$dest" "$sni" "$shortids_json" "$public_key_base64" "$flow" "$push_enabled" "$push_url" "$push_token" "$servernames_json" "$private_key")")
+        new_nodes+=("$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$ip" "$tag" "$uri" "$domain" "$network" "$path" "$host" "$fingerprint" "$is_custom" "$use_reality" "$dest" "$sni" "$shortids_json" "$public_key_base64" "$flow" "$push_enabled" "$push_url" "$push_token" "$servernames_json" "$private_key" "$kex" "$method" "$rtt" "$use_mlkem")")
     done <<< "$nodes"
 
     # 保存新节点
@@ -875,6 +893,10 @@ function generate_config() {
         decryption="none"
         encryption="none"
         flow="xtls-rprx-vision"
+        kex=""
+        method=""
+        rtt=""
+        use_mlkem=false
         log "REALITY 模式下 VLESS Encryption 设置为 none"
         read -p "REALITY 伪装目标 dest (默认: swdist.apple.com:443): " dest_input
         dest=${dest_input:-"swdist.apple.com:443"}
@@ -1187,7 +1209,7 @@ function generate_config() {
         push_enabled=true
     fi
 
-    new_node_info=$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$ip" "$tag" "$uri" "$domain" "$network" "$path" "$host" "$fingerprint" "$is_custom" "$use_reality" "$dest" "$sni" "$shortids_json" "$public_key_base64" "$flow" "$push_enabled" "$push_url" "$push_token" "$servernames_json" "$private_key")
+    new_node_info=$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$ip" "$tag" "$uri" "$domain" "$network" "$path" "$host" "$fingerprint" "$is_custom" "$use_reality" "$dest" "$sni" "$shortids_json" "$public_key_base64" "$flow" "$push_enabled" "$push_url" "$push_token" "$servernames_json" "$private_key" "$kex" "$method" "$rtt" "$use_mlkem")
 
     if [ "$overwrite" = true ]; then
         echo "[$new_node_info]" > "$VLESS_JSON"
