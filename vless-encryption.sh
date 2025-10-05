@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 3.0
+# 版本: 4.0
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -112,7 +112,7 @@ function get_location_from_ip() {
     local ip=$1
     local location_info=$(curl -s --max-time 10 "http://ip-api.com/json/$ip?fields=status,message,countryCode,city" 2>/dev/null)
     if echo "$location_info" | grep -q '"status":"fail"'; then
-        echo "Unknown"
+        echo "Unknown" "Unknown"
         return
     fi
 
@@ -120,12 +120,11 @@ function get_location_from_ip() {
     local city=$(echo "$location_info" | grep -o '"city":"[^"]*"' | sed 's/.*"city":"\([^"]*\)".*/\1/')
 
     if [ -z "$country" ] || [ -z "$city" ]; then
-        echo "Unknown"
+        echo "Unknown" "Unknown"
         return
     fi
 
-    local flag="${FLAGS[$country]:-🌍}"
-    echo "${flag} ${city}"
+    echo "$country" "$city"
 }
 
 function update_script() {
@@ -389,6 +388,352 @@ function test_config() {
     read -p "按 Enter 返回菜单..."
 }
 
+function generate_node_info() {
+    local uuid=$1
+    local port=$2
+    local decryption=$3
+    local encryption=$4
+    local ip=$5
+    local tag=$6
+    local uri=$7
+    local domain=$8
+    local network=$9
+    local path=${10}
+    local host=${11}
+    local fingerprint=${12}
+    local is_custom=${13}
+    local use_reality=${14}
+    local dest=${15}
+    local sni=${16}
+    local shortids_json=${17}
+    local public_key_base64=${18}
+    local flow=${19}
+    local push_enabled=${20}
+    local push_url=${21}
+    local push_token=${22}
+    local servernames_json=${23}
+    local private_key=${24:-""}
+
+    if [ "$use_reality" = true ]; then
+        cat << EOF
+{
+  "uuid": "$uuid",
+  "port": $port,
+  "decryption": "$decryption",
+  "encryption": "$encryption",
+  "ip": "$ip",
+  "tag": "$tag",
+  "uri": "$uri",
+  "domain": "$domain",
+  "network": "$network",
+  "path": "$path",
+  "use_reality": true,
+  "dest": "$dest",
+  "sni": "$sni",
+  "shortIds": $shortids_json,
+  "public_key": "$public_key_base64",
+  "flow": "$flow",
+  "fingerprint": "$fingerprint",
+  "is_custom_tag": $is_custom,
+  "push_enabled": $push_enabled,
+  "push_url": "$push_url",
+  "push_token": "$push_token",
+  "serverNames": $servernames_json,
+  "privateKey": "$private_key"
+}
+EOF
+    else
+        cat << EOF
+{
+  "uuid": "$uuid",
+  "port": $port,
+  "decryption": "$decryption",
+  "encryption": "$encryption",
+  "ip": "$ip",
+  "tag": "$tag",
+  "uri": "$uri",
+  "domain": "$domain",
+  "network": "$network",
+  "path": "$path",
+  "host": "$host",
+  "fingerprint": "$fingerprint",
+  "is_custom_tag": $is_custom,
+  "push_enabled": $push_enabled,
+  "push_url": "$push_url",
+  "push_token": "$push_token"
+}
+EOF
+    fi
+}
+
+function push_to_remote() {
+    local uri=$1
+    local push_url=$2
+    local push_token=$3
+
+    if [ -z "$push_url" ] || [ -z "$push_token" ]; then
+        log "Push 配置不完整，跳过。"
+        return
+    fi
+
+    local payload='{"token":"'"$push_token"'","uri":"'"$uri"'"}'
+    local response=$(curl -s -X POST "$push_url" -H "Content-Type: application/json" -d "$payload")
+    if [ $? -eq 0 ]; then
+        log "成功推送 URI 到 $push_url"
+    else
+        error "推送失败: $response"
+    fi
+}
+
+function reset_all() {
+    if [ ! -f "$VLESS_JSON" ]; then
+        error "未找到配置信息。请先生成配置。"
+    fi
+
+    log "重置所有节点的 UUID 和密码..."
+    local nodes=$(jq -c '.[]' "$VLESS_JSON")
+    local new_nodes=()
+    while IFS= read -r node; do
+        local uuid=$(xray uuid)
+        local port=$(echo "$node" | jq -r '.port')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local domain=$(echo "$node" | jq -r '.domain')
+        local network=$(echo "$node" | jq -r '.network')
+        local path=$(echo "$node" | jq -r '.path')
+        local host=$(echo "$node" | jq -r '.host')
+        local fingerprint=$(echo "$node" | jq -r '.fingerprint')
+        local is_custom=$(echo "$node" | jq -r '.is_custom_tag')
+        local use_reality=$(echo "$node" | jq -r '.use_reality // false')
+        local dest=$(echo "$node" | jq -r '.dest // ""')
+        local sni=$(echo "$node" | jq -r '.sni // ""')
+        local shortids_json=$(echo "$node" | jq -r '.shortIds // []')
+        local flow=$(echo "$node" | jq -r '.flow // ""')
+        local push_enabled=$(echo "$node" | jq -r '.push_enabled // false')
+        local push_url=$(echo "$node" | jq -r '.push_url // ""')
+        local push_token=$(echo "$node" | jq -r '.push_token // ""')
+        local servernames_json=$(echo "$node" | jq -r '.serverNames // []')
+        local private_key=$(echo "$node" | jq -r '.privateKey // ""')
+
+        local decryption
+        local encryption
+        local public_key_base64
+
+        if [ "$use_reality" = false ]; then
+            local kex=$(echo "$node" | jq -r '.decryption' | cut -d'.' -f1)
+            local method=$(echo "$node" | jq -r '.decryption' | cut -d'.' -f2)
+            local time_server=$(echo "$node" | jq -r '.decryption' | cut -d'.' -f3)
+            local use_mlkem=false
+            if [[ "$kex" == "mlkem768x25519plus" ]]; then
+                use_mlkem=true
+                mlkem_output=$(xray mlkem768 2>/dev/null)
+                seed=$(echo "$mlkem_output" | grep "Seed:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+                client_param=$(echo "$mlkem_output" | grep "Client:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+            fi
+
+            x25519_output=$(xray x25519)
+            private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+            password=$(echo "$x25519_output" | grep "Password:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+
+            decryption="${kex}.${method}.${time_server}.${private}"
+            if [ "$use_mlkem" = true ]; then
+                decryption="${decryption}.${seed}"
+            fi
+
+            encryption="${kex}.${method}.${time_server/0s/0rtt}.${password}"  # 假设 rtt 基于 time_server
+            if [ "$use_mlkem" = true ]; then
+                encryption="${encryption}.${client_param}"
+            fi
+        else
+            x25519_output=$(xray x25519)
+            private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+            password=$(echo "$x25519_output" | grep "Password:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+            public_key_base64="$password"
+            private_key="$private"
+            decryption="none"
+            encryption="none"
+        fi
+
+        # 处理标签
+        local tag=$(echo "$node" | jq -r '.tag')
+        if [ "$is_custom" = false ]; then
+            read country city <<< $(get_location_from_ip "$ip")
+            local flag="${FLAGS[$country]:-🌍}"
+            tag="${flag} ${city}"
+        fi
+
+        # 重新生成 URI
+        local server_address="${ip}"
+        if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
+            server_address="[${ip}]"
+        fi
+        local uri_params="type=${network}&encryption=${encryption}&packetEncoding=xudp"
+        if [ "$network" = "ws" ]; then
+            encoded_path=$(url_encode "$path")
+            encoded_host=$(url_encode "$host")
+            uri_params="${uri_params}&host=${encoded_host}&path=${encoded_path}"
+        fi
+        if [ "$domain" ]; then
+            uri_params="${uri_params}&security=tls&sni=${domain}&fp=${fingerprint}"
+        else
+            uri_params="${uri_params}&security=none"
+        fi
+        if [ "$use_reality" = true ]; then
+            local shortids_array
+            IFS=',' read -ra shortids_array <<< "$(echo "$shortids_json" | jq -r '.[0]')"
+            local shortId="${shortids_array[0]:-}"
+            uri_params="type=tcp&encryption=none&flow=${flow}&security=reality&sni=${sni}&fp=${fingerprint}&sid=${shortId}&pbk=${public_key_base64}&packetEncoding=xudp"
+        fi
+        encoded_tag=$(url_encode "$tag")
+        local uri="vless://${uuid}@${server_address}:${port}?${uri_params}#${encoded_tag}"
+
+        new_nodes+=("$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$ip" "$tag" "$uri" "$domain" "$network" "$path" "$host" "$fingerprint" "$is_custom" "$use_reality" "$dest" "$sni" "$shortids_json" "$public_key_base64" "$flow" "$push_enabled" "$push_url" "$push_token" "$servernames_json" "$private_key")")
+    done <<< "$nodes"
+
+    # 保存新节点
+    printf '%s\n' "${new_nodes[@]}" | jq -s '.' > "$VLESS_JSON"
+
+    # 重新生成 config.json
+    regenerate_full_config
+
+    restart_xray
+    log "所有节点已重置，Xray 已重启。"
+
+    # 自动推送
+    nodes=$(jq -c '.[]' "$VLESS_JSON")
+    while IFS= read -r node; do
+        local push_enabled=$(echo "$node" | jq -r '.push_enabled // false')
+        if [ "$push_enabled" = true ]; then
+            local uri=$(echo "$node" | jq -r '.uri')
+            local push_url=$(echo "$node" | jq -r '.push_url')
+            local push_token=$(echo "$node" | jq -r '.push_token')
+            push_to_remote "$uri" "$push_url" "$push_token"
+        fi
+    done <<< "$nodes"
+}
+
+function regenerate_full_config() {
+    local nodes=$(jq -c '.[]' "$VLESS_JSON")
+    local inbounds=()
+    local dns_server="8.8.8.8"  # 默认，可从配置读取
+    local strategy="UseIPv4"  # 默认
+    local domain_strategy="UseIPv4v6"  # 默认
+
+    while IFS= read -r node; do
+        local port=$(echo "$node" | jq -r '.port')
+        local uuid=$(echo "$node" | jq -r '.uuid')
+        local decryption=$(echo "$node" | jq -r '.decryption')
+        local network=$(echo "$node" | jq -r '.network')
+        local path=$(echo "$node" | jq -r '.path')
+        local host=$(echo "$node" | jq -r '.host')
+        local fingerprint=$(echo "$node" | jq -r '.fingerprint')
+        local use_reality=$(echo "$node" | jq -r '.use_reality // false')
+        local dest=$(echo "$node" | jq -r '.dest // ""')
+        local servernames_json=$(echo "$node" | jq -r '.serverNames // []')
+        local private_key=$(echo "$node" | jq -r '.privateKey // ""')
+        local shortids_json=$(echo "$node" | jq -r '.shortIds // []')
+        local flow=$(echo "$node" | jq -r '.flow // ""')
+        local domain=$(echo "$node" | jq -r '.domain')
+
+        if [ "$use_reality" = true ]; then
+            stream_settings='{
+              "network": "tcp",
+              "security": "reality",
+              "realitySettings": {
+                "dest": "'"$dest"'",
+                "serverNames": '"$servernames_json"',
+                "privateKey": "'"$private_key"'",
+                "shortIds": '"$shortids_json"',
+                "fingerprint": "'"$fingerprint"'"
+              }
+            }'
+            client_flow='{"id":"'"$uuid"'","flow":"'"$flow"'"}'
+        else
+            ws_settings='{
+              "path": "'"$path"'",
+              "headers": {
+                "Host": "'"$host"'"
+              }
+            }'
+            if [ -n "$domain" ]; then
+                # 假设证书路径基于域名
+                cert_path="/etc/ssl/acme/$domain/fullchain.pem"
+                key_path="/etc/ssl/acme/$domain/privkey.key"
+                tls_settings='{
+                  "certificates": [
+                    {
+                      "certificateFile": "'"$cert_path"'",
+                      "keyFile": "'"$key_path"'"
+                    }
+                  ],
+                  "fingerprint": "'"$fingerprint"'"
+                }'
+                stream_settings='{
+                  "network": "'"$network"'",
+                  "security": "tls",
+                  "tlsSettings": '"$tls_settings"',
+                  "wsSettings": '"$ws_settings"'
+                }'
+            else
+                if [ "$network" = "ws" ]; then
+                    stream_settings='{
+                      "network": "'"$network"'",
+                      "wsSettings": '"$ws_settings"'
+                    }'
+                else
+                    stream_settings='{"network": "'"$network"'"}'
+                fi
+            fi
+            client_flow='{"id":"'"$uuid"'"}'
+        fi
+
+        inbounds+=('{
+          "port": '"$port"',
+          "protocol": "vless",
+          "settings": {
+            "clients": [
+              '"$client_flow"'
+            ],
+            "decryption": "'"$decryption"'"
+          },
+          "streamSettings": '"$stream_settings"'
+        }')
+    done <<< "$nodes"
+
+    inbounds_json=$(printf '%s\n' "${inbounds[@]}" | jq -s '.')
+
+    cat > "$CONFIG" << EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "dns": {
+    "servers": [
+      {
+        "address": "$dns_server"
+      }
+    ],
+    "queryStrategy": "$strategy"
+  },
+  "inbounds": $inbounds_json,
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "$domain_strategy"
+      },
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+
+    if xray -test -config "$CONFIG" &> /dev/null; then
+        log "配置已重新生成。"
+    else
+        error "配置测试失败！"
+    fi
+}
+
 function generate_config() {
     install_xray 0 false
 
@@ -467,39 +812,6 @@ function generate_config() {
         time_server="0s"
     fi
 
-    log "生成 X25519 密钥..."
-    x25519_output=$(xray x25519)
-    private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
-    password=$(echo "$x25519_output" | grep "Password:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
-
-    if [ -z "$private" ] || [ -z "$password" ]; then
-        error "X25519 密钥生成失败。请确保 Xray 已安装。"
-    fi
-
-    seed=""
-    client_param=""
-    if [ "$use_mlkem" = true ]; then
-        log "生成 ML-KEM-768 密钥..."
-        mlkem_output=$(xray mlkem768 2>/dev/null)
-        seed=$(echo "$mlkem_output" | grep "Seed:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
-        client_param=$(echo "$mlkem_output" | grep "Client:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
-        if [ -z "$seed" ] || [ -z "$client_param" ]; then
-            echo -e "${WARN} ML-KEM-768 不支持，回退到 X25519。建议更新 Xray 到 v25.5.16+。${NC}"
-            kex="x25519"
-            use_mlkem=false
-        fi
-    fi
-
-    decryption="${kex}.${method}.${time_server}.${private}"
-    if [ "$use_mlkem" = true ]; then
-        decryption="${decryption}.${seed}"
-    fi
-
-    encryption="${kex}.${method}.${rtt}.${password}"
-    if [ "$use_mlkem" = true ]; then
-        encryption="${encryption}.${client_param}"
-    fi
-
     echo "是否启用 REALITY (Xray 官方推荐用于 TCP):"
     echo "[1] 是 (仅支持 TCP)"
     echo "[2] 否 (支持 TCP 或 WebSocket + TLS 或 WebSocket 无 TLS)"
@@ -513,7 +825,53 @@ function generate_config() {
     esac
     log "启用 REALITY: $( [ "$use_reality" = true ] && echo "是" || echo "否" )"
 
-    if [ "$use_reality" = true ]; then
+    local decryption
+    local encryption
+    local private
+    local public_key_base64
+    local seed=""
+    local client_param=""
+
+    if [ "$use_reality" = false ]; then
+        log "生成 X25519 密钥..."
+        x25519_output=$(xray x25519)
+        private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+        password=$(echo "$x25519_output" | grep "Password:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+
+        if [ -z "$private" ] || [ -z "$password" ]; then
+            error "X25519 密钥生成失败。请确保 Xray 已安装。"
+        fi
+
+        if [ "$use_mlkem" = true ]; then
+            log "生成 ML-KEM-768 密钥..."
+            mlkem_output=$(xray mlkem768 2>/dev/null)
+            seed=$(echo "$mlkem_output" | grep "Seed:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+            client_param=$(echo "$mlkem_output" | grep "Client:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+            if [ -z "$seed" ] || [ -z "$client_param" ]; then
+                echo -e "${WARN} ML-KEM-768 不支持，回退到 X25519。建议更新 Xray 到 v25.5.16+。${NC}"
+                kex="x25519"
+                use_mlkem=false
+            fi
+        fi
+
+        decryption="${kex}.${method}.${time_server}.${private}"
+        if [ "$use_mlkem" = true ]; then
+            decryption="${decryption}.${seed}"
+        fi
+
+        encryption="${kex}.${method}.${rtt}.${password}"
+        if [ "$use_mlkem" = true ]; then
+            encryption="${encryption}.${client_param}"
+        fi
+    else
+        log "REALITY 模式下生成专用 X25519 密钥..."
+        x25519_output=$(xray x25519)
+        private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+        password=$(echo "$x25519_output" | grep "Password:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
+        if [ -z "$private" ] || [ -z "$password" ]; then
+            error "X25519 密钥生成失败。请确保 Xray 已安装。"
+        fi
+        public_key_base64="$password"
         decryption="none"
         encryption="none"
         flow="xtls-rprx-vision"
@@ -525,6 +883,7 @@ function generate_config() {
             servernames_input="swdist.apple.com"
         fi
         IFS=',' read -ra servernames_array <<< "$servernames_input"
+        servernames_json=$(IFS=','; echo "[\"${servernames_array[*]}\"]")
         sni="${servernames_array[0]}"
         read -p "shortIds (逗号分隔, 每个 0-16 hex 字符, 默认随机生成一个): " shortids_input
         if [ -z "$shortids_input" ]; then
@@ -532,6 +891,7 @@ function generate_config() {
             shortids_input="$shortid"
         fi
         IFS=',' read -ra shortids <<< "$shortids_input"
+        shortids_json=$(IFS=','; echo "[\"${shortids[*]}\"]")
         shortId="${shortids[0]}"
 
         echo "请选择 uTLS Fingerprint (用于伪装):"
@@ -551,9 +911,6 @@ function generate_config() {
             *) fingerprint="chrome" ;;
         esac
         log "REALITY 配置: dest=$dest, sni=$sni, shortId=$shortId, fingerprint=$fingerprint"
-        public_key_base64="$password"
-    else
-        fingerprint="chrome"
     fi
 
     echo "vless reality推荐端口为443"
@@ -583,10 +940,29 @@ function generate_config() {
     fi
 
     log "根据 IP $ip 获取地理位置..."
-    tag=$(get_location_from_ip "$ip")
-    if [ "$tag" = "Unknown" ]; then
-        read -p "无法获取位置，请手动输入标签 (默认: Unknown): " tag_input
-        tag=${tag_input:-Unknown}
+    read country city <<< $(get_location_from_ip "$ip")
+    local flag="${FLAGS[$country]:-🌍}"
+    auto_tag="${flag} ${city}"
+    if [ "$auto_tag" = "🌍 Unknown" ]; then
+        auto_tag="Unknown"
+    fi
+
+    echo "节点备注 (标签):"
+    echo "[1] 使用自动获取: $auto_tag"
+    echo "[2] 自定义"
+    read -p "请选择 (1-2, 默认: 1): " tag_choice
+    if [ -z "$tag_choice" ] || [ "$tag_choice" = "1" ]; then
+        tag="$auto_tag"
+        is_custom=false
+    else
+        read -p "输入自定义名称: " custom_name
+        read -p "是否添加旗帜 ($flag)？ (y/N): " add_flag
+        if [[ $add_flag =~ ^[Yy]$ ]]; then
+            tag="$flag $custom_name"
+        else
+            tag="$custom_name"
+        fi
+        is_custom=true
     fi
     log "标签: $tag"
 
@@ -629,6 +1005,17 @@ function generate_config() {
     esac
     log "出站域名策略: $domain_strategy"
 
+    dest=${dest:-""}
+    sni=${sni:-""}
+    shortids_json=${shortids_json:-"[]"}
+    flow=${flow:-""}
+    servernames_json=${servernames_json:-"[]"}
+    public_key_base64=${public_key_base64:-""}
+    local private_key=""
+    if [ "$use_reality" = true ]; then
+        private_key="$private"
+    fi
+
     if [ "$use_reality" = true ]; then
         network="tcp"
         type_uri="tcp"
@@ -639,6 +1026,9 @@ function generate_config() {
         if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
             server_address="[${ip}]"
         fi
+        local shortids_array
+        IFS=',' read -ra shortids_array <<< "$(echo "$shortids_json" | tr -d '[]"' | sed 's/,/ /g')"
+        shortId="${shortids_array[0]:-}"
         uri_params="type=${type_uri}&encryption=${encryption}&flow=${flow}&security=${security_uri}&sni=${sni}&fp=${fingerprint}&sid=${shortId}&pbk=${public_key_base64}&packetEncoding=xudp"
         domain=""
     else
@@ -787,50 +1177,17 @@ function generate_config() {
     encoded_tag=$(url_encode "$tag")
     uri="vless://${uuid}@${server_address}:${port}?${uri_params}#${encoded_tag}"
 
-    if [ "$use_reality" = true ]; then
-        servernames_json=$(IFS=','; echo "[\"${servernames_array[*]}\"]")
-        shortids_json=$(IFS=','; echo "[\"${shortids[*]}\"]")
-        new_node_info=$(cat << EOF
-{
-  "uuid": "$uuid",
-  "port": $port,
-  "decryption": "$decryption",
-  "encryption": "$encryption",
-  "ip": "$ip",
-  "tag": "$tag",
-  "uri": "$uri",
-  "domain": "",
-  "network": "$network",
-  "path": "$path",
-  "use_reality": true,
-  "dest": "$dest",
-  "sni": "$sni",
-  "shortIds": $shortids_json,
-  "public_key": "$public_key_base64",
-  "flow": "$flow",
-  "fingerprint": "$fingerprint"
-}
-EOF
-)
-    else
-        new_node_info=$(cat << EOF
-{
-  "uuid": "$uuid",
-  "port": $port,
-  "decryption": "$decryption",
-  "encryption": "$encryption",
-  "ip": "$ip",
-  "tag": "$tag",
-  "uri": "$uri",
-  "domain": "$domain",
-  "network": "$network",
-  "path": "$path",
-  "host": "$host",
-  "fingerprint": "$fingerprint"
-}
-EOF
-)
+    read -p "是否启用自动推送至远端？ (y/N): " enable_push
+    push_enabled=false
+    push_url=""
+    push_token=""
+    if [[ $enable_push =~ ^[Yy]$ ]]; then
+        read -p "输入推送 URL (e.g. https://example.workers.dev/push): " push_url
+        read -p "输入 token: " push_token
+        push_enabled=true
     fi
+
+    new_node_info=$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$ip" "$tag" "$uri" "$domain" "$network" "$path" "$host" "$fingerprint" "$is_custom" "$use_reality" "$dest" "$sni" "$shortids_json" "$public_key_base64" "$flow" "$push_enabled" "$push_url" "$push_token" "$servernames_json" "$private_key")
 
     if [ "$overwrite" = true ]; then
         echo "[$new_node_info]" > "$VLESS_JSON"
@@ -844,116 +1201,15 @@ EOF
         fi
     fi
 
-    if [ "$use_reality" = true ]; then
-        servernames_json=$(IFS=','; echo "[\"${servernames_array[*]}\"]")
-        shortids_json=$(IFS=','; echo "[\"${shortids[*]}\"]")
-        stream_settings='{
-          "network": "tcp",
-          "security": "reality",
-          "realitySettings": {
-            "dest": "'"$dest"'",
-            "serverNames": '"$servernames_json"',
-            "privateKey": "'"$private"'",
-            "shortIds": '"$shortids_json"',
-            "fingerprint": "'"$fingerprint"'"
-          }
-        }'
-        client_flow='{"id":"'"$uuid"'","flow":"'"$flow"'"}'
-    else
-        ws_settings='{
-          "path": "'"$path"'",
-          "headers": {
-            "Host": "'"$host"'"
-          }
-        }'
-        if [ "$use_tls" = true ]; then
-            tls_settings='{
-              "certificates": [
-                {
-                  "certificateFile": "'"$cert_path"'",
-                  "keyFile": "'"$key_path"'"
-                }
-              ],
-              "fingerprint": "'"$fingerprint"'"
-            }'
-            stream_settings='{
-              "network": "'"$network"'",
-              "security": "tls",
-              "tlsSettings": '"$tls_settings"',
-              "wsSettings": '"$ws_settings"'
-            }'
-        else
-            if [ "$network" = "ws" ]; then
-                stream_settings='{
-                  "network": "'"$network"'",
-                  "wsSettings": '"$ws_settings"'
-                }'
-            else
-                stream_settings='{"network": "'"$network"'"}'
-            fi
-        fi
-        client_flow='{"id":"'"$uuid"'"}'
+    regenerate_full_config
+    restart_xray
+    log "配置已应用，Xray 已重启。"
+    log "节点信息已保存在 /etc/proxym/vless.json"
+
+    if [ "$push_enabled" = true ]; then
+        push_to_remote "$uri" "$push_url" "$push_token"
     fi
 
-    new_inbounds='[
-      {
-        "port": '"$port"',
-        "protocol": "vless",
-        "settings": {
-          "clients": [
-            '"$client_flow"'
-          ],
-          "decryption": "'"$decryption"'"
-        },
-        "streamSettings": '"$stream_settings"'
-      }
-    ]'
-
-    if [ "$overwrite" = true ]; then
-        cat > "$CONFIG" << EOF
-{
-  "log": {
-    "loglevel": "warning"
-  },
-  "dns": {
-    "servers": [
-      {
-        "address": "$dns_server"
-      }
-    ],
-    "queryStrategy": "$strategy"
-  },
-  "inbounds": $new_inbounds,
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "settings": {
-        "domainStrategy": "$domain_strategy"
-      },
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-    else
-        if ! jq . "$CONFIG" > /dev/null 2>&1; then
-            error "现有配置不是有效 JSON，无法附加。"
-        fi
-        temp_config=$(mktemp)
-        jq --argjson inbounds "$new_inbounds" '.inbounds += $inbounds' "$CONFIG" > "$temp_config"
-        mv "$temp_config" "$CONFIG"
-        log "节点配置已附加到现有配置文件。"
-    fi
-
-    if xray -test -config "$CONFIG" &> /dev/null; then
-        log "配置有效！"
-        restart_xray
-        log "配置已应用，Xray 已重启。"
-        log "VLESS URI 已生成并保存。"
-        log "节点信息已保存在 /etc/proxym/vless.json"
-    else
-        error "配置测试失败！"
-    fi
     read -p "按 Enter 返回菜单..."
 }
 
@@ -1061,6 +1317,173 @@ function delete_cron() {
     read -p "按 Enter 返回菜单..."
 }
 
+function view_reset_cron() {
+    check_cron_installed
+    echo -e "${YELLOW}当前 UUID/密码重置 Cron 任务:${NC}"
+    if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH reset"; then
+        echo -e "${GREEN}已设置自动重置任务:${NC}"
+        crontab -l 2>/dev/null | grep "$SCRIPT_PATH reset"
+    else
+        echo -e "${RED}未设置自动重置任务。${NC}"
+    fi
+    read -p "按 Enter 返回菜单..."
+}
+
+function set_reset_cron() {
+    check_cron_installed
+    view_reset_cron
+    echo "请选择定时重置方式："
+    echo "1. 运行 X 小时后重置 ⏳"
+    echo "2. 每天某时间重置 🌞"
+    echo "3. 每周某天某时间重置 📅"
+    echo "4. 每月某天某时间重置 📆"
+    echo "5. 每几个月某天某时间重置 📆"
+    read -p "请输入选项 (1-5): " choice
+
+    local reset_cmd="$SCRIPT_PATH reset"
+
+    case "$choice" in
+        1)
+            read -p "请输入间隔小时数 (例如 6 表示每 6 小时重置一次): " hours
+            if [[ "$hours" =~ ^[0-9]+$ ]] && [ "$hours" -gt 0 ]; then
+                cron_cmd="0 */$hours * * * $reset_cmd"
+            else
+                error "无效的小时数。"
+                return
+            fi
+            ;;
+        2)
+            read -p "请输入每天的小时 (0-23): " h
+            read -p "请输入每天的分钟 (0-59): " m
+            cron_cmd="$m $h * * * $reset_cmd"
+            ;;
+        3)
+            echo "周几 (0=周日,1=周一,...,6=周六)"
+            read -p "请输入周几: " w
+            read -p "请输入小时 (0-23): " h
+            read -p "请输入分钟 (0-59): " m
+            cron_cmd="$m $h * * $w $reset_cmd"
+            ;;
+        4)
+            read -p "请输入每月的日期 (1-31): " d
+            read -p "请输入小时 (0-23): " h
+            read -p "请输入分钟 (0-59): " m
+            cron_cmd="$m $h $d * * $reset_cmd"
+            ;;
+        5)
+            read -p "请输入几个月间隔 (例如 3 表示每 3 个月): " months
+            read -p "请输入每月的日期 (1-31): " d
+            read -p "请输入小时 (0-23): " h
+            read -p "请输入分钟 (0-59): " m
+            cron_cmd="$m $h $d */$months * $reset_cmd"
+            ;;
+        *)
+            error "无效选择。"
+            return
+            ;;
+    esac
+
+    (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH reset"; echo "$cron_cmd") | crontab -
+    log "重置 Cron 已设置: $cron_cmd"
+    read -p "按 Enter 返回菜单..."
+}
+
+function delete_reset_cron() {
+    check_cron_installed
+    (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH reset") | crontab -
+    log "UUID/密码重置 Cron 已删除。"
+    read -p "按 Enter 返回菜单..."
+}
+
+function manage_push() {
+    if [ ! -f "$VLESS_JSON" ]; then
+        error "未找到配置信息。请先生成配置。"
+    fi
+
+    echo "节点列表:"
+    jq -r '.[] | "端口: \(.port) 标签: \(.tag)"' "$VLESS_JSON" | nl -w1 -s') '
+    read -p "选择节点编号 (或 0 取消): " node_choice
+    if [ "$node_choice" = "0" ]; then
+        return
+    fi
+
+    local selected_port=$(jq -r ".[$((node_choice-1))].port" "$VLESS_JSON")
+    if [ -z "$selected_port" ]; then
+        error "无效选择。"
+    fi
+
+    local current_enabled=$(jq -r ".[$((node_choice-1))].push_enabled // false" "$VLESS_JSON")
+    local current_url=$(jq -r ".[$((node_choice-1))].push_url // \"\"" "$VLESS_JSON")
+    local current_token=$(jq -r ".[$((node_choice-1))].push_token // \"\"" "$VLESS_JSON")
+
+    echo "当前推送设置: 启用=$current_enabled, URL=$current_url, Token=$current_token"
+    read -p "是否启用推送 (y/n, 当前 $current_enabled): " new_enabled
+    if [ -n "$new_enabled" ]; then
+        if [[ $new_enabled =~ ^[Yy]$ ]]; then
+            push_enabled=true
+        else
+            push_enabled=false
+        fi
+    else
+        push_enabled=$current_enabled
+    fi
+
+    if [ "$push_enabled" = true ]; then
+        read -p "输入推送 URL (当前 $current_url): " new_url
+        push_url=${new_url:-$current_url}
+        read -p "输入 token (当前 $current_token): " new_token
+        push_token=${new_token:-$current_token}
+    else
+        push_url=""
+        push_token=""
+    fi
+
+    temp_json=$(mktemp)
+    jq ".[$((node_choice-1))].push_enabled = $push_enabled | .[$((node_choice-1))].push_url = \"$push_url\" | .[$((node_choice-1))].push_token = \"$push_token\"" "$VLESS_JSON" > "$temp_json"
+    mv "$temp_json" "$VLESS_JSON"
+    log "推送设置已更新。"
+    read -p "按 Enter 返回菜单..."
+}
+
+function manual_push() {
+    if [ ! -f "$VLESS_JSON" ]; then
+        error "未找到配置信息。请先生成配置。"
+    fi
+
+    echo "[1] 推送所有启用节点"
+    echo "[2] 推送特定节点"
+    read -p "选择 (1-2): " push_choice
+    case "$push_choice" in
+        1)
+            local nodes=$(jq -c '.[] | select(.push_enabled == true)' "$VLESS_JSON")
+            while IFS= read -r node; do
+                local uri=$(echo "$node" | jq -r '.uri')
+                local push_url=$(echo "$node" | jq -r '.push_url')
+                local push_token=$(echo "$node" | jq -r '.push_token')
+                push_to_remote "$uri" "$push_url" "$push_token"
+            done <<< "$nodes"
+            ;;
+        2)
+            echo "节点列表:"
+            jq -r '.[] | "端口: \(.port) 标签: \(.tag)"' "$VLESS_JSON" | nl -w1 -s') '
+            read -p "选择节点编号: " node_choice
+            local node=$(jq -c ".[$((node_choice-1))]" "$VLESS_JSON")
+            local push_enabled=$(echo "$node" | jq -r '.push_enabled // false')
+            if [ "$push_enabled" = false ]; then
+                error "该节点未启用推送。"
+            fi
+            local uri=$(echo "$node" | jq -r '.uri')
+            local push_url=$(echo "$node" | jq -r '.push_url')
+            local push_token=$(echo "$node" | jq -r '.push_token')
+            push_to_remote "$uri" "$push_url" "$push_token"
+            ;;
+        *)
+            error "无效选择。"
+            ;;
+    esac
+    read -p "按 Enter 返回菜单..."
+}
+
 function uninstall() {
     local init_system=$(detect_init_system)
     echo -e "${YELLOW}卸载选项:${NC}"
@@ -1146,15 +1569,20 @@ function show_menu() {
     echo "[6] 📊 查看状态"
     echo "[7] 📝 查看日志"
     echo "[8] ⏰ 设置 Cron 重启"
-    echo "[9] 👁️ 查看 Cron 任务"
-    echo "[10] 🗑️ 删除 Cron"
+    echo "[9] 👁️ 查看 Cron 任务 (重启)"
+    echo "[10] 🗑️ 删除 Cron (重启)"
     echo "[11] 🖨️ 打印 VLESS URI"
     echo "[12] 🔄 更新脚本"
     echo "[13] 🗑️ 卸载"
     echo "[14] 📝 编辑配置"
     echo "[15] 🧪 测试配置"
-    echo "[16] ❌ 退出"
-    echo -e "${YELLOW}请选择选项 (1-16): ${NC}"
+    echo "[16] 🔄 设置 Cron 重置 UUID/密码"
+    echo "[17] 👁️ 查看 Cron 任务 (重置)"
+    echo "[18] 🗑️ 删除 Cron (重置)"
+    echo "[19] 📤 管理推送设置"
+    echo "[20] 📤 手动推送 URI"
+    echo "[21] ❌ 退出"
+    echo -e "${YELLOW}请选择选项 (1-21): ${NC}"
     read choice
     case $choice in
         1) install_xray 1 true ;;
@@ -1172,13 +1600,23 @@ function show_menu() {
         13) uninstall ;;
         14) edit_config ;;
         15) test_config ;;
-        16) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
+        16) set_reset_cron ;;
+        17) view_reset_cron ;;
+        18) delete_reset_cron ;;
+        19) manage_push ;;
+        20) manual_push ;;
+        21) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
         *) echo -e "${RED}无效选项，请重试。${NC}"; sleep 1 ;;
     esac
 }
 
 if [ "$EUID" -ne 0 ]; then
     error "请使用 sudo 运行: sudo proxym-easy"
+fi
+
+if [ "$1" = "reset" ]; then
+    reset_all
+    exit 0
 fi
 
 while true; do
