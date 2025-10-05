@@ -35,6 +35,7 @@ CLIENT_TOKEN
 >
 UA
 必须修改，若不修改后果自负
+[在线密码生成](https://1password.com/zh-cn/password-generator)
 
 ✅ 4️⃣ 创建 KV 命名空间
 
