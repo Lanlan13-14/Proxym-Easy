@@ -51,7 +51,7 @@ URI保存在本机
 ```
 /usr/local/etc/xray/config.json
 ```
-重置uuid
+重置uuid及密码
 ```
 sudo proxym-easy reset
 ```
