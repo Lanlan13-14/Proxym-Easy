@@ -154,3 +154,16 @@ curl -A 'Iclash/1.0' 'https://example.workers.dev/delete?token=supersecretclient
 ✅ 这样就完成了 多服务器 push + 安全拉取 + 单个/全部删除 全流程的 curl 操作
 
 > 可以直接放在服务器脚本里做定时更新或清理
+
+若需要通过Sub-store修改节点连接地址，那么可以使用如下参数
+```JavaScript
+function operator(proxies, targetPlatform, context) {
+  return proxies.map(proxy => {
+    if (proxy.name === '节点完整名称') {
+      proxy.server = '修改后的ip/域名';
+      proxy.port = 修改后的端口;
+    }
+    return proxy;
+  });
+}
+```
