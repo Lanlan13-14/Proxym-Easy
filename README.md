@@ -51,6 +51,10 @@ URI保存在本机
 ```
 /usr/local/etc/xray/config.json
 ```
+重置uuid
+```
+sudo proxym-easy reset
+```
 >
 VLESS Encryption与VLESS Version Reality***无法同时启用***当你选择VLESS Version Reality那么前面生成的VLESS Encryption相关内容***不会生效***
 >
