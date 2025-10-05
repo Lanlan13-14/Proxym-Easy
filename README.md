@@ -59,5 +59,6 @@ VLESS Encryption+ws+tls传输推荐搭配[Cert-Easy](https://github.com/Lanlan13
 >
 Reality域名选择推荐查看
 https://www.v2ray-agent.com/archives/1689439383686
+>
 部分功能解答(可选)
-https://github.com/Lanlan13-14/Proxym-Easy/blob/main/script%2Fworker.md
+[点击查看](https://github.com/Lanlan13-14/Proxym-Easy/blob/main/script%2Fworker.md)
