@@ -43,7 +43,9 @@ UA
 
 Workers & Pages → KV
 
-→ 「Create namespace」 → 名称填 ```NODE_STORAGE
+→ 「Create namespace」 → 名称填 
+```
+NODE_STORAGE
 ```
 
 创建后，点进去复制 Namespace ID（不用放到代码里，网页里绑）
