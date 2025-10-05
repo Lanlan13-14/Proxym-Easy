@@ -26,6 +26,10 @@ Workers & Pages → Create
 ---
 
 ✅ 3️⃣ 复制 Worker 代码
+
+注意:
+SERVER_TOKENS
+
 ✅ 4️⃣ 创建 KV 命名空间
 
 左侧菜单：
@@ -68,7 +72,5 @@ https://substore.yourname.workers.dev
 
 > “如果有 n 台服务器，那我在哪里加 token 呢？”
 
-
-
 答案就是：
-👉 你在 Worker 代码里 SERVER_LIST 这块添加新的 token 即可👇
+👉 你在 Worker 代码里 SERVER_TOKENS 这块添加新的 token 即可👇
