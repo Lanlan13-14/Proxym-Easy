@@ -158,6 +158,7 @@ curl -A 'Iclash/1.0' 'https://example.workers.dev/delete?token=supersecretclient
 ✅ 这样就完成了 多服务器 push + 安全拉取 + 单个/全部删除 全流程的 curl 操作
 
 > proxym-easy已支持该功能
+> 节点顺序以 SERVER_TOKENS 顺序排序
 
 若需要通过Sub-store修改节点连接地址，那么可以使用如下参数
 ```JavaScript
