@@ -72,3 +72,5 @@ Reality域名选择推荐
 1.修复proxym-easy reset后遇到的bug
 >
 2.worker代码返回节点以SERVER_TOKENS顺序排序
+> ***Tips***
+>本次更新为破坏式更新请重新执行代码
