@@ -66,3 +66,8 @@ Reality域名选择推荐
 >
 部分功能解答(可选)
 [点击查看](https://github.com/Lanlan13-14/Proxym-Easy/blob/main/script%2Fworker.md)
+>
+***2025.10.6更新***
+1.修复proxym-easy reset后遇到的bug
+>
+2.worker代码返回节点以SERVER_TOKENS顺序排序
