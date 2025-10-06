@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 4.0
+# 版本: 4.1
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 
 # 颜色
@@ -20,6 +20,7 @@ WARN="${YELLOW}⚠️${NC}"
 # 路径
 CONFIG="/usr/local/etc/xray/config.json"
 VLESS_JSON="/etc/proxym/vless.json"
+GLOBAL_JSON="/etc/proxym/global.json"
 SCRIPT_PATH="/usr/local/bin/proxym-easy"
 UPDATE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/vless-encryption.sh"
 CRON_FILE="/tmp/proxym_cron.tmp"
@@ -125,6 +126,29 @@ function get_location_from_ip() {
     fi
 
     echo "$country" "$city"
+}
+
+function load_global_config() {
+    if [ -f "$GLOBAL_JSON" ]; then
+        dns_server=$(jq -r '.dns_server // "8.8.8.8"' "$GLOBAL_JSON")
+        strategy=$(jq -r '.strategy // "UseIPv4"' "$GLOBAL_JSON")
+        domain_strategy=$(jq -r '.domain_strategy // "UseIPv4v6"' "$GLOBAL_JSON")
+    else
+        dns_server="8.8.8.8"
+        strategy="UseIPv4"
+        domain_strategy="UseIPv4v6"
+    fi
+}
+
+function save_global_config() {
+    cat > "$GLOBAL_JSON" << EOF
+{
+  "dns_server": "$dns_server",
+  "strategy": "$strategy",
+  "domain_strategy": "$domain_strategy"
+}
+EOF
+    log "全局配置已保存到 $GLOBAL_JSON"
 }
 
 function update_script() {
@@ -580,9 +604,14 @@ function reset_all() {
         fi
 
         # 重新生成 URI
-        local server_address="${ip}"
-        if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
-            server_address="[${ip}]"
+        local server_address
+        if [ -n "$domain" ]; then
+            server_address="$domain"
+        else
+            server_address="$ip"
+            if [[ "$server_address" =~ : ]] && ! [[ "$server_address" =~ \[.*\] ]]; then
+                server_address="[$server_address]"
+            fi
         fi
         local uri_params="type=${network}&encryption=${encryption}&packetEncoding=xudp"
         if [ "$network" = "ws" ]; then
@@ -610,7 +639,7 @@ function reset_all() {
     # 保存新节点
     printf '%s\n' "${new_nodes[@]}" | jq -s '.' > "$VLESS_JSON"
 
-    # 重新生成 config.json
+    # 重新生成 config.json（使用保存的全局配置）
     regenerate_full_config
 
     restart_xray
@@ -630,11 +659,9 @@ function reset_all() {
 }
 
 function regenerate_full_config() {
+    load_global_config  # 从 global.json 加载 DNS 和策略
     local nodes=$(jq -c '.[]' "$VLESS_JSON")
     local inbounds=()
-    local dns_server="8.8.8.8"  # 默认，可从配置读取
-    local strategy="UseIPv4"  # 默认
-    local domain_strategy="UseIPv4v6"  # 默认
 
     while IFS= read -r node; do
         local port=$(echo "$node" | jq -r '.port')
@@ -1026,6 +1053,9 @@ function generate_config() {
         *) domain_strategy="UseIPv4v6" ;;
     esac
     log "出站域名策略: $domain_strategy"
+
+    # 保存全局配置
+    save_global_config
 
     dest=${dest:-""}
     sni=${sni:-""}
@@ -1524,7 +1554,7 @@ function uninstall() {
                     sudo cp "$SCRIPT_PATH" "${SCRIPT_PATH}.backup"
                     log "脚本备份已创建: ${SCRIPT_PATH}.backup"
                 fi
-                sudo rm -f "$CONFIG" "$VLESS_JSON"
+                sudo rm -f "$CONFIG" "$VLESS_JSON" "$GLOBAL_JSON"
                 sudo rm -rf /etc/proxym
                 sudo rm -f "$SCRIPT_PATH"
                 log "脚本和配置已卸载（Xray 保留）。"
@@ -1559,7 +1589,7 @@ function uninstall() {
                     ash /tmp/install-release.sh remove
                     rm -f /tmp/install-release.sh
                 fi
-                sudo rm -f "$CONFIG" "$VLESS_JSON"
+                sudo rm -f "$CONFIG" "$VLESS_JSON" "$GLOBAL_JSON"
                 sudo rm -rf /etc/proxym
                 sudo rm -f "$SCRIPT_PATH"
                 log "全部已卸载。"
