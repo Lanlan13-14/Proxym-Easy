@@ -172,3 +172,17 @@ function operator(proxies, targetPlatform, context) {
   });
 }
 ```
+套CDN开启tls
+```JavaScript
+function operator(proxies, targetPlatform, context) {
+  return proxies.map(proxy => {
+    if (proxy.name === '节点完整名称') {
+      proxy.server = '修改后的ip/域名';
+      proxy.port = 修改后的端口;
+      proxy.tls = true;
+      proxy.sni = proxy.server;
+    }
+    return proxy;
+  });
+}
+```
