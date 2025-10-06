@@ -1,5 +1,5 @@
 // 配置项
-const SERVER_TOKENS = ["hk01","sg01","us01"];  // 后端 push token 列表
+const SERVER_TOKENS = ["hk01", "sg01", "us01"];  // 后端 push token 列表
 const CLIENT_TOKEN = "supersecretclienttoken123456"; // Sub-Store 拉取 token
 
 export default {
@@ -52,10 +52,14 @@ export default {
 
       let outList = [];
       if (server) {
+        // 单个服务器
         if (!SERVER_TOKENS.includes(server)) return new Response("Bad Request: unknown server", { status: 400 });
         if (servers[server]) outList.push(servers[server]);
       } else {
-        outList = Object.values(servers).filter(Boolean);
+        // ✅ 按 SERVER_TOKENS 顺序排列
+        outList = SERVER_TOKENS
+          .map(key => servers[key])
+          .filter(Boolean);
       }
 
       const headers = {
@@ -90,13 +94,16 @@ export default {
         await env.NODE_STORAGE.put("SERVERS", JSON.stringify(servers));
         return new Response(`Deleted server ${serverToken}`, { status: 200 });
       } else {
-        // 删除全部
+        // 删除全部（需要 UA 验证）
         if (!ua.includes("iclash")) return new Response("Forbidden: UA not allowed for delete all", { status: 403 });
         await env.NODE_STORAGE.put("SERVERS", JSON.stringify({}));
         return new Response("Deleted all servers", { status: 200 });
       }
     }
 
+    // -------------------------
+    // 404
+    // -------------------------
     return new Response("Not Found", { status: 404 });
   }
 };
