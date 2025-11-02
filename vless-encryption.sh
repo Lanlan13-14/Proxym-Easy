@@ -1,22 +1,18 @@
 #!/bin/bash
-
 # proxym-easy - Xray VLESS Encryption一键脚本
 # 版本: 4.1
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
-
 # 颜色
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # 无颜色
-
 # 表情符号
 CHECK="${GREEN}✅${NC}"
 ERROR="${RED}❌${NC}"
 INFO="${BLUE}ℹ️${NC}"
 WARN="${YELLOW}⚠️${NC}"
-
 # 路径
 CONFIG="/usr/local/etc/xray/config.json"
 VLESS_JSON="/etc/proxym/vless.json"
@@ -24,10 +20,10 @@ GLOBAL_JSON="/etc/proxym/global.json"
 SCRIPT_PATH="/usr/local/bin/proxym-easy"
 UPDATE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/vless-encryption.sh"
 CRON_FILE="/tmp/proxym_cron.tmp"
-
+# 非交互模式标志（用于cron等自动化场景）
+NON_INTERACTIVE=false
 # 确保 UTF-8 编码
 export LC_ALL=C.UTF-8
-
 # 国家代码到国旗的完整映射（基于 ISO 3166-1 alpha-2）
 declare -A FLAGS=(
     [AD]="🇦🇩" [AE]="🇦🇪" [AF]="🇦🇫" [AG]="🇦🇬" [AI]="🇦🇮"
@@ -81,7 +77,6 @@ declare -A FLAGS=(
     [VN]="🇻🇳" [VU]="🇻🇺" [WF]="🇼🇫" [WS]="🇼🇸" [YE]="🇾🇪"
     [YT]="🇾🇹" [ZA]="🇿🇦" [ZM]="🇿🇲" [ZW]="🇿🇼"
 )
-
 # URL 编码函数（使用 Python3 进行 URL 编码，支持 Unicode 如 emoji）
 url_encode() {
     if command -v python3 &> /dev/null; then
@@ -91,24 +86,19 @@ url_encode() {
         echo "$1"
     fi
 }
-
 # 随机生成10位字符串
 generate_random_path() {
     openssl rand -hex 5 2>/dev/null || echo "defaultpath$(date +%s | cut -c1-5)"
 }
-
 # 确保 proxym 目录存在
 sudo mkdir -p /etc/proxym
-
 function log() {
     echo -e "${INFO} $1${NC}"
 }
-
 function error() {
     echo -e "${ERROR} $1${NC}"
     exit 1
 }
-
 function get_location_from_ip() {
     local ip=$1
     local location_info=$(curl -s --max-time 10 "http://ip-api.com/json/$ip?fields=status,message,countryCode,city" 2>/dev/null)
@@ -116,18 +106,14 @@ function get_location_from_ip() {
         echo "Unknown" "Unknown"
         return
     fi
-
     local country=$(echo "$location_info" | grep -o '"countryCode":"[^"]*"' | sed 's/.*"countryCode":"\([^"]*\)".*/\1/')
     local city=$(echo "$location_info" | grep -o '"city":"[^"]*"' | sed 's/.*"city":"\([^"]*\)".*/\1/')
-
     if [ -z "$country" ] || [ -z "$city" ]; then
         echo "Unknown" "Unknown"
         return
     fi
-
     echo "$country" "$city"
 }
-
 function load_global_config() {
     if [ -f "$GLOBAL_JSON" ]; then
         dns_server=$(jq -r '.dns_server // "8.8.8.8"' "$GLOBAL_JSON")
@@ -139,7 +125,6 @@ function load_global_config() {
         domain_strategy="UseIPv4v6"
     fi
 }
-
 function save_global_config() {
     cat > "$GLOBAL_JSON" << EOF
 {
@@ -150,20 +135,16 @@ function save_global_config() {
 EOF
     log "全局配置已保存到 $GLOBAL_JSON"
 }
-
 function update_script() {
     log "检查更新..."
     if [ ! -f "$SCRIPT_PATH" ]; then
         error "脚本未在 $SCRIPT_PATH 找到"
     fi
-
     cp "$SCRIPT_PATH" "${SCRIPT_PATH}.bak"
     log "备份已创建: ${SCRIPT_PATH}.bak"
-
     if ! curl -s -o "${SCRIPT_PATH}.new" "$UPDATE_URL"; then
         error "从 $UPDATE_URL 下载更新失败"
     fi
-
     if bash -n "${SCRIPT_PATH}.new" 2>/dev/null; then
         mv "${SCRIPT_PATH}.new" "$SCRIPT_PATH"
         chmod +x "$SCRIPT_PATH"
@@ -175,8 +156,10 @@ function update_script() {
         mv "${SCRIPT_PATH}.bak" "$SCRIPT_PATH"
         error "更新语法错误！已回滚到备份。"
     fi
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function detect_package_manager() {
     if command -v apt &> /dev/null; then
         echo "apt"
@@ -192,20 +175,17 @@ function detect_package_manager() {
         echo "none"
     fi
 }
-
 function install_dependencies() {
     local force_update=${1:-false}
     local pkg_manager=$(detect_package_manager)
     local deps=("curl" "unzip" "ca-certificates" "wget" "gnupg" "python3" "jq")
     local cron_pkg="cron"
-
     if [ "$pkg_manager" = "apk" ]; then
         cron_pkg="dcron"
     elif [ "$pkg_manager" = "pacman" ] || [ "$pkg_manager" = "yum" ] || [ "$pkg_manager" = "dnf" ]; then
         cron_pkg="cronie"
     fi
     deps+=("$cron_pkg")
-
     if [ "$force_update" = true ]; then
         log "安装 Xray 依赖..."
         case "$pkg_manager" in
@@ -276,7 +256,6 @@ function install_dependencies() {
         fi
     fi
 }
-
 function detect_init_system() {
     if command -v systemctl &> /dev/null; then
         echo "systemd"
@@ -286,14 +265,13 @@ function detect_init_system() {
         echo "none"
     fi
 }
-
 function install_xray() {
     local pause=${1:-1}
     local force_deps=${2:-false}
     local init_system=$(detect_init_system)
     if command -v xray &> /dev/null; then
         log "Xray 已安装。"
-        if [ $pause -eq 1 ]; then
+        if [ $pause -eq 1 ] && [ "$NON_INTERACTIVE" != "true" ]; then
             read -p "按 Enter 返回菜单..."
         fi
         return 0
@@ -305,10 +283,14 @@ function install_xray() {
             ash /tmp/install-release.sh
             rm -f /tmp/install-release.sh
             # 可选：为节点降低攻击面
-            read -p "是否为 Xray 节点降低网络特权（仅保留 cap_net_bind_service）？(y/N): " reduce_priv
-            if [[ $reduce_priv =~ ^[Yy]$ ]]; then
-                sudo sed -i 's/^capabilities="^cap_net_bind_service,^cap_net_admin,^cap_net_raw"$/capabilities="^cap_net_bind_service"/g' /etc/init.d/xray
-                log "已调整 Xray 网络特权，仅保留 cap_net_bind_service。"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "是否为 Xray 节点降低网络特权（仅保留 cap_net_bind_service）？(y/N): " reduce_priv
+                if [[ $reduce_priv =~ ^[Yy]$ ]]; then
+                    sudo sed -i 's/^capabilities="^cap_net_bind_service,^cap_net_admin,^cap_net_raw"$/capabilities="^cap_net_bind_service"/g' /etc/init.d/xray
+                    log "已调整 Xray 网络特权，仅保留 cap_net_bind_service。"
+                fi
+            else
+                reduce_priv="n"
             fi
         else
             bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
@@ -318,12 +300,11 @@ function install_xray() {
         else
             error "Xray 安装失败。"
         fi
-        if [ $pause -eq 1 ]; then
+        if [ $pause -eq 1 ] && [ "$NON_INTERACTIVE" != "true" ]; then
             read -p "按 Enter 返回菜单..."
         fi
     fi
 }
-
 function start_xray() {
     local init_system=$(detect_init_system)
     if [ "$init_system" = "systemd" ]; then
@@ -334,9 +315,10 @@ function start_xray() {
         error "不支持的 init 系统。"
     fi
     log "Xray 已启动。"
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function stop_xray() {
     local init_system=$(detect_init_system)
     if [ "$init_system" = "systemd" ]; then
@@ -347,9 +329,10 @@ function stop_xray() {
         error "不支持的 init 系统。"
     fi
     log "Xray 已停止。"
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function restart_xray() {
     local init_system=$(detect_init_system)
     if [ "$init_system" = "systemd" ]; then
@@ -360,9 +343,10 @@ function restart_xray() {
         error "不支持的 init 系统。"
     fi
     log "Xray 已重启。"
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function status_xray() {
     local init_system=$(detect_init_system)
     if [ "$init_system" = "systemd" ]; then
@@ -372,9 +356,10 @@ function status_xray() {
     else
         error "不支持的 init 系统。"
     fi
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function view_logs() {
     local init_system=$(detect_init_system)
     if [ "$init_system" = "systemd" ]; then
@@ -388,18 +373,20 @@ function view_logs() {
     else
         error "不支持的 init 系统。"
     fi
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function edit_config() {
     if [ ! -f "$CONFIG" ]; then
         error "配置文件不存在。请先生成配置。"
     fi
     sudo vim "$CONFIG"
     log "编辑完成。"
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function test_config() {
     if [ ! -f "$CONFIG" ]; then
         error "配置文件不存在。请先生成配置。"
@@ -409,9 +396,10 @@ function test_config() {
     else
         error "配置测试失败！请检查配置文件。"
     fi
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function generate_node_info() {
     local uuid=$1
     local port=$2
@@ -441,7 +429,6 @@ function generate_node_info() {
     local method=${26}
     local rtt=${27}
     local use_mlkem=${28}
-
     if [ "$use_reality" = true ]; then
         cat << EOF
 {
@@ -501,17 +488,14 @@ EOF
 EOF
     fi
 }
-
 function push_to_remote() {
     local uri=$1
     local push_url=$2
     local push_token=$3
-
     if [ -z "$push_url" ] || [ -z "$push_token" ]; then
         log "Push 配置不完整，跳过。"
         return
     fi
-
     local payload='{"token":"'"$push_token"'","uri":"'"$uri"'"}'
     local response=$(curl -s -X POST "$push_url" -H "Content-Type: application/json" -d "$payload")
     if [ $? -eq 0 ]; then
@@ -520,12 +504,10 @@ function push_to_remote() {
         error "推送失败: $response"
     fi
 }
-
 function reset_all() {
     if [ ! -f "$VLESS_JSON" ]; then
         error "未找到配置信息。请先生成配置。"
     fi
-
     log "重置所有节点的 UUID 和密码..."
     local nodes=$(jq -c '.[]' "$VLESS_JSON")
     local new_nodes=()
@@ -553,11 +535,9 @@ function reset_all() {
         local method=$(echo "$node" | jq -r '.method // ""')
         local rtt=$(echo "$node" | jq -r '.rtt // ""')
         local use_mlkem=$(echo "$node" | jq -r '.use_mlkem // false')
-
         local decryption
         local encryption
         local public_key_base64
-
         if [ "$use_reality" = false ]; then
             if [ "$rtt" = "0rtt" ]; then
                 time_server="600s"
@@ -567,7 +547,6 @@ function reset_all() {
             x25519_output=$(xray x25519)
             private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
             password=$(echo "$x25519_output" | grep "Password:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
-
             local seed=""
             local client_param=""
             if [ "$use_mlkem" = true ]; then
@@ -575,12 +554,10 @@ function reset_all() {
                 seed=$(echo "$mlkem_output" | grep "Seed:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
                 client_param=$(echo "$mlkem_output" | grep "Client:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
             fi
-
             decryption="${kex}.${method}.${time_server}.${private}"
             if [ "$use_mlkem" = true ]; then
                 decryption="${decryption}.${seed}"
             fi
-
             encryption="${kex}.${method}.${rtt}.${password}"
             if [ "$use_mlkem" = true ]; then
                 encryption="${encryption}.${client_param}"
@@ -594,7 +571,6 @@ function reset_all() {
             decryption="none"
             encryption="none"
         fi
-
         # 处理标签
         local tag=$(echo "$node" | jq -r '.tag')
         if [ "$is_custom" = false ]; then
@@ -602,7 +578,6 @@ function reset_all() {
             local flag="${FLAGS[$country]:-🌍}"
             tag="${flag} ${city}"
         fi
-
         # 重新生成 URI
         local server_address
         if [ -n "$domain" ]; then
@@ -632,19 +607,14 @@ function reset_all() {
         fi
         encoded_tag=$(url_encode "$tag")
         local uri="vless://${uuid}@${server_address}:${port}?${uri_params}#${encoded_tag}"
-
         new_nodes+=("$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$ip" "$tag" "$uri" "$domain" "$network" "$path" "$host" "$fingerprint" "$is_custom" "$use_reality" "$dest" "$sni" "$shortids_json" "$public_key_base64" "$flow" "$push_enabled" "$push_url" "$push_token" "$servernames_json" "$private_key" "$kex" "$method" "$rtt" "$use_mlkem")")
     done <<< "$nodes"
-
     # 保存新节点
     printf '%s\n' "${new_nodes[@]}" | jq -s '.' > "$VLESS_JSON"
-
     # 重新生成 config.json（使用保存的全局配置）
     regenerate_full_config
-
     restart_xray
     log "所有节点已重置，Xray 已重启。"
-
     # 自动推送
     nodes=$(jq -c '.[]' "$VLESS_JSON")
     while IFS= read -r node; do
@@ -656,13 +626,19 @@ function reset_all() {
             push_to_remote "$uri" "$push_url" "$push_token"
         fi
     done <<< "$nodes"
+    # 在非交互模式下，打印完成消息并直接退出
+    if [ "$NON_INTERACTIVE" = "true" ]; then
+        echo -e "${GREEN}重置完成！所有节点 UUID/密码已更新，Xray 已重启。${NC}"
+        echo -e "${YELLOW}新 URI:${NC}"
+        jq -r '.[] | .uri' "$VLESS_JSON" | while read uri; do
+            echo "$uri"
+        done
+    fi
 }
-
 function regenerate_full_config() {
-    load_global_config  # 从 global.json 加载 DNS 和策略
+    load_global_config # 从 global.json 加载 DNS 和策略
     local nodes=$(jq -c '.[]' "$VLESS_JSON")
     local inbounds=()
-
     while IFS= read -r node; do
         local port=$(echo "$node" | jq -r '.port')
         local uuid=$(echo "$node" | jq -r '.uuid')
@@ -678,7 +654,6 @@ function regenerate_full_config() {
         local shortids_json=$(echo "$node" | jq -r '.shortIds // []')
         local flow=$(echo "$node" | jq -r '.flow // ""')
         local domain=$(echo "$node" | jq -r '.domain')
-
         if [ "$use_reality" = true ]; then
             stream_settings='{
               "network": "tcp",
@@ -730,7 +705,6 @@ function regenerate_full_config() {
             fi
             client_flow='{"id":"'"$uuid"'"}'
         fi
-
         inbounds+=('{
           "port": '"$port"',
           "protocol": "vless",
@@ -743,9 +717,7 @@ function regenerate_full_config() {
           "streamSettings": '"$stream_settings"'
         }')
     done <<< "$nodes"
-
     inbounds_json=$(printf '%s\n' "${inbounds[@]}" | jq -s '.')
-
     cat > "$CONFIG" << EOF
 {
   "log": {
@@ -771,47 +743,52 @@ function regenerate_full_config() {
   ]
 }
 EOF
-
     if xray -test -config "$CONFIG" &> /dev/null; then
         log "配置已重新生成。"
     else
         error "配置测试失败！"
     fi
 }
-
 function generate_config() {
     install_xray 0 false
-
     sudo mkdir -p /usr/local/etc/xray
-
     log "生成新的 VLESS 配置..."
     echo -e "${YELLOW}按 Enter 使用默认值。${NC}"
-
     if [ ! -f "$CONFIG" ]; then
         overwrite=true
     else
-        read -p "配置文件已存在。覆盖 (Y) 还是附加节点 (N)? (默认 Y): " overwrite_choice
-        if [[ ! "$overwrite_choice" =~ ^[Nn]$ ]]; then
-            overwrite=true
+        if [ "$NON_INTERACTIVE" != "true" ]; then
+            read -p "配置文件已存在。覆盖 (Y) 还是附加节点 (N)? (默认 Y): " overwrite_choice
+            if [[ ! "$overwrite_choice" =~ ^[Nn]$ ]]; then
+                overwrite=true
+            else
+                overwrite=false
+                log "附加模式：仅更新节点相关内容。"
+            fi
         else
-            overwrite=false
-            log "附加模式：仅更新节点相关内容。"
+            overwrite=true  # 非交互模式下默认覆盖
         fi
     fi
-
-    read -p "UUID (默认: 新生成): " uuid_input
-    if [ -z "$uuid_input" ]; then
-        uuid=$(xray uuid)
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "UUID (默认: 新生成): " uuid_input
+        if [ -z "$uuid_input" ]; then
+            uuid=$(xray uuid)
+        else
+            uuid="$uuid_input"
+        fi
     else
-        uuid="$uuid_input"
+        uuid=$(xray uuid)
     fi
     log "UUID: $uuid"
-
     echo "请选择 KEX:"
     echo "[1] x25519"
     echo "[2] mlkem768x25519plus (默认)"
-    read -p "请输入选项 (1-2, 默认: 2): " kex_choice_input
-    if [ -z "$kex_choice_input" ]; then
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "请输入选项 (1-2, 默认: 2): " kex_choice_input
+        if [ -z "$kex_choice_input" ]; then
+            kex_choice_input="2"
+        fi
+    else
         kex_choice_input="2"
     fi
     case "$kex_choice_input" in
@@ -820,13 +797,16 @@ function generate_config() {
         *) kex="mlkem768x25519plus"; use_mlkem=true ;;
     esac
     log "KEX: $kex"
-
     echo "请选择方法:"
     echo "[1] native"
     echo "[2] xorpub"
     echo "[3] random (默认)"
-    read -p "请输入选项 (1-3, 默认: 3): " method_choice_input
-    if [ -z "$method_choice_input" ]; then
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "请输入选项 (1-3, 默认: 3): " method_choice_input
+        if [ -z "$method_choice_input" ]; then
+            method_choice_input="3"
+        fi
+    else
         method_choice_input="3"
     fi
     case "$method_choice_input" in
@@ -836,12 +816,15 @@ function generate_config() {
         *) method="random" ;;
     esac
     log "方法: $method"
-
     echo "请选择 RTT:"
     echo "[1] 0rtt (默认)"
     echo "[2] 1rtt"
-    read -p "请输入选项 (1-2, 默认: 1): " rtt_choice_input
-    if [ -z "$rtt_choice_input" ]; then
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "请输入选项 (1-2, 默认: 1): " rtt_choice_input
+        if [ -z "$rtt_choice_input" ]; then
+            rtt_choice_input="1"
+        fi
+    else
         rtt_choice_input="1"
     fi
     case "$rtt_choice_input" in
@@ -850,18 +833,20 @@ function generate_config() {
         *) rtt="0rtt" ;;
     esac
     log "RTT: $rtt"
-
     if [ "$rtt" = "0rtt" ]; then
         time_server="600s"
     else
         time_server="0s"
     fi
-
     echo "是否启用 REALITY (Xray 官方推荐用于 TCP):"
     echo "[1] 是 (仅支持 TCP)"
     echo "[2] 否 (支持 TCP 或 WebSocket + TLS 或 WebSocket 无 TLS)"
-    read -p "请输入选项 (1-2, 默认: 2): " reality_choice_input
-    if [ -z "$reality_choice_input" ]; then
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "请输入选项 (1-2, 默认: 2): " reality_choice_input
+        if [ -z "$reality_choice_input" ]; then
+            reality_choice_input="2"
+        fi
+    else
         reality_choice_input="2"
     fi
     case "$reality_choice_input" in
@@ -869,24 +854,20 @@ function generate_config() {
         *) use_reality=false ;;
     esac
     log "启用 REALITY: $( [ "$use_reality" = true ] && echo "是" || echo "否" )"
-
     local decryption
     local encryption
     local private
     local public_key_base64
     local seed=""
     local client_param=""
-
     if [ "$use_reality" = false ]; then
         log "生成 X25519 密钥..."
         x25519_output=$(xray x25519)
         private=$(echo "$x25519_output" | grep "PrivateKey:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
         password=$(echo "$x25519_output" | grep "Password:" | cut -d ':' -f2- | sed 's/^ *//;s/ *$//' | xargs)
-
         if [ -z "$private" ] || [ -z "$password" ]; then
             error "X25519 密钥生成失败。请确保 Xray 已安装。"
         fi
-
         if [ "$use_mlkem" = true ]; then
             log "生成 ML-KEM-768 密钥..."
             mlkem_output=$(xray mlkem768 2>/dev/null)
@@ -898,12 +879,10 @@ function generate_config() {
                 use_mlkem=false
             fi
         fi
-
         decryption="${kex}.${method}.${time_server}.${private}"
         if [ "$use_mlkem" = true ]; then
             decryption="${decryption}.${seed}"
         fi
-
         encryption="${kex}.${method}.${rtt}.${password}"
         if [ "$use_mlkem" = true ]; then
             encryption="${encryption}.${client_param}"
@@ -925,69 +904,91 @@ function generate_config() {
         rtt=""
         use_mlkem=false
         log "REALITY 模式下 VLESS Encryption 设置为 none"
-        read -p "REALITY 伪装目标 dest (默认: swdist.apple.com:443): " dest_input
-        dest=${dest_input:-"swdist.apple.com:443"}
-        read -p "serverNames (逗号分隔 SNI 列表, 默认: swdist.apple.com): " servernames_input
-        if [ -z "$servernames_input" ]; then
+        if [ "$NON_INTERACTIVE" != "true" ]; then
+            read -p "REALITY 伪装目标 dest (默认: swdist.apple.com:443): " dest_input
+            dest=${dest_input:-"swdist.apple.com:443"}
+            read -p "serverNames (逗号分隔 SNI 列表, 默认: swdist.apple.com): " servernames_input
+            if [ -z "$servernames_input" ]; then
+                servernames_input="swdist.apple.com"
+            fi
+            IFS=',' read -ra servernames_array <<< "$servernames_input"
+            servernames_json=$(IFS=','; echo "[\"${servernames_array[*]}\"]")
+            sni="${servernames_array[0]}"
+            read -p "shortIds (逗号分隔, 每个 0-16 hex 字符, 默认随机生成一个): " shortids_input
+            if [ -z "$shortids_input" ]; then
+                shortid=$(openssl rand -hex 4 2>/dev/null || echo "a1b2c3d4")
+                shortids_input="$shortid"
+            fi
+            IFS=',' read -ra shortids <<< "$shortids_input"
+            shortids_json=$(IFS=','; echo "[\"${shortids[*]}\"]")
+            shortId="${shortids[0]}"
+            echo "请选择 uTLS Fingerprint (用于伪装):"
+            echo "[1] chrome (默认)"
+            echo "[2] firefox"
+            echo "[3] safari"
+            echo "[4] ios"
+            read -p "请输入选项 (1-4, 默认: 1): " fp_choice_input
+            if [ -z "$fp_choice_input" ]; then
+                fp_choice_input="1"
+            fi
+            case "$fp_choice_input" in
+                1) fingerprint="chrome" ;;
+                2) fingerprint="firefox" ;;
+                3) fingerprint="safari" ;;
+                4) fingerprint="ios" ;;
+                *) fingerprint="chrome" ;;
+            esac
+            log "REALITY 配置: dest=$dest, sni=$sni, shortId=$shortId, fingerprint=$fingerprint"
+        else
+            dest="swdist.apple.com:443"
             servernames_input="swdist.apple.com"
-        fi
-        IFS=',' read -ra servernames_array <<< "$servernames_input"
-        servernames_json=$(IFS=','; echo "[\"${servernames_array[*]}\"]")
-        sni="${servernames_array[0]}"
-        read -p "shortIds (逗号分隔, 每个 0-16 hex 字符, 默认随机生成一个): " shortids_input
-        if [ -z "$shortids_input" ]; then
+            IFS=',' read -ra servernames_array <<< "$servernames_input"
+            servernames_json=$(IFS=','; echo "[\"${servernames_array[*]}\"]")
+            sni="${servernames_array[0]}"
             shortid=$(openssl rand -hex 4 2>/dev/null || echo "a1b2c3d4")
-            shortids_input="$shortid"
+            shortids_json="[\"$shortid\"]"
+            shortId="$shortid"
+            fingerprint="chrome"
         fi
-        IFS=',' read -ra shortids <<< "$shortids_input"
-        shortids_json=$(IFS=','; echo "[\"${shortids[*]}\"]")
-        shortId="${shortids[0]}"
-
-        echo "请选择 uTLS Fingerprint (用于伪装):"
-        echo "[1] chrome (默认)"
-        echo "[2] firefox"
-        echo "[3] safari"
-        echo "[4] ios"
-        read -p "请输入选项 (1-4, 默认: 1): " fp_choice_input
-        if [ -z "$fp_choice_input" ]; then
-            fp_choice_input="1"
-        fi
-        case "$fp_choice_input" in
-            1) fingerprint="chrome" ;;
-            2) fingerprint="firefox" ;;
-            3) fingerprint="safari" ;;
-            4) fingerprint="ios" ;;
-            *) fingerprint="chrome" ;;
-        esac
-        log "REALITY 配置: dest=$dest, sni=$sni, shortId=$shortId, fingerprint=$fingerprint"
     fi
-
     echo "vless reality推荐端口为443"
     default_port=8443
     if [ "$use_reality" = true ]; then
         default_port=443
     fi
-    read -p "端口 (默认: $default_port): " port_input
-    port=${port_input:-$default_port}
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "端口 (默认: $default_port): " port_input
+        port=${port_input:-$default_port}
+    else
+        port=$default_port
+    fi
     log "端口: $port"
-
-    read -p "服务器 IP (默认: 自动检测): " ip_input
-    if [ -z "$ip_input" ]; then
-        ip=$(curl -s -4 ifconfig.me 2>/dev/null)
-        if [ -z "$ip" ] || [ "$ip" = "0.0.0.0" ]; then
-            log "IPv4 检测失败，尝试 IPv6..."
-            ip=$(curl -s -6 ifconfig.me 2>/dev/null)
-            if [ -z "$ip" ]; then
-                error "IP 检测失败。请手动输入。"
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "服务器 IP (默认: 自动检测): " ip_input
+        if [ -z "$ip_input" ]; then
+            ip=$(curl -s -4 ifconfig.me 2>/dev/null)
+            if [ -z "$ip" ] || [ "$ip" = "0.0.0.0" ]; then
+                log "IPv4 检测失败，尝试 IPv6..."
+                ip=$(curl -s -6 ifconfig.me 2>/dev/null)
+                if [ -z "$ip" ]; then
+                    error "IP 检测失败。请手动输入。"
+                fi
+                log "使用 IPv6: $ip"
+            else
+                log "使用 IPv4: $ip"
             fi
-            log "使用 IPv6: $ip"
         else
-            log "使用 IPv4: $ip"
+            ip="$ip_input"
         fi
     else
-        ip="$ip_input"
+        ip=$(curl -s -4 ifconfig.me 2>/dev/null)
+        if [ -z "$ip" ] || [ "$ip" = "0.0.0.0" ]; then
+            ip=$(curl -s -6 ifconfig.me 2>/dev/null)
+            if [ -z "$ip" ]; then
+                error "IP 检测失败。"
+            fi
+        fi
     fi
-
     log "根据 IP $ip 获取地理位置..."
     read country city <<< $(get_location_from_ip "$ip")
     local flag="${FLAGS[$country]:-🌍}"
@@ -995,68 +996,73 @@ function generate_config() {
     if [ "$auto_tag" = "🌍 Unknown" ]; then
         auto_tag="Unknown"
     fi
-
     echo "节点备注 (标签):"
     echo "[1] 使用自动获取: $auto_tag"
     echo "[2] 自定义"
-    read -p "请选择 (1-2, 默认: 1): " tag_choice
-    if [ -z "$tag_choice" ] || [ "$tag_choice" = "1" ]; then
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "请选择 (1-2, 默认: 1): " tag_choice
+        if [ -z "$tag_choice" ] || [ "$tag_choice" = "1" ]; then
+            tag="$auto_tag"
+            is_custom=false
+        else
+            read -p "输入自定义名称: " custom_name
+            read -p "是否添加旗帜 ($flag)？ (y/N): " add_flag
+            if [[ $add_flag =~ ^[Yy]$ ]]; then
+                tag="$flag $custom_name"
+            else
+                tag="$custom_name"
+            fi
+            is_custom=true
+        fi
+    else
         tag="$auto_tag"
         is_custom=false
-    else
-        read -p "输入自定义名称: " custom_name
-        read -p "是否添加旗帜 ($flag)？ (y/N): " add_flag
-        if [[ $add_flag =~ ^[Yy]$ ]]; then
-            tag="$flag $custom_name"
-        else
-            tag="$custom_name"
-        fi
-        is_custom=true
     fi
     log "标签: $tag"
-
-    read -p "DNS 服务器 (默认: 8.8.8.8): " dns_server_input
-    dns_server=${dns_server_input:-8.8.8.8}
-
-    echo "请选择查询策略:"
-    echo "[1] UseIPv4 (默认)"
-    echo "[2] UseIPv6"
-    echo "[3] UseIP"
-    echo "[4] AsIs"
-    read -p "请输入选项 (1-4, 默认: 1): " strategy_choice_input
-    if [ -z "$strategy_choice_input" ]; then
-        strategy_choice_input="1"
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "DNS 服务器 (默认: 8.8.8.8): " dns_server_input
+        dns_server=${dns_server_input:-8.8.8.8}
+        echo "请选择查询策略:"
+        echo "[1] UseIPv4 (默认)"
+        echo "[2] UseIPv6"
+        echo "[3] UseIP"
+        echo "[4] AsIs"
+        read -p "请输入选项 (1-4, 默认: 1): " strategy_choice_input
+        if [ -z "$strategy_choice_input" ]; then
+            strategy_choice_input="1"
+        fi
+        case "$strategy_choice_input" in
+            1) strategy="UseIPv4" ;;
+            2) strategy="UseIPv6" ;;
+            3) strategy="UseIP" ;;
+            4) strategy="AsIs" ;;
+            *) strategy="UseIPv4" ;;
+        esac
+        log "查询策略: $strategy"
+        echo "请选择出站域名策略:"
+        echo "[1] UseIPv4v6 (默认)"
+        echo "[2] UseIPv6v4"
+        echo "[3] ForceIPv4"
+        echo "[4] ForceIPv6"
+        read -p "请输入选项 (1-4, 默认: 1): " domain_strategy_choice_input
+        if [ -z "$domain_strategy_choice_input" ]; then
+            domain_strategy_choice_input="1"
+        fi
+        case "$domain_strategy_choice_input" in
+            1) domain_strategy="UseIPv4v6" ;;
+            2) domain_strategy="UseIPv6v4" ;;
+            3) domain_strategy="ForceIPv4" ;;
+            4) domain_strategy="ForceIPv6" ;;
+            *) domain_strategy="UseIPv4v6" ;;
+        esac
+        log "出站域名策略: $domain_strategy"
+    else
+        dns_server="8.8.8.8"
+        strategy="UseIPv4"
+        domain_strategy="UseIPv4v6"
     fi
-    case "$strategy_choice_input" in
-        1) strategy="UseIPv4" ;;
-        2) strategy="UseIPv6" ;;
-        3) strategy="UseIP" ;;
-        4) strategy="AsIs" ;;
-        *) strategy="UseIPv4" ;;
-    esac
-    log "查询策略: $strategy"
-
-    echo "请选择出站域名策略:"
-    echo "[1] UseIPv4v6 (默认)"
-    echo "[2] UseIPv6v4"
-    echo "[3] ForceIPv4"
-    echo "[4] ForceIPv6"
-    read -p "请输入选项 (1-4, 默认: 1): " domain_strategy_choice_input
-    if [ -z "$domain_strategy_choice_input" ]; then
-        domain_strategy_choice_input="1"
-    fi
-    case "$domain_strategy_choice_input" in
-        1) domain_strategy="UseIPv4v6" ;;
-        2) domain_strategy="UseIPv6v4" ;;
-        3) domain_strategy="ForceIPv4" ;;
-        4) domain_strategy="ForceIPv6" ;;
-        *) domain_strategy="UseIPv4v6" ;;
-    esac
-    log "出站域名策略: $domain_strategy"
-
     # 保存全局配置
     save_global_config
-
     dest=${dest:-""}
     sni=${sni:-""}
     shortids_json=${shortids_json:-"[]"}
@@ -1067,7 +1073,6 @@ function generate_config() {
     if [ "$use_reality" = true ]; then
         private_key="$private"
     fi
-
     if [ "$use_reality" = true ]; then
         network="tcp"
         type_uri="tcp"
@@ -1088,8 +1093,12 @@ function generate_config() {
         echo "[1] TCP (默认)"
         echo "[2] WebSocket + TLS"
         echo "[3] WebSocket (无 TLS)"
-        read -p "请输入选项 (1-3, 默认: 1): " transport_choice_input
-        if [ -z "$transport_choice_input" ]; then
+        if [ "$NON_INTERACTIVE" != "true" ]; then
+            read -p "请输入选项 (1-3, 默认: 1): " transport_choice_input
+            if [ -z "$transport_choice_input" ]; then
+                transport_choice_input="1"
+            fi
+        else
             transport_choice_input="1"
         fi
         case "$transport_choice_input" in
@@ -1110,95 +1119,105 @@ function generate_config() {
                 network="ws"
                 type_uri="ws"
                 security_uri="tls"
-                read -p "输入域名: " domain
-                if [ -z "$domain" ]; then
-                    error "域名不能为空。"
-                fi
-                host="$domain"
-                server_address="$domain"
-                log "[?] 输入域名以显示证书路径: $domain"
-
-                echo "请选择 uTLS Fingerprint (用于伪装):"
-                echo "[1] chrome (默认)"
-                echo "[2] firefox"
-                echo "[3] safari"
-                echo "[4] ios"
-                read -p "请输入选项 (1-4, 默认: 1): " fp_choice_input
-                if [ -z "$fp_choice_input" ]; then
-                    fp_choice_input="1"
-                fi
-                case "$fp_choice_input" in
-                    1) fingerprint="chrome" ;;
-                    2) fingerprint="firefox" ;;
-                    3) fingerprint="safari" ;;
-                    4) fingerprint="ios" ;;
-                    *) fingerprint="chrome" ;;
-                esac
-                log "Fingerprint: $fingerprint"
-
-                acme_dir="/etc/ssl/acme/$domain"
-                if [ -d "$acme_dir" ]; then
-                    log "[✔] 证书路径：$acme_dir"
-                    ls -la "$acme_dir" | head -n 5
-                    cert_path="$acme_dir/fullchain.pem"
-                    key_path="$acme_dir/privkey.key"
-                    if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
-                        echo -e "${WARN} 证书文件不存在，请手动输入。${NC}"
-                        cert_path=""
+                if [ "$NON_INTERACTIVE" != "true" ]; then
+                    read -p "输入域名: " domain
+                    if [ -z "$domain" ]; then
+                        error "域名不能为空。"
                     fi
-                else
-                    log "未找到 /etc/ssl/acme/$domain"
-                    if [ -d "/etc/ssl/acme" ]; then
-                        echo "可用证书文件夹："
-                        ls -1 /etc/ssl/acme/ | nl -w1 -s') '
-                        read -p "选择文件夹编号 (或 0 手动输入): " folder_choice
-                        if [[ "$folder_choice" =~ ^[0-9]+$ ]] && [ "$folder_choice" -gt 0 ]; then
-                            selected_folder=$(ls -1 /etc/ssl/acme/ | sed -n "${folder_choice}p")
-                            if [ -n "$selected_folder" ]; then
-                                acme_dir="/etc/ssl/acme/$selected_folder"
-                                cert_path="$acme_dir/fullchain.pem"
-                                key_path="$acme_dir/privkey.key"
-                                log "[✔] 选择: $acme_dir"
+                    host="$domain"
+                    server_address="$domain"
+                    log "[?] 输入域名以显示证书路径: $domain"
+                    echo "请选择 uTLS Fingerprint (用于伪装):"
+                    echo "[1] chrome (默认)"
+                    echo "[2] firefox"
+                    echo "[3] safari"
+                    echo "[4] ios"
+                    read -p "请输入选项 (1-4, 默认: 1): " fp_choice_input
+                    if [ -z "$fp_choice_input" ]; then
+                        fp_choice_input="1"
+                    fi
+                    case "$fp_choice_input" in
+                        1) fingerprint="chrome" ;;
+                        2) fingerprint="firefox" ;;
+                        3) fingerprint="safari" ;;
+                        4) fingerprint="ios" ;;
+                        *) fingerprint="chrome" ;;
+                    esac
+                    log "Fingerprint: $fingerprint"
+                    acme_dir="/etc/ssl/acme/$domain"
+                    if [ -d "$acme_dir" ]; then
+                        log "[✔] 证书路径：$acme_dir"
+                        ls -la "$acme_dir" | head -n 5
+                        cert_path="$acme_dir/fullchain.pem"
+                        key_path="$acme_dir/privkey.key"
+                        if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
+                            echo -e "${WARN} 证书文件不存在，请手动输入。${NC}"
+                            cert_path=""
+                        fi
+                    else
+                        log "未找到 /etc/ssl/acme/$domain"
+                        if [ -d "/etc/ssl/acme" ]; then
+                            echo "可用证书文件夹："
+                            ls -1 /etc/ssl/acme/ | nl -w1 -s') '
+                            read -p "选择文件夹编号 (或 0 手动输入): " folder_choice
+                            if [[ "$folder_choice" =~ ^[0-9]+$ ]] && [ "$folder_choice" -gt 0 ]; then
+                                selected_folder=$(ls -1 /etc/ssl/acme/ | sed -n "${folder_choice}p")
+                                if [ -n "$selected_folder" ]; then
+                                    acme_dir="/etc/ssl/acme/$selected_folder"
+                                    cert_path="$acme_dir/fullchain.pem"
+                                    key_path="$acme_dir/privkey.key"
+                                    log "[✔] 选择: $acme_dir"
+                                fi
                             fi
                         fi
                     fi
-                fi
-
-                if [ -z "$cert_path" ] || [ ! -f "$cert_path" ]; then
-                    read -p "输入证书路径 (fullchain.pem): " cert_path
-                fi
-                if [ -z "$key_path" ] || [ ! -f "$key_path" ]; then
-                    read -p "输入私钥路径 (privkey.key): " key_path
-                fi
-
-                read -p "WebSocket Path (默认随机生成): " ws_path_input
-                if [ -z "$ws_path_input" ]; then
-                    path="/$(generate_random_path)"
+                    if [ -z "$cert_path" ] || [ ! -f "$cert_path" ]; then
+                        read -p "输入证书路径 (fullchain.pem): " cert_path
+                    fi
+                    if [ -z "$key_path" ] || [ ! -f "$key_path" ]; then
+                        read -p "输入私钥路径 (privkey.key): " key_path
+                    fi
+                    read -p "WebSocket Path (默认随机生成): " ws_path_input
+                    if [ -z "$ws_path_input" ]; then
+                        path="/$(generate_random_path)"
+                    else
+                        path="/$ws_path_input"
+                    fi
+                    log "Path: $path"
                 else
-                    path="/$ws_path_input"
+                    error "非交互模式下 WebSocket + TLS 需要域名输入，请手动运行生成配置。"
                 fi
-                log "Path: $path"
                 ;;
             3)
                 use_tls=false
                 network="ws"
                 type_uri="ws"
                 security_uri="none"
-                read -p "输入 Host (可为域名或 IP, 默认: $ip): " host_input
-                host=${host_input:-$ip}
-                server_address="${ip}"
-                if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
-                    server_address="[${ip}]"
-                fi
-                read -p "WebSocket Path (默认随机生成): " ws_path_input
-                if [ -z "$ws_path_input" ]; then
-                    path="/$(generate_random_path)"
+                if [ "$NON_INTERACTIVE" != "true" ]; then
+                    read -p "输入 Host (可为域名或 IP, 默认: $ip): " host_input
+                    host=${host_input:-$ip}
+                    server_address="${ip}"
+                    if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
+                        server_address="[${ip}]"
+                    fi
+                    read -p "WebSocket Path (默认随机生成): " ws_path_input
+                    if [ -z "$ws_path_input" ]; then
+                        path="/$(generate_random_path)"
+                    else
+                        path="/$ws_path_input"
+                    fi
+                    log "Host: $host"
+                    log "Path: $path"
+                    domain=""
                 else
-                    path="/$ws_path_input"
+                    host="$ip"
+                    path="/$(generate_random_path)"
+                    server_address="${ip}"
+                    if [[ "$ip" =~ : ]] && ! [[ "$ip" =~ \[ || "$ip" =~ \] ]]; then
+                        server_address="[${ip}]"
+                    fi
+                    domain=""
                 fi
-                log "Host: $host"
-                log "Path: $path"
-                domain=""
                 ;;
             *)
                 use_tls=false
@@ -1228,19 +1247,20 @@ function generate_config() {
     fi
     encoded_tag=$(url_encode "$tag")
     uri="vless://${uuid}@${server_address}:${port}?${uri_params}#${encoded_tag}"
-
-    read -p "是否启用自动推送至远端？ (y/N): " enable_push
-    push_enabled=false
-    push_url=""
-    push_token=""
-    if [[ $enable_push =~ ^[Yy]$ ]]; then
-        read -p "输入推送 URL (e.g. https://example.workers.dev/push): " push_url
-        read -p "输入 token: " push_token
-        push_enabled=true
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "是否启用自动推送至远端？ (y/N): " enable_push
+        push_enabled=false
+        push_url=""
+        push_token=""
+        if [[ $enable_push =~ ^[Yy]$ ]]; then
+            read -p "输入推送 URL (e.g. https://example.workers.dev/push): " push_url
+            read -p "输入 token: " push_token
+            push_enabled=true
+        fi
+    else
+        push_enabled=false
     fi
-
     new_node_info=$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$ip" "$tag" "$uri" "$domain" "$network" "$path" "$host" "$fingerprint" "$is_custom" "$use_reality" "$dest" "$sni" "$shortids_json" "$public_key_base64" "$flow" "$push_enabled" "$push_url" "$push_token" "$servernames_json" "$private_key" "$kex" "$method" "$rtt" "$use_mlkem")
-
     if [ "$overwrite" = true ]; then
         echo "[$new_node_info]" > "$VLESS_JSON"
     else
@@ -1252,24 +1272,21 @@ function generate_config() {
             echo "[$new_node_info]" > "$VLESS_JSON"
         fi
     fi
-
     regenerate_full_config
     restart_xray
     log "配置已应用，Xray 已重启。"
     log "节点信息已保存在 /etc/proxym/vless.json"
-
     if [ "$push_enabled" = true ]; then
         push_to_remote "$uri" "$push_url" "$push_token"
     fi
-
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function print_uri() {
     if [ ! -f "$VLESS_JSON" ]; then
         error "未找到配置信息。请先生成配置。"
     fi
-
     echo -e "${GREEN}VLESS URIs:${NC}"
     echo -e "${YELLOW}============================${NC}"
     jq -r '.[] | .uri' "$VLESS_JSON" | while read uri; do
@@ -1277,9 +1294,10 @@ function print_uri() {
     done
     echo -e "${YELLOW}============================${NC}"
     echo -e "${YELLOW}复制以上 URI 用于客户端配置。${NC}"
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function check_cron_installed() {
     if ! command -v crontab &> /dev/null; then
         log "Cron 未安装，正在安装..."
@@ -1290,7 +1308,6 @@ function check_cron_installed() {
         log "Cron 已安装。"
     fi
 }
-
 function view_cron() {
     check_cron_installed
     echo -e "${YELLOW}当前 Xray 重启 Cron 任务:${NC}"
@@ -1300,9 +1317,10 @@ function view_cron() {
     else
         echo -e "${RED}未设置自动重启任务。${NC}"
     fi
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function set_cron() {
     check_cron_installed
     view_cron
@@ -1311,8 +1329,12 @@ function set_cron() {
     echo "2. 每天某时间重启 🌞"
     echo "3. 每周某天某时间重启 📅"
     echo "4. 每月某天某时间重启 📆"
-    read -p "请输入选项 (1-4): " choice
-
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "请输入选项 (1-4): " choice
+    else
+        choice="1"  # 默认
+        hours=6
+    fi
     local init_system=$(detect_init_system)
     local restart_cmd=""
     if [ "$init_system" = "systemd" ]; then
@@ -1322,53 +1344,69 @@ function set_cron() {
     else
         error "不支持的 init 系统。"
     fi
-
     case "$choice" in
         1)
-            read -p "请输入间隔小时数 (例如 6 表示每 6 小时重启一次): " hours
-            if [[ "$hours" =~ ^[0-9]+$ ]] && [ "$hours" -gt 0 ]; then
-                cron_cmd="0 */$hours * * * $restart_cmd"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "请输入间隔小时数 (例如 6 表示每 6 小时重启一次): " hours
+                if [[ "$hours" =~ ^[0-9]+$ ]] && [ "$hours" -gt 0 ]; then
+                    cron_cmd="0 */$hours * * * $restart_cmd"
+                else
+                    error "无效的小时数。"
+                    return
+                fi
             else
-                error "无效的小时数。"
-                return
+                cron_cmd="0 */$hours * * * $restart_cmd"
             fi
             ;;
         2)
-            read -p "请输入每天的小时 (0-23): " h
-            read -p "请输入每天的分钟 (0-59): " m
-            cron_cmd="$m $h * * * $restart_cmd"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "请输入每天的小时 (0-23): " h
+                read -p "请输入每天的分钟 (0-59): " m
+                cron_cmd="$m $h * * * $restart_cmd"
+            else
+                cron_cmd="0 2 * * * $restart_cmd"  # 默认每天2:00
+            fi
             ;;
         3)
-            echo "周几 (0=周日,1=周一,...,6=周六)"
-            read -p "请输入周几: " w
-            read -p "请输入小时 (0-23): " h
-            read -p "请输入分钟 (0-59): " m
-            cron_cmd="$m $h * * $w $restart_cmd"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                echo "周几 (0=周日,1=周一,...,6=周六)"
+                read -p "请输入周几: " w
+                read -p "请输入小时 (0-23): " h
+                read -p "请输入分钟 (0-59): " m
+                cron_cmd="$m $h * * $w $restart_cmd"
+            else
+                cron_cmd="0 2 * * 0 $restart_cmd"  # 默认周日2:00
+            fi
             ;;
         4)
-            read -p "请输入每月的日期 (1-31): " d
-            read -p "请输入小时 (0-23): " h
-            read -p "请输入分钟 (0-59): " m
-            cron_cmd="$m $h $d * * $restart_cmd"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "请输入每月的日期 (1-31): " d
+                read -p "请输入小时 (0-23): " h
+                read -p "请输入分钟 (0-59): " m
+                cron_cmd="$m $h $d * * $restart_cmd"
+            else
+                cron_cmd="0 2 1 * * $restart_cmd"  # 默认每月1号2:00
+            fi
             ;;
         *)
             error "无效选择。"
             return
             ;;
     esac
-
     (crontab -l 2>/dev/null | grep -v "systemctl restart xray\|rc-service xray restart"; echo "$cron_cmd") | crontab -
     log "Cron 已设置: $cron_cmd"
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function delete_cron() {
     check_cron_installed
     (crontab -l 2>/dev/null | grep -v "systemctl restart xray\|rc-service xray restart") | crontab -
     log "Xray 重启 Cron 已删除。"
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function view_reset_cron() {
     check_cron_installed
     echo -e "${YELLOW}当前 UUID/密码重置 Cron 任务:${NC}"
@@ -1378,9 +1416,10 @@ function view_reset_cron() {
     else
         echo -e "${RED}未设置自动重置任务。${NC}"
     fi
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function set_reset_cron() {
     check_cron_installed
     view_reset_cron
@@ -1390,121 +1429,153 @@ function set_reset_cron() {
     echo "3. 每周某天某时间重置 📅"
     echo "4. 每月某天某时间重置 📆"
     echo "5. 每几个月某天某时间重置 📆"
-    read -p "请输入选项 (1-5): " choice
-
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "请输入选项 (1-5): " choice
+    else
+        choice="1"
+        hours=6
+    fi
     local reset_cmd="$SCRIPT_PATH reset"
-
     case "$choice" in
         1)
-            read -p "请输入间隔小时数 (例如 6 表示每 6 小时重置一次): " hours
-            if [[ "$hours" =~ ^[0-9]+$ ]] && [ "$hours" -gt 0 ]; then
-                cron_cmd="0 */$hours * * * $reset_cmd"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "请输入间隔小时数 (例如 6 表示每 6 小时重置一次): " hours
+                if [[ "$hours" =~ ^[0-9]+$ ]] && [ "$hours" -gt 0 ]; then
+                    cron_cmd="0 */$hours * * * $reset_cmd"
+                else
+                    error "无效的小时数。"
+                    return
+                fi
             else
-                error "无效的小时数。"
-                return
+                cron_cmd="0 */$hours * * * $reset_cmd"
             fi
             ;;
         2)
-            read -p "请输入每天的小时 (0-23): " h
-            read -p "请输入每天的分钟 (0-59): " m
-            cron_cmd="$m $h * * * $reset_cmd"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "请输入每天的小时 (0-23): " h
+                read -p "请输入每天的分钟 (0-59): " m
+                cron_cmd="$m $h * * * $reset_cmd"
+            else
+                cron_cmd="0 3 * * * $reset_cmd"
+            fi
             ;;
         3)
-            echo "周几 (0=周日,1=周一,...,6=周六)"
-            read -p "请输入周几: " w
-            read -p "请输入小时 (0-23): " h
-            read -p "请输入分钟 (0-59): " m
-            cron_cmd="$m $h * * $w $reset_cmd"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                echo "周几 (0=周日,1=周一,...,6=周六)"
+                read -p "请输入周几: " w
+                read -p "请输入小时 (0-23): " h
+                read -p "请输入分钟 (0-59): " m
+                cron_cmd="$m $h * * $w $reset_cmd"
+            else
+                cron_cmd="0 3 * * 0 $reset_cmd"
+            fi
             ;;
         4)
-            read -p "请输入每月的日期 (1-31): " d
-            read -p "请输入小时 (0-23): " h
-            read -p "请输入分钟 (0-59): " m
-            cron_cmd="$m $h $d * * $reset_cmd"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "请输入每月的日期 (1-31): " d
+                read -p "请输入小时 (0-23): " h
+                read -p "请输入分钟 (0-59): " m
+                cron_cmd="$m $h $d * * $reset_cmd"
+            else
+                cron_cmd="0 3 1 * * $reset_cmd"
+            fi
             ;;
         5)
-            read -p "请输入几个月间隔 (例如 3 表示每 3 个月): " months
-            read -p "请输入每月的日期 (1-31): " d
-            read -p "请输入小时 (0-23): " h
-            read -p "请输入分钟 (0-59): " m
-            cron_cmd="$m $h $d */$months * $reset_cmd"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "请输入几个月间隔 (例如 3 表示每 3 个月): " months
+                read -p "请输入每月的日期 (1-31): " d
+                read -p "请输入小时 (0-23): " h
+                read -p "请输入分钟 (0-59): " m
+                cron_cmd="$m $h $d */$months * $reset_cmd"
+            else
+                cron_cmd="0 3 1 */3 * $reset_cmd"
+            fi
             ;;
         *)
             error "无效选择。"
             return
             ;;
     esac
-
     (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH reset"; echo "$cron_cmd") | crontab -
     log "重置 Cron 已设置: $cron_cmd"
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function delete_reset_cron() {
     check_cron_installed
     (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH reset") | crontab -
     log "UUID/密码重置 Cron 已删除。"
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function manage_push() {
     if [ ! -f "$VLESS_JSON" ]; then
         error "未找到配置信息。请先生成配置。"
     fi
-
     echo "节点列表:"
     jq -r '.[] | "端口: \(.port) 标签: \(.tag)"' "$VLESS_JSON" | nl -w1 -s') '
-    read -p "选择节点编号 (或 0 取消): " node_choice
-    if [ "$node_choice" = "0" ]; then
-        return
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "选择节点编号 (或 0 取消): " node_choice
+        if [ "$node_choice" = "0" ]; then
+            return
+        fi
+    else
+        node_choice=1  # 默认第一个
     fi
-
     local selected_port=$(jq -r ".[$((node_choice-1))].port" "$VLESS_JSON")
     if [ -z "$selected_port" ]; then
         error "无效选择。"
     fi
-
     local current_enabled=$(jq -r ".[$((node_choice-1))].push_enabled // false" "$VLESS_JSON")
     local current_url=$(jq -r ".[$((node_choice-1))].push_url // \"\"" "$VLESS_JSON")
     local current_token=$(jq -r ".[$((node_choice-1))].push_token // \"\"" "$VLESS_JSON")
-
     echo "当前推送设置: 启用=$current_enabled, URL=$current_url, Token=$current_token"
-    read -p "是否启用推送 (y/n, 当前 $current_enabled): " new_enabled
-    if [ -n "$new_enabled" ]; then
-        if [[ $new_enabled =~ ^[Yy]$ ]]; then
-            push_enabled=true
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "是否启用推送 (y/n, 当前 $current_enabled): " new_enabled
+        if [ -n "$new_enabled" ]; then
+            if [[ $new_enabled =~ ^[Yy]$ ]]; then
+                push_enabled=true
+            else
+                push_enabled=false
+            fi
         else
-            push_enabled=false
+            push_enabled=$current_enabled
+        fi
+        if [ "$push_enabled" = true ]; then
+            read -p "输入推送 URL (当前 $current_url): " new_url
+            push_url=${new_url:-$current_url}
+            read -p "输入 token (当前 $current_token): " new_token
+            push_token=${new_token:-$current_token}
+        else
+            push_url=""
+            push_token=""
         fi
     else
         push_enabled=$current_enabled
+        push_url=$current_url
+        push_token=$current_token
     fi
-
-    if [ "$push_enabled" = true ]; then
-        read -p "输入推送 URL (当前 $current_url): " new_url
-        push_url=${new_url:-$current_url}
-        read -p "输入 token (当前 $current_token): " new_token
-        push_token=${new_token:-$current_token}
-    else
-        push_url=""
-        push_token=""
-    fi
-
     temp_json=$(mktemp)
     jq ".[$((node_choice-1))].push_enabled = $push_enabled | .[$((node_choice-1))].push_url = \"$push_url\" | .[$((node_choice-1))].push_token = \"$push_token\"" "$VLESS_JSON" > "$temp_json"
     mv "$temp_json" "$VLESS_JSON"
     log "推送设置已更新。"
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function manual_push() {
     if [ ! -f "$VLESS_JSON" ]; then
         error "未找到配置信息。请先生成配置。"
     fi
-
     echo "[1] 推送所有启用节点"
     echo "[2] 推送特定节点"
-    read -p "选择 (1-2): " push_choice
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "选择 (1-2): " push_choice
+    else
+        push_choice=1
+    fi
     case "$push_choice" in
         1)
             local nodes=$(jq -c '.[] | select(.push_enabled == true)' "$VLESS_JSON")
@@ -1518,7 +1589,11 @@ function manual_push() {
         2)
             echo "节点列表:"
             jq -r '.[] | "端口: \(.port) 标签: \(.tag)"' "$VLESS_JSON" | nl -w1 -s') '
-            read -p "选择节点编号: " node_choice
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "选择节点编号: " node_choice
+            else
+                node_choice=1
+            fi
             local node=$(jq -c ".[$((node_choice-1))]" "$VLESS_JSON")
             local push_enabled=$(echo "$node" | jq -r '.push_enabled // false')
             if [ "$push_enabled" = false ]; then
@@ -1533,9 +1608,10 @@ function manual_push() {
             error "无效选择。"
             ;;
     esac
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function uninstall() {
     local init_system=$(detect_init_system)
     echo -e "${YELLOW}卸载选项:${NC}"
@@ -1544,56 +1620,65 @@ function uninstall() {
     echo "[3] 卸载全部 (包括 Xray)"
     echo "[0] 取消返回菜单"
     echo -e "${YELLOW}请选择 (0-3): ${NC}"
-    read uninstall_choice
-
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read uninstall_choice
+    else
+        uninstall_choice=0  # 默认取消
+    fi
     case $uninstall_choice in
         1)
-            read -p "确定只卸载脚本和配置吗？ (y/N): " confirm
-            if [[ $confirm =~ ^[Yy]$ ]]; then
-                if [ -f "$SCRIPT_PATH" ]; then
-                    sudo cp "$SCRIPT_PATH" "${SCRIPT_PATH}.backup"
-                    log "脚本备份已创建: ${SCRIPT_PATH}.backup"
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "确定只卸载脚本和配置吗？ (y/N): " confirm
+                if [[ $confirm =~ ^[Yy]$ ]]; then
+                    if [ -f "$SCRIPT_PATH" ]; then
+                        sudo cp "$SCRIPT_PATH" "${SCRIPT_PATH}.backup"
+                        log "脚本备份已创建: ${SCRIPT_PATH}.backup"
+                    fi
+                    sudo rm -f "$CONFIG" "$VLESS_JSON" "$GLOBAL_JSON"
+                    sudo rm -rf /etc/proxym
+                    sudo rm -f "$SCRIPT_PATH"
+                    log "脚本和配置已卸载（Xray 保留）。"
+                    echo -e "${GREEN}如需恢复脚本，从备份复制: sudo cp ${SCRIPT_PATH}.backup $SCRIPT_PATH && sudo chmod +x $SCRIPT_PATH${NC}"
                 fi
-                sudo rm -f "$CONFIG" "$VLESS_JSON" "$GLOBAL_JSON"
-                sudo rm -rf /etc/proxym
-                sudo rm -f "$SCRIPT_PATH"
-                log "脚本和配置已卸载（Xray 保留）。"
-                echo -e "${GREEN}如需恢复脚本，从备份复制: sudo cp ${SCRIPT_PATH}.backup $SCRIPT_PATH && sudo chmod +x $SCRIPT_PATH${NC}"
             fi
             ;;
         2)
-            read -p "确定卸载 Xray 但保留脚本和配置吗？ (y/N): " confirm
-            if [[ $confirm =~ ^[Yy]$ ]]; then
-                if [ "$init_system" = "systemd" ]; then
-                    sudo systemctl stop xray 2>/dev/null || true
-                    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
-                elif [ "$init_system" = "openrc" ]; then
-                    sudo rc-service xray stop 2>/dev/null || true
-                    curl -L https://github.com/XTLS/Xray-install/raw/main/alpinelinux/install-release.sh -o /tmp/install-release.sh
-                    ash /tmp/install-release.sh remove
-                    rm -f /tmp/install-release.sh
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "确定卸载 Xray 但保留脚本和配置吗？ (y/N): " confirm
+                if [[ $confirm =~ ^[Yy]$ ]]; then
+                    if [ "$init_system" = "systemd" ]; then
+                        sudo systemctl stop xray 2>/dev/null || true
+                        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
+                    elif [ "$init_system" = "openrc" ]; then
+                        sudo rc-service xray stop 2>/dev/null || true
+                        curl -L https://github.com/XTLS/Xray-install/raw/main/alpinelinux/install-release.sh -o /tmp/install-release.sh
+                        ash /tmp/install-release.sh remove
+                        rm -f /tmp/install-release.sh
+                    fi
+                    log "Xray 已卸载（脚本和配置保留）。"
+                    echo -e "${YELLOW}Xray 已移除。如需重新安装 Xray，请运行 [1] 安装 Xray 选项。${NC}"
                 fi
-                log "Xray 已卸载（脚本和配置保留）。"
-                echo -e "${YELLOW}Xray 已移除。如需重新安装 Xray，请运行 [1] 安装 Xray 选项。${NC}"
             fi
             ;;
         3)
-            read -p "确定卸载全部吗？这将移除 Xray 和所有配置 (y/N): " confirm
-            if [[ $confirm =~ ^[Yy]$ ]]; then
-                if [ "$init_system" = "systemd" ]; then
-                    sudo systemctl stop xray 2>/dev/null || true
-                    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
-                elif [ "$init_system" = "openrc" ]; then
-                    sudo rc-service xray stop 2>/dev/null || true
-                    curl -L https://github.com/XTLS/Xray-install/raw/main/alpinelinux/install-release.sh -o /tmp/install-release.sh
-                    ash /tmp/install-release.sh remove
-                    rm -f /tmp/install-release.sh
+            if [ "$NON_INTERACTIVE" != "true" ]; then
+                read -p "确定卸载全部吗？这将移除 Xray 和所有配置 (y/N): " confirm
+                if [[ $confirm =~ ^[Yy]$ ]]; then
+                    if [ "$init_system" = "systemd" ]; then
+                        sudo systemctl stop xray 2>/dev/null || true
+                        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove -u root
+                    elif [ "$init_system" = "openrc" ]; then
+                        sudo rc-service xray stop 2>/dev/null || true
+                        curl -L https://github.com/XTLS/Xray-install/raw/main/alpinelinux/install-release.sh -o /tmp/install-release.sh
+                        ash /tmp/install-release.sh remove
+                        rm -f /tmp/install-release.sh
+                    fi
+                    sudo rm -f "$CONFIG" "$VLESS_JSON" "$GLOBAL_JSON"
+                    sudo rm -rf /etc/proxym
+                    sudo rm -f "$SCRIPT_PATH"
+                    log "全部已卸载。"
+                    echo -e "${YELLOW}Xray 已移除。如需重新安装 Xray，请运行安装脚本。${NC}"
                 fi
-                sudo rm -f "$CONFIG" "$VLESS_JSON" "$GLOBAL_JSON"
-                sudo rm -rf /etc/proxym
-                sudo rm -f "$SCRIPT_PATH"
-                log "全部已卸载。"
-                echo -e "${YELLOW}Xray 已移除。如需重新安装 Xray，请运行安装脚本。${NC}"
             fi
             ;;
         0)
@@ -1606,9 +1691,10 @@ function uninstall() {
             return
             ;;
     esac
-    read -p "按 Enter 返回菜单..."
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
-
 function show_menu() {
     clear
     echo -e "${BLUE}🚀 proxym-easy - VLESS 加密管理器${NC}"
@@ -1635,7 +1721,11 @@ function show_menu() {
     echo "[20] 📤 手动推送 URI"
     echo "[21] ❌ 退出"
     echo -e "${YELLOW}请选择选项 (1-21): ${NC}"
-    read choice
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read choice
+    else
+        choice=21  # 非交互下退出
+    fi
     case $choice in
         1) install_xray 1 true ;;
         2) generate_config ;;
@@ -1661,16 +1751,14 @@ function show_menu() {
         *) echo -e "${RED}无效选项，请重试。${NC}"; sleep 1 ;;
     esac
 }
-
 if [ "$EUID" -ne 0 ]; then
     error "请使用 sudo 运行: sudo proxym-easy"
 fi
-
 if [ "$1" = "reset" ]; then
+    NON_INTERACTIVE=true
     reset_all
     exit 0
 fi
-
 while true; do
     show_menu
 done
