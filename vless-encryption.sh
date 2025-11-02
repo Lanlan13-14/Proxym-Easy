@@ -1,6 +1,6 @@
 #!/bin/bash
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 4.1
+# 版本: 4.2
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 # 颜色
 RED='\033[0;31m'
@@ -303,6 +303,28 @@ function install_xray() {
         if [ $pause -eq 1 ] && [ "$NON_INTERACTIVE" != "true" ]; then
             read -p "按 Enter 返回菜单..."
         fi
+    fi
+}
+function fix_xray_service() {
+    local service_file="/lib/systemd/system/xray.service"
+    if [ ! -f "$service_file" ]; then
+        service_file="/etc/systemd/system/xray.service"
+        if [ ! -f "$service_file" ]; then
+            error "Xray 服务文件未找到 ($service_file)。请确保 Xray 已安装。"
+        fi
+    fi
+    local backup_file="${service_file}.bak.$(date +%Y%m%d_%H%M%S)"
+    sudo cp "$service_file" "$backup_file"
+    log "备份创建: $backup_file"
+    sudo sed -i '/^LimitNOFILE=/c\LimitNOFILE=500000' "$service_file"
+    sudo sed -i '/^AmbientCapabilities=/!{/^User=/a AmbientCapabilities=CAP_SYS_RESOURCE' "$service_file"
+    sudo systemctl daemon-reload
+    sudo systemctl reset-failed xray
+    sudo systemctl restart xray
+    log "Xray 服务修复完成，已重启。"
+    status_xray
+    if [ "$NON_INTERACTIVE" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
     fi
 }
 function start_xray() {
@@ -766,7 +788,7 @@ function generate_config() {
                 log "附加模式：仅更新节点相关内容。"
             fi
         else
-            overwrite=true  # 非交互模式下默认覆盖
+            overwrite=true # 非交互模式下默认覆盖
         fi
     fi
     if [ "$NON_INTERACTIVE" != "true" ]; then
@@ -1332,7 +1354,7 @@ function set_cron() {
     if [ "$NON_INTERACTIVE" != "true" ]; then
         read -p "请输入选项 (1-4): " choice
     else
-        choice="1"  # 默认
+        choice="1" # 默认
         hours=6
     fi
     local init_system=$(detect_init_system)
@@ -1364,7 +1386,7 @@ function set_cron() {
                 read -p "请输入每天的分钟 (0-59): " m
                 cron_cmd="$m $h * * * $restart_cmd"
             else
-                cron_cmd="0 2 * * * $restart_cmd"  # 默认每天2:00
+                cron_cmd="0 2 * * * $restart_cmd" # 默认每天2:00
             fi
             ;;
         3)
@@ -1375,7 +1397,7 @@ function set_cron() {
                 read -p "请输入分钟 (0-59): " m
                 cron_cmd="$m $h * * $w $restart_cmd"
             else
-                cron_cmd="0 2 * * 0 $restart_cmd"  # 默认周日2:00
+                cron_cmd="0 2 * * 0 $restart_cmd" # 默认周日2:00
             fi
             ;;
         4)
@@ -1385,7 +1407,7 @@ function set_cron() {
                 read -p "请输入分钟 (0-59): " m
                 cron_cmd="$m $h $d * * $restart_cmd"
             else
-                cron_cmd="0 2 1 * * $restart_cmd"  # 默认每月1号2:00
+                cron_cmd="0 2 1 * * $restart_cmd" # 默认每月1号2:00
             fi
             ;;
         *)
@@ -1522,7 +1544,7 @@ function manage_push() {
             return
         fi
     else
-        node_choice=1  # 默认第一个
+        node_choice=1 # 默认第一个
     fi
     local selected_port=$(jq -r ".[$((node_choice-1))].port" "$VLESS_JSON")
     if [ -z "$selected_port" ]; then
@@ -1623,7 +1645,7 @@ function uninstall() {
     if [ "$NON_INTERACTIVE" != "true" ]; then
         read uninstall_choice
     else
-        uninstall_choice=0  # 默认取消
+        uninstall_choice=0 # 默认取消
     fi
     case $uninstall_choice in
         1)
@@ -1719,12 +1741,13 @@ function show_menu() {
     echo "[18] 🗑️ 删除 Cron (重置)"
     echo "[19] 📤 管理推送设置"
     echo "[20] 📤 手动推送 URI"
-    echo "[21] ❌ 退出"
-    echo -e "${YELLOW}请选择选项 (1-21): ${NC}"
+    echo "[21] 🔧 修复 Xray 服务限制 (RLIMIT_NOFILE)"
+    echo "[22] ❌ 退出"
+    echo -e "${YELLOW}请选择选项 (1-22): ${NC}"
     if [ "$NON_INTERACTIVE" != "true" ]; then
         read choice
     else
-        choice=21  # 非交互下退出
+        choice=22 # 非交互下退出
     fi
     case $choice in
         1) install_xray 1 true ;;
@@ -1747,7 +1770,8 @@ function show_menu() {
         18) delete_reset_cron ;;
         19) manage_push ;;
         20) manual_push ;;
-        21) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
+        21) fix_xray_service ;;
+        22) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
         *) echo -e "${RED}无效选项，请重试。${NC}"; sleep 1 ;;
     esac
 }
