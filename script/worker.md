@@ -22,7 +22,7 @@ Workers & Pages → Create
 
 进入代码编辑界面后：
 右边是 Worker 代码区域，把默认示例删掉，换成我给你的代码👇
-
+[代码](https://github.com/Lanlan13-14/Proxym-Easy/blob/main/script%2Fcf-worker.JavaScript)
 
 ---
 
