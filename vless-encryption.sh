@@ -327,9 +327,8 @@ function update_xray_core() {
     
     # 2. 获取最新版本
     local latest_version
-    latest_version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest \
-     | grep tag_name \
-     | cut -d '"' -f4)
+    latest_version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | \
+    grep tag_name | cut -d '"' -f4 | sed 's/^v//')
      
     if [ -z "$current_version" ]; then
         echo -e "${WARN} 无法获取当前 Xray 版本。${NC}"
