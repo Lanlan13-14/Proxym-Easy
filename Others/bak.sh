@@ -1,6 +1,6 @@
 #!/bin/bash
 # proxym-easy - Xray VLESS Encryption一键脚本
-# 版本: 4.3
+# 版本: 4.2
 # 将此脚本放置在 /usr/local/bin/proxym-easy 并使其可执行: sudo chmod +x /usr/local/bin/proxym-easy
 # 颜色
 RED='\033[0;31m'
@@ -268,10 +268,8 @@ function detect_init_system() {
 function install_xray() {
     local pause=${1:-1}
     local force_deps=${2:-false}
-    local is_update=${3:-false}
     local init_system=$(detect_init_system)
-    
-    if command -v xray &> /dev/null && [ "$is_update" = false ]; then
+    if command -v xray &> /dev/null; then
         log "Xray 已安装。"
         if [ $pause -eq 1 ] && [ "$NON_INTERACTIVE" != "true" ]; then
             read -p "按 Enter 返回菜单..."
@@ -279,92 +277,32 @@ function install_xray() {
         return 0
     else
         install_dependencies "$force_deps"
-        log "安装/更新 Xray..."
+        log "安装 Xray..."
         if [ "$init_system" = "openrc" ]; then
             curl -L https://github.com/XTLS/Xray-install/raw/main/alpinelinux/install-release.sh -o /tmp/install-release.sh
             ash /tmp/install-release.sh
             rm -f /tmp/install-release.sh
-            # 仅在初次安装时询问降级权限
-            if [ "$is_update" = false ] && [ "$NON_INTERACTIVE" != "true" ]; then
+            # 可选：为节点降低攻击面
+            if [ "$NON_INTERACTIVE" != "true" ]; then
                 read -p "是否为 Xray 节点降低网络特权（仅保留 cap_net_bind_service）？(y/N): " reduce_priv
                 if [[ $reduce_priv =~ ^[Yy]$ ]]; then
                     sudo sed -i 's/^capabilities="^cap_net_bind_service,^cap_net_admin,^cap_net_raw"$/capabilities="^cap_net_bind_service"/g' /etc/init.d/xray
                     log "已调整 Xray 网络特权，仅保留 cap_net_bind_service。"
                 fi
+            else
+                reduce_priv="n"
             fi
         else
             bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
         fi
-        
         if [ $? -eq 0 ]; then
-            log "Xray 安装/更新成功。"
+            log "Xray 安装成功。"
         else
-            error "Xray 安装/更新失败。"
+            error "Xray 安装失败。"
         fi
-        
-        # 无论更新还是安装，都尝试重启 Xray 以应用新版本或新配置
-        if command -v xray &> /dev/null; then
-            restart_xray 0
-        fi
-        
         if [ $pause -eq 1 ] && [ "$NON_INTERACTIVE" != "true" ]; then
             read -p "按 Enter 返回菜单..."
         fi
-    fi
-}
-function update_xray_core() {
-    log "检查 Xray Core 更新..."
-    
-    if ! command -v xray &> /dev/null; then
-        log "Xray 尚未安装，将转到安装程序。"
-        install_xray 1 true
-        return
-    fi
-    
-    # 1. 获取当前版本
-    local current_version
-    current_version=$(xray -version 2>/dev/null | grep Xray | head -n 1 | awk '{print $2}')
-    
-    # 2. 获取最新版本
-    local latest_version
-    latest_version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest \
-     | grep tag_name \
-     | cut -d '"' -f4)
-     
-    if [ -z "$current_version" ]; then
-        echo -e "${WARN} 无法获取当前 Xray 版本。${NC}"
-        current_version="未知"
-    fi
-    
-    if [ -z "$latest_version" ]; then
-        error "无法获取 Xray 最新版本，请检查网络连接。"
-        return
-    fi
-    
-    log "当前 Xray 版本: ${YELLOW}$current_version${NC}"
-    log "最新 Xray 版本: ${GREEN}$latest_version${NC}"
-    
-    # 3. 版本对比 (简单字符串比较)
-    if [ "$current_version" = "$latest_version" ]; then
-        log "您的 Xray 版本已是最新，无需更新。${CHECK}"
-    else
-        echo -e "${YELLOW}检测到新版本。是否立即更新 Xray Core？ (y/N): ${NC}"
-        if [ "$NON_INTERACTIVE" != "true" ]; then
-            read -p "请输入选项 (y/N, 默认 N): " update_choice
-        else
-            update_choice="n" # 非交互模式下默认不更新
-        fi
-        
-        if [[ $update_choice =~ ^[Yy]$ ]]; then
-            install_xray 1 true true # 运行安装脚本即为更新
-            return
-        else
-            log "取消更新，返回主菜单。"
-        fi
-    fi
-    
-    if [ "$NON_INTERACTIVE" != "true" ]; then
-        read -p "按 Enter 返回菜单..."
     fi
 }
 function fix_xray_service() {
@@ -418,7 +356,6 @@ function stop_xray() {
     fi
 }
 function restart_xray() {
-    local pause=${1:-1}
     local init_system=$(detect_init_system)
     if [ "$init_system" = "systemd" ]; then
         sudo systemctl restart xray
@@ -428,7 +365,7 @@ function restart_xray() {
         error "不支持的 init 系统。"
     fi
     log "Xray 已重启。"
-    if [ $pause -eq 1 ] && [ "$NON_INTERACTIVE" != "true" ]; then
+    if [ "$NON_INTERACTIVE" != "true" ]; then
         read -p "按 Enter 返回菜单..."
     fi
 }
@@ -698,7 +635,7 @@ function reset_all() {
     printf '%s\n' "${new_nodes[@]}" | jq -s '.' > "$VLESS_JSON"
     # 重新生成 config.json（使用保存的全局配置）
     regenerate_full_config
-    restart_xray 0
+    restart_xray
     log "所有节点已重置，Xray 已重启。"
     # 自动推送
     nodes=$(jq -c '.[]' "$VLESS_JSON")
@@ -1358,7 +1295,7 @@ function generate_config() {
         fi
     fi
     regenerate_full_config
-    restart_xray 0
+    restart_xray
     log "配置已应用，Xray 已重启。"
     log "节点信息已保存在 /etc/proxym/vless.json"
     if [ "$push_enabled" = true ]; then
@@ -1581,7 +1518,7 @@ function set_reset_cron() {
             return
             ;;
     esac
-    (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH reset") | crontab -
+    (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH reset"; echo "$cron_cmd") | crontab -
     log "重置 Cron 已设置: $cron_cmd"
     if [ "$NON_INTERACTIVE" != "true" ]; then
         read -p "按 Enter 返回菜单..."
@@ -1791,27 +1728,26 @@ function show_menu() {
     echo "[5] 🔄 重启 Xray"
     echo "[6] 📊 查看状态"
     echo "[7] 📝 查看日志"
-    echo "[8] 🚀 更新 Xray"
-    echo "[9] ⏰ 设置 Cron 重启"
-    echo "[10] 👁️ 查看 Cron 任务 (重启)"
-    echo "[11] 🗑️ 删除 Cron (重启)"
-    echo "[12] 🖨️ 打印 VLESS URI"
-    echo "[13] 🔄 更新脚本"
-    echo "[14] 🗑️ 卸载"
-    echo "[15] 📝 编辑配置"
-    echo "[16] 🧪 测试配置"
-    echo "[17] 🔄 设置 Cron 重置 UUID/密码"
-    echo "[18] 👁️ 查看 Cron 任务 (重置)"
-    echo "[19] 🗑️ 删除 Cron (重置)"
-    echo "[20] 📤 管理推送设置"
-    echo "[21] 📤 手动推送 URI"
-    echo "[22] 🔧 修复 Xray 服务限制 (RLIMIT_NOFILE)"
-    echo "[23] ❌ 退出"
-    echo -e "${YELLOW}请选择选项 (1-23): ${NC}"
+    echo "[8] ⏰ 设置 Cron 重启"
+    echo "[9] 👁️ 查看 Cron 任务 (重启)"
+    echo "[10] 🗑️ 删除 Cron (重启)"
+    echo "[11] 🖨️ 打印 VLESS URI"
+    echo "[12] 🔄 更新脚本"
+    echo "[13] 🗑️ 卸载"
+    echo "[14] 📝 编辑配置"
+    echo "[15] 🧪 测试配置"
+    echo "[16] 🔄 设置 Cron 重置 UUID/密码"
+    echo "[17] 👁️ 查看 Cron 任务 (重置)"
+    echo "[18] 🗑️ 删除 Cron (重置)"
+    echo "[19] 📤 管理推送设置"
+    echo "[20] 📤 手动推送 URI"
+    echo "[21] 🔧 修复 Xray 服务限制 (RLIMIT_NOFILE)"
+    echo "[22] ❌ 退出"
+    echo -e "${YELLOW}请选择选项 (1-22): ${NC}"
     if [ "$NON_INTERACTIVE" != "true" ]; then
         read choice
     else
-        choice=23 # 非交互下退出
+        choice=22 # 非交互下退出
     fi
     case $choice in
         1) install_xray 1 true ;;
@@ -1821,22 +1757,21 @@ function show_menu() {
         5) restart_xray ;;
         6) status_xray ;;
         7) view_logs ;;
-        8) update_xray_core ;; # 新增选项
-        9) set_cron ;;
-        10) view_cron ;;
-        11) delete_cron ;;
-        12) print_uri ;;
-        13) update_script ;;
-        14) uninstall ;;
-        15) edit_config ;;
-        16) test_config ;;
-        17) set_reset_cron ;;
-        18) view_reset_cron ;;
-        19) delete_reset_cron ;;
-        20) manage_push ;;
-        21) manual_push ;;
-        22) fix_xray_service ;;
-        23) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
+        8) set_cron ;;
+        9) view_cron ;;
+        10) delete_cron ;;
+        11) print_uri ;;
+        12) update_script ;;
+        13) uninstall ;;
+        14) edit_config ;;
+        15) test_config ;;
+        16) set_reset_cron ;;
+        17) view_reset_cron ;;
+        18) delete_reset_cron ;;
+        19) manage_push ;;
+        20) manual_push ;;
+        21) fix_xray_service ;;
+        22) echo -e "${YELLOW}感谢使用！下次运行: sudo proxym-easy${NC}"; exit 0 ;;
         *) echo -e "${RED}无效选项，请重试。${NC}"; sleep 1 ;;
     esac
 }
