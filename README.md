@@ -74,3 +74,4 @@ Reality域名选择推荐
 2.worker代码返回节点以SERVER_TOKENS顺序排序
 > ***Tips***
 >本次更新为破坏式更新请重新执行代码
+3.decryption生成存在错误（之后修复
