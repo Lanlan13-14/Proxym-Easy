@@ -1,136 +1,88 @@
 #!/usr/bin/env bash
 # vless-mlkem.sh
-# 只负责 VLESS + MLKEM（抗量子）入站文件（mlkem_<port>.json）与对应节点记录（/etc/proxym/vless.json）
-# 要求：
-#  - 仅包含 mlkem 或 mlkem+reality 相关字段（不出现 x25519 字段）
-#  - 端口随机选择空闲端口（可由用户覆盖）
-#  - UUID 与密码自动生成，节点名称自动生成：国旗 + 三字码 + 城市
-#  - 自动优先检测公网 IPv4 并做地理探测
-#  - 支持交互式添加（默认）与 reset（仅删除 mlkem_* 文件）
+# 作用：交互式添加 VLESS + MLKEM 入站（写入 /etc/xray 顶层 JSON 文件）
+# 支持：添加节点（默认）与 reset（删除本协议入站文件）
 set -euo pipefail
 export LC_ALL=C.UTF-8
 
+XRAY_DIR="/etc/xray"
 VLESS_JSON="/etc/proxym/vless.json"
-INBOUNDS_DIR="/etc/xray/inbounds.d"
 PROTOCOL="mlkem"
 
-# ---------------------------
-# 完整国旗映射（ISO alpha-2 -> emoji）
-# ---------------------------
+# 完整国家代码到旗帜与三字码映射（ISO 3166-1 alpha-2 -> emoji flag; alpha-3）
 declare -A FLAGS=(
-  [AD]="🇦🇩" [AE]="🇦🇪" [AF]="🇦🇫" [AG]="🇦🇬" [AI]="🇦🇮"
-  [AL]="🇦🇱" [AM]="🇦🇲" [AO]="🇦🇴" [AQ]="🇦🇶" [AR]="🇦🇷"
-  [AS]="🇦🇸" [AT]="🇦🇹" [AU]="🇦🇺" [AW]="🇦🇼" [AX]="🇦🇽"
-  [AZ]="🇦🇿" [BA]="🇧🇦" [BB]="🇧🇧" [BD]="🇧🇩" [BE]="🇧🇪"
-  [BF]="🇧🇫" [BG]="🇧🇬" [BH]="🇧🇭" [BI]="🇧🇮" [BJ]="🇧🇯"
-  [BL]="🇧🇱" [BM]="🇧🇲" [BN]="🇧🇳" [BO]="🇧🇴" [BQ]="🇧🇶"
-  [BR]="🇧🇷" [BS]="🇧🇸" [BT]="🇧🇹" [BV]="🇧🇻" [BW]="🇧🇼"
-  [BY]="🇧🇾" [BZ]="🇧🇿" [CA]="🇨🇦" [CC]="🇨🇨" [CD]="🇨🇩"
-  [CF]="🇨🇫" [CG]="🇨🇬" [CH]="🇨🇭" [CI]="🇨🇮" [CK]="🇨🇰"
-  [CL]="🇨🇱" [CM]="🇨🇲" [CN]="🇨🇳" [CO]="🇨🇴" [CR]="🇨🇷"
-  [CU]="🇨🇺" [CV]="🇨🇻" [CW]="🇨🇼" [CX]="🇨🇽" [CY]="🇨🇾"
-  [CZ]="🇨🇿" [DE]="🇩🇪" [DJ]="🇩🇯" [DK]="🇩🇰" [DM]="🇩🇲"
-  [DO]="🇩🇴" [DZ]="🇩🇿" [EC]="🇪🇨" [EE]="🇪🇪" [EG]="🇪🇬"
-  [EH]="🇪🇭" [ER]="🇪🇷" [ES]="🇪🇸" [ET]="🇪🇹" [FI]="🇫🇮"
-  [FJ]="🇫🇯" [FK]="🇫🇰" [FM]="🇫🇲" [FO]="🇫🇴" [FR]="🇫🇷"
-  [GA]="🇬🇦" [GB]="🇬🇧" [GD]="🇬🇩" [GE]="🇬🇪" [GF]="🇬🇫"
-  [GG]="🇬🇬" [GH]="🇬🇭" [GI]="🇬🇮" [GL]="🇬🇱" [GM]="🇬🇲"
-  [GN]="🇬🇳" [GP]="🇬🇵" [GQ]="🇬🇶" [GR]="🇬🇷" [GS]="🇬🇸"
-  [GT]="🇬🇹" [GU]="🇬🇺" [GW]="🇬🇼" [GY]="🇬🇾" [HK]="🇭🇰"
-  [HM]="🇭🇲" [HN]="🇭🇳" [HR]="🇭🇷" [HT]="🇭🇹" [HU]="🇭🇺"
-  [ID]="🇮🇩" [IE]="🇮🇪" [IL]="🇮🇱" [IM]="🇮🇲" [IN]="🇮🇳"
-  [IO]="🇮🇴" [IQ]="🇮🇶" [IR]="🇮🇷" [IS]="🇮🇸" [IT]="🇮🇹"
-  [JE]="🇯🇪" [JM]="🇯🇲" [JO]="🇯🇴" [JP]="🇯🇵" [KE]="🇰🇪"
-  [KG]="🇰🇬" [KH]="🇰🇭" [KI]="🇰🇮" [KM]="🇰🇲" [KN]="🇰🇳"
-  [KP]="🇰🇵" [KR]="🇰🇷" [KW]="🇰🇼" [KY]="🇰🇾" [KZ]="🇰🇿"
-  [LA]="🇱🇦" [LB]="🇱🇧" [LC]="🇱🇨" [LI]="🇱🇮" [LK]="🇱🇰"
-  [LR]="🇱🇷" [LS]="🇱🇸" [LT]="🇱🇹" [LU]="🇱🇺" [LV]="🇱🇻"
-  [LY]="🇱🇾" [MA]="🇲🇦" [MC]="🇲🇨" [MD]="🇲🇩" [ME]="🇲🇪"
-  [MF]="🇲🇫" [MG]="🇲🇬" [MH]="🇲🇭" [MK]="🇲🇰" [ML]="🇲🇱"
-  [MM]="🇲🇲" [MN]="🇲🇳" [MO]="🇲🇴" [MP]="🇲🇵" [MQ]="🇲🇶"
-  [MR]="🇲🇷" [MS]="🇲🇸" [MT]="🇲🇹" [MU]="🇲🇺" [MV]="🇲🇻"
-  [MW]="🇲🇼" [MX]="🇲🇽" [MY]="🇲🇾" [MZ]="🇲🇿" [NA]="🇳🇦"
-  [NC]="🇳🇨" [NE]="🇳🇪" [NF]="🇳🇫" [NG]="🇳🇬" [NI]="🇳🇮"
-  [NL]="🇳🇱" [NO]="🇳🇴" [NP]="🇳🇵" [NR]="🇳🇷" [NU]="🇳🇺"
-  [NZ]="🇳🇿" [OM]="🇴🇲" [PA]="🇵🇦" [PE]="🇵🇪" [PF]="🇵🇫"
-  [PG]="🇵🇬" [PH]="🇵🇭" [PK]="🇵🇰" [PL]="🇵🇱" [PM]="🇵🇲"
-  [PN]="🇵🇳" [PR]="🇵🇷" [PS]="🇵🇸" [PT]="🇵🇹" [PW]="🇵🇼"
-  [PY]="🇵🇾" [QA]="🇶🇦" [RE]="🇷🇪" [RO]="🇷🇴" [RS]="🇷🇸"
-  [RU]="🇷🇺" [RW]="🇷🇼" [SA]="🇸🇦" [SB]="🇸🇧" [SC]="🇸🇨"
-  [SD]="🇸🇩" [SE]="🇸🇪" [SG]="🇸🇬" [SH]="🇸🇭" [SI]="🇸🇮"
-  [SJ]="🇸🇯" [SK]="🇸🇰" [SL]="🇸🇱" [SM]="🇸🇲" [SN]="🇸🇳"
-  [SO]="🇸🇴" [SR]="🇸🇷" [SS]="🇸🇸" [ST]="🇸🇹" [SV]="🇸🇻"
-  [SX]="🇸🇽" [SY]="🇸🇾" [SZ]="🇸🇿" [TC]="🇹🇨" [TD]="🇹🇩"
-  [TF]="🇹🇫" [TG]="🇹🇬" [TH]="🇹🇭" [TJ]="🇹🇯" [TK]="🇹🇰"
-  [TL]="🇹🇱" [TM]="🇹🇲" [TN]="🇹🇳" [TO]="🇹🇴" [TR]="🇹🇷"
-  [TT]="🇹🇹" [TV]="🇹🇻" [TW]="🇹🇼" [TZ]="🇹🇿" [UA]="🇺🇦"
-  [UG]="🇺🇬" [UM]="🇺🇲" [US]="🇺🇸" [UY]="🇺🇾" [UZ]="🇺🇿"
-  [VA]="🇻🇦" [VC]="🇻🇨" [VE]="🇻🇪" [VG]="🇻🇬" [VI]="🇻🇮"
-  [VN]="🇻🇳" [VU]="🇻🇺" [WF]="🇼🇫" [WS]="🇼🇸" [YE]="🇾🇪"
-  [YT]="🇾🇹" [ZA]="🇿🇦" [ZM]="🇿🇲" [ZW]="🇿🇼"
+  [AF]="🇦🇫" [AX]="🇦🇽" [AL]="🇦🇱" [DZ]="🇩🇿" [AS]="🇦🇸" [AD]="🇦🇩" [AO]="🇦🇴" [AI]="🇦🇮"
+  [AQ]="🇦🇶" [AG]="🇦🇬" [AR]="🇦🇷" [AM]="🇦🇲" [AW]="🇦🇼" [AU]="🇦🇺" [AT]="🇦🇹" [AZ]="🇦🇿"
+  [BS]="🇧🇸" [BH]="🇧🇭" [BD]="🇧🇩" [BB]="🇧🇧" [BY]="🇧🇾" [BE]="🇧🇪" [BZ]="🇧🇿" [BJ]="🇧🇯"
+  [BM]="🇧🇲" [BT]="🇧🇹" [BO]="🇧🇴" [BQ]="🇧🇶" [BA]="🇧🇦" [BW]="🇧🇼" [BV]="🇧🇻" [BR]="🇧🇷"
+  [IO]="🇮🇴" [BN]="🇧🇳" [BG]="🇧🇬" [BF]="🇧🇫" [BI]="🇧🇮" [CV]="🇨🇻" [KH]="🇰🇭" [CM]="🇨🇲"
+  [CA]="🇨🇦" [KY]="🇰🇾" [CF]="🇨🇫" [TD]="🇹🇩" [CL]="🇨🇱" [CN]="🇨🇳" [CX]="🇨🇽" [CC]="🇨🇨"
+  [CO]="🇨🇴" [KM]="🇰🇲" [CG]="🇨🇬" [CD]="🇨🇩" [CK]="🇨🇰" [CR]="🇨🇷" [CI]="🇨🇮" [HR]="🇭🇷"
+  [CU]="🇨🇺" [CW]="🇨🇼" [CY]="🇨🇾" [CZ]="🇨🇿" [DK]="🇩🇰" [DJ]="🇩🇯" [DM]="🇩🇲" [DO]="🇩🇴"
+  [EC]="🇪🇨" [EG]="🇪🇬" [SV]="🇸🇻" [GQ]="🇬🇶" [ER]="🇪🇷" [EE]="🇪🇪" [SZ]="🇸🇿" [ET]="🇪🇹"
+  [FK]="🇫🇰" [FO]="🇫🇴" [FJ]="🇫🇯" [FI]="🇫🇮" [FR]="🇫🇷" [GF]="🇬🇫" [PF]="🇵🇫" [TF]="🇹🇫"
+  [GA]="🇬🇦" [GM]="🇬🇲" [GE]="🇬🇪" [DE]="🇩🇪" [GH]="🇬🇭" [GI]="🇬🇮" [GR]="🇬🇷" [GL]="🇬🇱"
+  [GD]="🇬🇩" [GP]="🇬🇵" [GU]="🇬🇺" [GT]="🇬🇹" [GG]="🇬🇬" [GN]="🇬🇳" [GW]="🇬🇼" [GY]="🇬🇾"
+  [HT]="🇭🇹" [HM]="🇭🇲" [VA]="🇻🇦" [HN]="🇭🇳" [HK]="🇭🇰" [HU]="🇭🇺" [IS]="🇮🇸" [IN]="🇮🇳"
+  [ID]="🇮🇩" [IR]="🇮🇷" [IQ]="🇮🇶" [IE]="🇮🇪" [IM]="🇮🇲" [IL]="🇮🇱" [IT]="🇮🇹" [JM]="🇯🇲"
+  [JP]="🇯🇵" [JE]="🇯🇪" [JO]="🇯🇴" [KZ]="🇰🇿" [KE]="🇰🇪" [KI]="🇰🇮" [KP]="🇰🇵" [KR]="🇰🇷"
+  [KW]="🇰🇼" [KG]="🇰🇬" [LA]="🇱🇦" [LV]="🇱🇻" [LB]="🇱🇧" [LS]="🇱🇸" [LR]="🇱🇷" [LY]="🇱🇾"
+  [LI]="🇱🇮" [LT]="🇱🇹" [LU]="🇱🇺" [MO]="🇲🇴" [MG]="🇲🇬" [MW]="🇲🇼" [MY]="🇲🇾" [MV]="🇲🇻"
+  [ML]="🇲🇱" [MT]="🇲🇹" [MH]="🇲🇭" [MQ]="🇲🇶" [MR]="🇲🇷" [MU]="🇲🇺" [YT]="🇾🇹" [MX]="🇲🇽"
+  [FM]="🇫🇲" [MD]="🇲🇩" [MC]="🇲🇨" [MN]="🇲🇳" [ME]="🇲🇪" [MS]="🇲🇸" [MA]="🇲🇦" [MZ]="🇲🇿"
+  [MM]="🇲🇲" [NA]="🇳🇦" [NR]="🇳🇷" [NP]="🇳🇵" [NL]="🇳🇱" [NC]="🇳🇨" [NZ]="🇳🇿" [NI]="🇳🇮"
+  [NE]="🇳🇪" [NG]="🇳🇬" [NU]="🇳🇺" [NF]="🇳🇫" [MK]="🇲🇰" [MP]="🇲🇵" [NO]="🇳🇴" [OM]="🇴🇲"
+  [PK]="🇵🇰" [PW]="🇵🇼" [PS]="🇵🇸" [PA]="🇵🇦" [PG]="🇵🇬" [PY]="🇵🇾" [PE]="🇵🇪" [PH]="🇵🇭"
+  [PN]="🇵🇳" [PL]="🇵🇱" [PT]="🇵🇹" [PR]="🇵🇷" [QA]="🇶🇦" [RE]="🇷🇪" [RO]="🇷🇴" [RU]="🇷🇺"
+  [RW]="🇷🇼" [BL]="🇧🇱" [SH]="🇸🇭" [KN]="🇰🇳" [LC]="🇱🇨" [MF]="🇲🇫" [PM]="🇵🇲" [VC]="🇻🇨"
+  [WS]="🇼🇸" [SM]="🇸🇲" [ST]="🇸🇹" [SA]="🇸🇦" [SN]="🇸🇳" [RS]="🇷🇸" [SC]="🇸🇨" [SL]="🇸🇱"
+  [SG]="🇸🇬" [SX]="🇸🇽" [SK]="🇸🇰" [SI]="🇸🇮" [SB]="🇸🇧" [SO]="🇸🇴" [ZA]="🇿🇦" [GS]="🇬🇸"
+  [SS]="🇸🇸" [ES]="🇪🇸" [LK]="🇱🇰" [SD]="🇸🇩" [SR]="🇸🇷" [SJ]="🇸🇯" [SE]="🇸🇪" [CH]="🇨🇭"
+  [SY]="🇸🇾" [TW]="🇹🇼" [TJ]="🇹🇯" [TZ]="🇹🇿" [TH]="🇹🇭" [TL]="🇹🇱" [TG]="🇹🇬" [TK]="🇹🇰"
+  [TO]="🇹🇴" [TT]="🇹🇹" [TN]="🇹🇳" [TR]="🇹🇷" [TM]="🇹🇲" [TC]="🇹🇨" [TV]="🇹🇻" [UG]="🇺🇬"
+  [UA]="🇺🇦" [AE]="🇦🇪" [GB]="🇬🇧" [US]="🇺🇸" [UM]="🇺🇲" [UY]="🇺🇾" [UZ]="🇺🇿" [VU]="🇻🇺"
+  [VE]="🇻🇪" [VN]="🇻🇳" [VG]="🇻🇬" [VI]="🇻🇮" [WF]="🇼🇫" [EH]="🇪🇭" [YE]="🇾🇪" [ZM]="🇿🇲"
+  [ZW]="🇿🇼"
 )
 
-# ---------------------------
-# ISO alpha-2 -> alpha-3 映射（完整）
-# ---------------------------
 declare -A ALPHA3=(
-  [AD]="AND" [AE]="ARE" [AF]="AFG" [AG]="ATG" [AI]="AIA"
-  [AL]="ALB" [AM]="ARM" [AO]="AGO" [AR]="ARG" [AS]="ASM"
-  [AT]="AUT" [AU]="AUS" [AW]="ABW" [AX]="ALA" [AZ]="AZE"
-  [BA]="BIH" [BB]="BRB" [BD]="BGD" [BE]="BEL" [BF]="BFA"
-  [BG]="BGR" [BH]="BHR" [BI]="BDI" [BJ]="BEN" [BL]="BLM"
-  [BM]="BMU" [BN]="BRN" [BO]="BOL" [BQ]="BES" [BR]="BRA"
-  [BS]="BHS" [BT]="BTN" [BV]="BVT" [BW]="BWA" [BY]="BLR"
-  [BZ]="BLZ" [CA]="CAN" [CC]="CCK" [CD]="COD" [CF]="CAF"
-  [CG]="COG" [CH]="CHE" [CI]="CIV" [CK]="COK" [CL]="CHL"
-  [CM]="CMR" [CN]="CHN" [CO]="COL" [CR]="CRI" [CU]="CUB"
-  [CV]="CPV" [CW]="CUW" [CX]="CXR" [CY]="CYP" [CZ]="CZE"
-  [DE]="DEU" [DJ]="DJI" [DK]="DNK" [DM]="DMA" [DO]="DOM"
-  [DZ]="DZA" [EC]="ECU" [EE]="EST" [EG]="EGY" [EH]="ESH"
-  [ER]="ERI" [ES]="ESP" [ET]="ETH" [FI]="FIN" [FJ]="FJI"
-  [FK]="FLK" [FM]="FSM" [FO]="FRO" [FR]="FRA" [GA]="GAB"
-  [GB]="GBR" [GD]="GRD" [GE]="GEO" [GF]="GUF" [GG]="GGY"
-  [GH]="GHA" [GI]="GIB" [GL]="GRL" [GM]="GMB" [GN]="GIN"
-  [GP]="GLP" [GQ]="GNQ" [GR]="GRC" [GS]="SGS" [GT]="GTM"
-  [GU]="GUM" [GW]="GNB" [GY]="GUY" [HK]="HKG" [HM]="HMD"
-  [HN]="HND" [HR]="HRV" [HT]="HTI" [HU]="HUN" [ID]="IDN"
-  [IE]="IRL" [IL]="ISR" [IM]="IMN" [IN]="IND" [IO]="IOT"
-  [IQ]="IRQ" [IR]="IRN" [IS]="ISL" [IT]="ITA" [JE]="JEY"
-  [JM]="JAM" [JO]="JOR" [JP]="JPN" [KE]="KEN" [KG]="KGZ"
-  [KH]="KHM" [KI]="KIR" [KM]="COM" [KN]="KNA" [KP]="PRK"
-  [KR]="KOR" [KW]="KWT" [KY]="CYM" [KZ]="KAZ" [LA]="LAO"
-  [LB]="LBN" [LC]="LCA" [LI]="LIE" [LK]="LKA" [LR]="LBR"
-  [LS]="LSO" [LT]="LTU" [LU]="LUX" [LV]="LVA" [LY]="LBY"
-  [MA]="MAR" [MC]="MCO" [MD]="MDA" [ME]="MNE" [MF]="MAF"
-  [MG]="MDG" [MH]="MHL" [MK]="MKD" [ML]="MLI" [MM]="MMR"
-  [MN]="MNG" [MO]="MAC" [MP]="MNP" [MQ]="MTQ" [MR]="MRT"
-  [MS]="MSR" [MT]="MLT" [MU]="MUS" [MV]="MDV" [MW]="MWI"
-  [MX]="MEX" [MY]="MYS" [MZ]="MOZ" [NA]="NAM" [NC]="NCL"
-  [NE]="NER" [NF]="NFK" [NG]="NGA" [NI]="NIC" [NL]="NLD"
-  [NO]="NOR" [NP]="NPL" [NR]="NRU" [NU]="NIU" [NZ]="NZL"
-  [OM]="OMN" [PA]="PAN" [PE]="PER" [PF]="PYF" [PG]="PNG"
-  [PH]="PHL" [PK]="PAK" [PL]="POL" [PM]="SPM" [PN]="PCN"
-  [PR]="PRI" [PS]="PSE" [PT]="PRT" [PW]="PLW" [PY]="PRY"
-  [QA]="QAT" [RE]="REU" [RO]="ROU" [RS]="SRB" [RU]="RUS"
-  [RW]="RWA" [SA]="SAU" [SB]="SLB" [SC]="SYC" [SD]="SDN"
-  [SE]="SWE" [SG]="SGP" [SH]="SHN" [SI]="SVN" [SJ]="SJM"
-  [SK]="SVK" [SL]="SLE" [SM]="SMR" [SN]="SEN" [SO]="SOM"
-  [SR]="SUR" [SS]="SSD" [ST]="STP" [SV]="SLV" [SX]="SXM"
-  [SY]="SYR" [SZ]="SWZ" [TC]="TCA" [TD]="TCD" [TF]="ATF"
-  [TG]="TGO" [TH]="THA" [TJ]="TJK" [TK]="TKL" [TL]="TLS"
-  [TM]="TKM" [TN]="TUN" [TO]="TON" [TR]="TUR" [TT]="TTO"
-  [TV]="TUV" [TW]="TWN" [TZ]="TZA" [UA]="UKR" [UG]="UGA"
-  [UM]="UMI" [US]="USA" [UY]="URY" [UZ]="UZB" [VA]="VAT"
-  [VC]="VCT" [VE]="VEN" [VG]="VGB" [VI]="VIR" [VN]="VNM"
-  [VU]="VUT" [WF]="WLF" [WS]="WSM" [YE]="YEM" [YT]="MYT"
-  [ZA]="ZAF" [ZM]="ZMB" [ZW]="ZWE"
+  [AF]="AFG" [AX]="ALA" [AL]="ALB" [DZ]="DZA" [AS]="ASM" [AD]="AND" [AO]="AGO" [AI]="AIA"
+  [AQ]="ATA" [AG]="ATG" [AR]="ARG" [AM]="ARM" [AW]="ABW" [AU]="AUS" [AT]="AUT" [AZ]="AZE"
+  [BS]="BHS" [BH]="BHR" [BD]="BGD" [BB]="BRB" [BY]="BLR" [BE]="BEL" [BZ]="BLZ" [BJ]="BEN"
+  [BM]="BMU" [BT]="BTN" [BO]="BOL" [BQ]="BES" [BA]="BIH" [BW]="BWA" [BV]="BVT" [BR]="BRA"
+  [IO]="IOT" [BN]="BRN" [BG]="BGR" [BF]="BFA" [BI]="BDI" [CV]="CPV" [KH]="KHM" [CM]="CMR"
+  [CA]="CAN" [KY]="CYM" [CF]="CAF" [TD]="TCD" [CL]="CHL" [CN]="CHN" [CX]="CXR" [CC]="CCK"
+  [CO]="COL" [KM]="COM" [CG]="COG" [CD]="COD" [CK]="COK" [CR]="CRI" [CI]="CIV" [HR]="HRV"
+  [CU]="CUB" [CW]="CUW" [CY]="CYP" [CZ]="CZE" [DK]="DNK" [DJ]="DJI" [DM]="DMA" [DO]="DOM"
+  [EC]="ECU" [EG]="EGY" [SV]="SLV" [GQ]="GNQ" [ER]="ERI" [EE]="EST" [SZ]="SWZ" [ET]="ETH"
+  [FK]="FLK" [FO]="FRO" [FJ]="FJI" [FI]="FIN" [FR]="FRA" [GF]="GUF" [PF]="PYF" [TF]="ATF"
+  [GA]="GAB" [GM]="GMB" [GE]="GEO" [DE]="DEU" [GH]="GHA" [GI]="GIB" [GR]="GRC" [GL]="GRL"
+  [GD]="GRD" [GP]="GLP" [GU]="GUM" [GT]="GTM" [GG]="GGY" [GN]="GIN" [GW]="GNB" [GY]="GUY"
+  [HT]="HTI" [HM]="HMD" [VA]="VAT" [HN]="HND" [HK]="HKG" [HU]="HUN" [IS]="ISL" [IN]="IND"
+  [ID]="IDN" [IR]="IRN" [IQ]="IRQ" [IE]="IRL" [IM]="IMN" [IL]="ISR" [IT]="ITA" [JM]="JAM"
+  [JP]="JPN" [JE]="JEY" [JO]="JOR" [KZ]="KAZ" [KE]="KEN" [KI]="KIR" [KP]="PRK" [KR]="KOR"
+  [KW]="KWT" [KG]="KGZ" [LA]="LAO" [LV]="LVA" [LB]="LBN" [LS]="LSO" [LR]="LBR" [LY]="LBY"
+  [LI]="LIE" [LT]="LTU" [LU]="LUX" [MO]="MAC" [MG]="MDG" [MW]="MWI" [MY]="MYS" [MV]="MDV"
+  [ML]="MLI" [MT]="MLT" [MH]="MHL" [MQ]="MTQ" [MR]="MRT" [MU]="MUS" [YT]="MYT" [MX]="MEX"
+  [FM]="FSM" [MD]="MDA" [MC]="MCO" [MN]="MNG" [ME]="MNE" [MS]="MSR" [MA]="MAR" [MZ]="MOZ"
+  [MM]="MMR" [NA]="NAM" [NR]="NRU" [NP]="NPL" [NL]="NLD" [NC]="NCL" [NZ]="NZL" [NI]="NIC"
+  [NE]="NER" [NG]="NGA" [NU]="NIU" [NF]="NFK" [MK]="MKD" [MP]="MNP" [NO]="NOR" [OM]="OMN"
+  [PK]="PAK" [PW]="PLW" [PS]="PSE" [PA]="PAN" [PG]="PNG" [PY]="PRY" [PE]="PER" [PH]="PHL"
+  [PN]="PCN" [PL]="POL" [PT]="PRT" [PR]="PRI" [QA]="QAT" [RE]="REU" [RO]="ROU" [RU]="RUS"
+  [RW]="RWA" [BL]="BLM" [SH]="SHN" [KN]="KNA" [LC]="LCA" [MF]="MAF" [PM]="SPM" [VC]="VCT"
+  [WS]="WSM" [SM]="SMR" [ST]="STP" [SA]="SAU" [SN]="SEN" [RS]="SRB" [SC]="SYC" [SL]="SLE"
+  [SG]="SGP" [SX]="SXM" [SK]="SVK" [SI]="SVN" [SB]="SLB" [SO]="SOM" [ZA]="ZAF" [GS]="SGS"
+  [SS]="SSD" [ES]="ESP" [LK]="LKA" [SD]="SDN" [SR]="SUR" [SJ]="SJM" [SE]="SWE" [CH]="CHE"
+  [SY]="SYR" [TW]="TWN" [TJ]="TJK" [TZ]="TZA" [TH]="THA" [TL]="TLS" [TG]="TGO" [TK]="TKL"
+  [TO]="TON" [TT]="TTO" [TN]="TUN" [TR]="TUR" [TM]="TKM" [TC]="TCA" [TV]="TUV" [UG]="UGA"
+  [UA]="UKR" [AE]="ARE" [GB]="GBR" [US]="USA" [UM]="UMI" [UY]="URY" [UZ]="UZB" [VU]="VUT"
+  [VE]="VEN" [VN]="VNM" [VG]="VGB" [VI]="VIR" [WF]="WLF" [EH]="ESH" [YE]="YEM" [ZM]="ZMB"
+  [ZW]="ZWE"
 )
 
-# ---------------------------
-# 工具函数
-# ---------------------------
+# Utilities
 ensure_dirs(){
-  sudo mkdir -p "$INBOUNDS_DIR"
+  sudo mkdir -p "$XRAY_DIR"
   sudo mkdir -p "$(dirname "$VLESS_JSON")"
   if [ ! -f "$VLESS_JSON" ]; then echo "[]" | sudo tee "$VLESS_JSON" >/dev/null; fi
 }
@@ -153,10 +105,9 @@ get_geo_from_ip(){
     local res
     res=$(curl -s --max-time 6 "http://ip-api.com/json/${ip}?fields=status,countryCode,city" || true)
     if [ -z "$res" ]; then echo "||"; return; fi
-    local status
+    local status cc city
     status=$(echo "$res" | grep -o '"status":"[^"]*"' | sed 's/.*"status":"\([^"]*\)".*/\1/')
     if [ "$status" != "success" ]; then echo "||"; return; fi
-    local cc city
     cc=$(echo "$res" | grep -o '"countryCode":"[^"]*"' | sed 's/.*"countryCode":"\([^"]*\)".*/\1/')
     city=$(echo "$res" | grep -o '"city":"[^"]*"' | sed 's/.*"city":"\([^"]*\)".*/\1/')
     echo "${cc}|${city}"
@@ -165,17 +116,8 @@ get_geo_from_ip(){
   echo "||"
 }
 
-country_flag(){
-  local cc="$1"
-  cc=$(echo "$cc" | tr '[:lower:]' '[:upper:]')
-  echo "${FLAGS[$cc]:-🌍}"
-}
-
-alpha3_from_cc(){
-  local cc="$1"
-  cc=$(echo "$cc" | tr '[:lower:]' '[:upper:]')
-  echo "${ALPHA3[$cc]:-$cc}"
-}
+country_flag(){ local cc="$1"; cc=$(echo "$cc" | tr '[:lower:]' '[:upper:]'); echo "${FLAGS[$cc]:-🌍}"; }
+alpha3_from_cc(){ local cc="$1"; cc=$(echo "$cc" | tr '[:lower:]' '[:upper:]'); echo "${ALPHA3[$cc]:-$cc}"; }
 
 url_encode(){
   local s="$1"
@@ -190,11 +132,7 @@ PY
 }
 
 generate_uuid(){
-  if command -v xray >/dev/null 2>&1; then
-    xray uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid
-  else
-    cat /proc/sys/kernel/random/uuid
-  fi
+  if command -v xray >/dev/null 2>&1; then xray uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid; else cat /proc/sys/kernel/random/uuid; fi
 }
 
 random_port(){
@@ -210,31 +148,46 @@ random_password(){
   if command -v openssl >/dev/null 2>&1; then openssl rand -hex 8 2>/dev/null || echo "pass$(date +%s)"; else echo "pass$RANDOM$RANDOM"; fi
 }
 
-# mlkem inbound JSON（支持 reality 模式或普通 tcp/ws）
+# mlkem inbound JSON（支持 reality 模式或普通 tcp/ws，顶层片段）
 generate_inbound_json(){
   local uuid="$1" port="$2" use_reality="$3" dest="$4" sni="$5" privateKey="$6" shortId="$7" network="$8" path="$9" host="${10}" fp="${11}"
   if [ "$use_reality" = "true" ]; then
     jq -n --arg port "$port" --arg uuid "$uuid" --arg dest "$dest" --arg sni "$sni" --arg privateKey "$privateKey" --arg shortId "$shortId" --arg fp "$fp" '{
-      "port": ($port|tonumber),
-      "protocol": "vless",
-      "settings": { "clients":[{"id":$uuid}], "decryption":"none" },
-      "streamSettings": { "network":"tcp", "security":"reality", "realitySettings": { "dest": $dest, "serverNames": [$sni], "privateKey": $privateKey, "shortIds": [$shortId], "fingerprint": $fp } },
-      "tag": $uuid }'
+      "inbounds": [
+        {
+          "tag": ("vless-mlkem-" + ($port|tostring)),
+          "port": ($port|tonumber),
+          "protocol": "vless",
+          "settings": { "clients":[{"id": $uuid}], "decryption":"none" },
+          "streamSettings": { "network":"tcp", "security":"reality", "realitySettings": { "dest": $dest, "serverNames": [$sni], "privateKey": $privateKey, "shortIds": [$shortId], "fingerprint": $fp } }
+        }
+      ]
+    }'
   else
     if [ "$network" = "ws" ]; then
       jq -n --arg port "$port" --arg uuid "$uuid" --arg path "$path" --arg host "$host" '{
-        "port": ($port|tonumber),
-        "protocol": "vless",
-        "settings": { "clients":[{"id": $uuid}], "decryption":"none" },
-        "streamSettings": { "network":"ws", "wsSettings": {"path": $path, "headers":{"Host": $host}} },
-        "tag": $uuid }'
+        "inbounds": [
+          {
+            "tag": ("vless-mlkem-" + ($port|tostring)),
+            "port": ($port|tonumber),
+            "protocol": "vless",
+            "settings": { "clients":[{"id": $uuid}], "decryption":"none" },
+            "streamSettings": { "network":"ws", "wsSettings": {"path": $path, "headers":{"Host": $host}} }
+          }
+        ]
+      }'
     else
       jq -n --arg port "$port" --arg uuid "$uuid" '{
-        "port": ($port|tonumber),
-        "protocol": "vless",
-        "settings": { "clients":[{"id": $uuid}], "decryption":"none" },
-        "streamSettings": { "network":"tcp" },
-        "tag": $uuid }'
+        "inbounds": [
+          {
+            "tag": ("vless-mlkem-" + ($port|tostring)),
+            "port": ($port|tonumber),
+            "protocol": "vless",
+            "settings": { "clients":[{"id": $uuid}], "decryption":"none" },
+            "streamSettings": { "network":"tcp" }
+          }
+        ]
+      }'
     fi
   fi
 }
@@ -252,18 +205,10 @@ append_or_update_vless_json(){
   fi
 }
 
-write_inbound_file(){
-  local fname="$1" content="$2"
-  sudo mkdir -p "$INBOUNDS_DIR"
-  printf '%s\n' "$content" | sudo tee "${INBOUNDS_DIR}/${fname}" >/dev/null
-}
-
-# ---------------------------
-# 主流程：添加节点（交互式）
-# ---------------------------
-ensure_dirs
+write_inbound_file(){ local fname="$1" content="$2"; sudo mkdir -p "$XRAY_DIR"; printf '%s\n' "$content" | sudo tee "${XRAY_DIR}/${fname}" >/dev/null; }
 
 add_node_interactive(){
+  ensure_dirs
   echo "添加 VLESS + MLKEM 节点（仅 mlkem）"
 
   pubip=$(detect_public_ipv4)
@@ -300,7 +245,7 @@ add_node_interactive(){
   name=${name:-$default_name}
 
   uuid=$(generate_uuid)
-  shortid=$(random_password) # 用作短 id 或密码
+  shortid=$(random_password)
   privateKey=""
   if command -v xray >/dev/null 2>&1; then
     mlout=$(xray mlkem768 2>/dev/null || true)
@@ -317,7 +262,7 @@ add_node_interactive(){
   fi
 
   inbound_json=$(generate_inbound_json "$uuid" "$port" "$use_reality" "$dest" "$sni" "$privateKey" "$shortid" "tcp" "" "" "$fp")
-  fname="${PROTOCOL}_${port}.json"
+  fname="$(printf '%02d' $((RANDOM%90+1)))-vless-mlkem-${port}.json"
   write_inbound_file "$fname" "$inbound_json"
 
   node_json=$(jq -n \
@@ -341,18 +286,17 @@ add_node_interactive(){
   append_or_update_vless_json "$node_json"
 
   echo
-  echo "已写入入站文件: ${INBOUNDS_DIR}/${fname}"
+  echo "已写入入站文件: ${XRAY_DIR}/${fname}"
   echo "VLESS MLKEM URI:"
   echo "$uri"
+  echo
+  echo "提示：请运行 'sudo xray test -confdir /etc/xray' 验证配置，或重启 Xray：sudo systemctl restart xray"
 }
 
-# ---------------------------
-# reset：仅删除 mlkem_* 入站文件
-# ---------------------------
 reset_only(){
   ensure_dirs
-  sudo rm -f "${INBOUNDS_DIR}/${PROTOCOL}_"*.json 2>/dev/null || true
-  echo "已删除所有 ${PROTOCOL}_*.json（仅本协议）。"
+  sudo rm -f "${XRAY_DIR}"/*vless-mlkem-*.json 2>/dev/null || true
+  echo "已删除所有 mlkem 入站文件（仅本协议）。"
 }
 
 case "${1:-}" in
