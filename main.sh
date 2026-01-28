@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proxym-easy - Proxym-Easy 主控脚本（完整版，已融合所有修改）
+# proxym-easy - Proxym-Easy 主控脚本（完整版，已融合修正）
 # 仓库: https://github.com/Lanlan13-14/Proxym-Easy
 # 运行需 sudo 权限
 set -euo pipefail
@@ -56,6 +56,7 @@ ensure_dirs() {
 load_mirror() {
   ensure_dirs
   MIRROR_PREFIX=$(sudo sed -n '1p' "$MIRROR_CONF" 2>/dev/null || echo "")
+  MIRROR_PREFIX=${MIRROR_PREFIX:-}
 }
 
 get_raw_url() {
@@ -63,7 +64,11 @@ get_raw_url() {
   local raw="${SCRIPTS_RAW_BASE}/${name}"
   load_mirror
   if [ -n "${MIRROR_PREFIX}" ]; then
-    echo "${MIRROR_PREFIX}/${raw}"
+    # MIRROR_PREFIX 可能以 / 结尾或不以 / 结尾，统一处理
+    case "${MIRROR_PREFIX}" in
+      */) echo "${MIRROR_PREFIX}${raw#https://}" ;;
+      *)  echo "${MIRROR_PREFIX}${raw}" ;;
+    esac
   else
     echo "$raw"
   fi
@@ -73,26 +78,11 @@ get_raw_url() {
 # 包管理器检测与依赖安装
 # -----------------------
 detect_package_manager() {
-  if command -v apt >/dev/null 2>&1; then
-    echo "apt"
-    return
-  fi
-  if command -v dnf >/dev/null 2>&1; then
-    echo "dnf"
-    return
-  fi
-  if command -v yum >/dev/null 2>&1; then
-    echo "yum"
-    return
-  fi
-  if command -v apk >/dev/null 2>&1; then
-    echo "apk"
-    return
-  fi
-  if command -v pacman >/dev/null 2>&1; then
-    echo "pacman"
-    return
-  fi
+  if command -v apt >/dev/null 2>&1; then echo "apt"; return; fi
+  if command -v dnf >/dev/null 2>&1; then echo "dnf"; return; fi
+  if command -v yum >/dev/null 2>&1; then echo "yum"; return; fi
+  if command -v apk >/dev/null 2>&1; then echo "apk"; return; fi
+  if command -v pacman >/dev/null 2>&1; then echo "pacman"; return; fi
   echo "unknown"
 }
 
@@ -102,12 +92,8 @@ install_dependencies() {
   pkg_manager=$(detect_package_manager)
   local deps=(curl unzip ca-certificates wget gnupg python3 jq)
   local cron_pkg="cron"
-  if [ "$pkg_manager" = "apk" ]; then
-    cron_pkg="dcron"
-  fi
-  if [ "$pkg_manager" = "pacman" ] || [ "$pkg_manager" = "yum" ] || [ "$pkg_manager" = "dnf" ]; then
-    cron_pkg="cronie"
-  fi
+  if [ "$pkg_manager" = "apk" ]; then cron_pkg="dcron"; fi
+  if [ "$pkg_manager" = "pacman" ] || [ "$pkg_manager" = "yum" ] || [ "$pkg_manager" = "dnf" ]; then cron_pkg="cronie"; fi
   deps+=("$cron_pkg")
 
   local missing=()
@@ -169,26 +155,32 @@ switch_to_confdir_mode() {
   init_system=$(detect_init_system)
   log "切换 Xray 为多配置文件模式 (-confdir /etc/xray)"
 
+  # 尝试检测 xray 可执行路径
+  XRAY_BIN="/usr/bin/xray"
+  if [ ! -x "$XRAY_BIN" ]; then
+    XRAY_BIN="/usr/local/bin/xray"
+  fi
+  if [ ! -x "$XRAY_BIN" ]; then
+    XRAY_BIN="$(command -v xray 2>/dev/null || true)"
+  fi
+  XRAY_BIN=${XRAY_BIN:-/usr/bin/xray}
+
   if [ "$init_system" = "systemd" ]; then
-    local service_dir="/etc/systemd/system/xray.service.d"
-    local dropin_file="${service_dir}/override-confdir.conf"
-
+    local service_dir="/etc/systemd/system/${XRAY_SERVICE_NAME}.service.d"
+    local dropin_file="${service_dir}/override.conf"
     sudo mkdir -p "$service_dir"
-    sudo rm -f "${service_dir}/10-donot_touch_multi_conf.conf" 2>/dev/null || true
-
-    sudo tee "$dropin_file" >/dev/null <<'EOF'
+    sudo tee "$dropin_file" >/dev/null <<EOF
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/xray run -confdir /etc/xray
+ExecStart=${XRAY_BIN} run -confdir /etc/xray
 EOF
-    sudo systemctl daemon-reload
+    sudo systemctl daemon-reload || true
     log "已创建 systemd drop-in 文件: ${dropin_file}"
   elif [ "$init_system" = "openrc" ] && [ -f /etc/init.d/xray ]; then
     sudo sed -i 's|--config[^ ]*|--confdir /etc/xray|g' /etc/init.d/xray 2>/dev/null || true
-    sudo rc-service xray restart 2>/dev/null || true
     log "OpenRC 已尝试修改启动参数为 --confdir /etc/xray"
   else
-    warn "未知 init 系统，无法自动切换 confdir 模式，请手动修改"
+    warn "未知 init 系统，无法自动切换 confdir 模式，请手动修改服务启动参数为: ${XRAY_BIN} run -confdir /etc/xray"
   fi
 }
 
@@ -215,7 +207,7 @@ install_xray() {
 
   if [ "$init_system" = "openrc" ]; then
     curl -L https://github.com/XTLS/alpinelinux-install-xray/raw/main/install-release.sh -o /tmp/xray-install.sh || error "下载 Alpine 脚本失败"
-    ash /tmp/xray-install.sh
+    ash /tmp/xray-install.sh || true
     rm -f /tmp/xray-install.sh
   else
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root || true
@@ -267,15 +259,20 @@ restart_xray() {
   fi
 }
 status_xray() {
-  if ! sudo systemctl status xray --no-pager 2>/dev/null; then
+  if sudo systemctl status xray --no-pager 2>/dev/null; then
+    return 0
+  else
     sudo rc-service xray status 2>/dev/null || warn "状态查看失败"
+    return 0
   fi
 }
 logs_xray() {
   if [ -f "$LOG_FILE" ]; then
     sudo tail -n 200 "$LOG_FILE"
   else
-    if ! sudo journalctl -u xray -n 200 --no-pager 2>/dev/null; then
+    if sudo journalctl -u xray -n 200 --no-pager 2>/dev/null; then
+      return 0
+    else
       warn "日志不可用"
     fi
   fi
@@ -309,15 +306,10 @@ remove_children() {
 }
 
 # -----------------------
-# 配置生成
+# 配置生成（main.json 与 dns.json）
 # -----------------------
 write_main_config() {
-  if [ -f "$MAIN_FILE" ]; then
-    read -r -p "${MAIN_FILE} 已存在，覆盖？(y/N): " ow
-    if [[ ! "$ow" =~ ^[Yy]$ ]]; then
-      return
-    fi
-  fi
+  sudo mkdir -p "$XRAY_DIR"
   sudo tee "$MAIN_FILE" >/dev/null <<'EOF'
 {
   "log": { "loglevel": "warning" },
@@ -326,16 +318,12 @@ write_main_config() {
   ]
 }
 EOF
-  log "已生成 main.json"
+  sudo cp -f "$MAIN_FILE" "${XRAY_DIR}/99-main.json" 2>/dev/null || true
+  log "已生成 main.json 并同步到 99-main.json"
 }
 
 write_dns_config() {
-  if [ -f "$DNS_FILE" ]; then
-    read -r -p "${DNS_FILE} 已存在，覆盖？(y/N): " ow
-    if [[ ! "$ow" =~ ^[Yy]$ ]]; then
-      return
-    fi
-  fi
+  sudo mkdir -p "$XRAY_DIR"
   read -r -p "主 DNS (默认 1.1.1.1): " dns1
   dns1=${dns1:-1.1.1.1}
   read -r -p "备 DNS (默认 8.8.8.8): " dns2
@@ -343,16 +331,20 @@ write_dns_config() {
   sudo tee "$DNS_FILE" >/dev/null <<EOF
 {
   "dns": {
-    "servers": ["${dns1}", "${dns2}"],
+    "servers": [
+      { "address": "${dns1}" },
+      { "address": "${dns2}" }
+    ],
     "queryStrategy": "UseIPv4"
   }
 }
 EOF
-  log "已生成 dns.json"
+  sudo cp -f "$DNS_FILE" "${XRAY_DIR}/20-dns.json" 2>/dev/null || true
+  log "已生成 dns.json 并同步到 20-dns.json"
 }
 
 # -----------------------
-# 添加节点菜单
+# 添加节点菜单（调用子脚本）
 # -----------------------
 add_node_menu() {
   while true; do
@@ -394,7 +386,7 @@ add_node_menu() {
 }
 
 # -----------------------
-# 卸载函数（含一键重装）
+# 卸载函数（两种模式）
 # -----------------------
 uninstall_all_scripts_only() {
   echo "即将卸载 Proxym-Easy 脚本（保留 Xray）："
@@ -413,19 +405,17 @@ uninstall_all_scripts_only() {
 
   log "卸载完成。"
 
-  echo -e "${GREEN}是否立即重新安装最新版并启动？(y/N)${NC}"
-  read -r -p "请输入: " reinstall
+  read -r -p "是否立即重新安装最新版并启动？(y/N): " reinstall
   if [[ "$reinstall" =~ ^[Yy]$ ]]; then
     log "下载最新版..."
     curl -L https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/main.sh -o /tmp/proxym-easy || error "下载失败"
     chmod +x /tmp/proxym-easy
     sudo mv /tmp/proxym-easy "${PROXYM_EASY_PATH}"
     log "重新安装完成！"
-    echo -e "${GREEN}感谢你的使用！正在启动...${NC}"
     exec sudo proxym-easy
   else
-    echo -e "如需重新安装："
-    echo -e "${GREEN}curl -L https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/main.sh -o /tmp/proxym-easy && chmod +x /tmp/proxym-easy && sudo mv /tmp/proxym-easy ${PROXYM_EASY_PATH} && sudo proxym-easy${NC}"
+    echo "如需重新安装："
+    echo "curl -L https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/main.sh -o /tmp/proxym-easy && chmod +x /tmp/proxym-easy && sudo mv /tmp/proxym-easy ${PROXYM_EASY_PATH} && sudo proxym-easy"
   fi
 }
 
@@ -437,28 +427,28 @@ uninstall_everything_including_xray() {
     return
   fi
 
-  stop_xray
+  stop_xray || true
   sudo systemctl disable xray 2>/dev/null || sudo rc-update del xray default 2>/dev/null || true
+
+  # 尝试使用官方卸载脚本（若支持）
   bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove 2>/dev/null || true
 
   sudo rm -f "${PROXYM_EASY_PATH}"
-  sudo rm -rf "${LOCAL_SCRIPT_DIR}" /etc/proxym /etc/xray /var/log/xray /usr/local/bin/xray /usr/bin/xray /usr/local/etc/xray /usr/local/share/xray
+  sudo rm -rf "${LOCAL_SCRIPT_DIR}" /etc/proxym /etc/xray /var/log/xray /usr/local/bin/xray /usr/bin/xray /usr/local/etc/xray /usr/local/share/xray || true
 
   log "彻底卸载完成。"
 
-  echo -e "${GREEN}是否立即重新安装 Proxym-Easy？(y/N)${NC}"
-  read -r -p "请输入: " reinstall
+  read -r -p "是否立即重新安装 Proxym-Easy？(y/N): " reinstall
   if [[ "$reinstall" =~ ^[Yy]$ ]]; then
     log "重新安装中..."
     curl -L https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/main.sh -o /tmp/proxym-easy || error "下载失败"
     chmod +x /tmp/proxym-easy
     sudo mv /tmp/proxym-easy "${PROXYM_EASY_PATH}"
     log "安装完成！"
-    echo -e "${GREEN}启动中...${NC}"
     exec sudo proxym-easy
   else
-    echo -e "重新安装命令："
-    echo -e "${GREEN}curl -L https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/main.sh -o /tmp/proxym-easy && chmod +x /tmp/proxym-easy && sudo mv /tmp/proxym-easy ${PROXYM_EASY_PATH} && sudo proxym-easy${NC}"
+    echo "重新安装命令："
+    echo "curl -L https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/main.sh -o /tmp/proxym-easy && chmod +x /tmp/proxym-easy && sudo mv /tmp/proxym-easy ${PROXYM_EASY_PATH} && sudo proxym-easy"
   fi
 }
 
@@ -515,7 +505,6 @@ EOF
         clear
         echo -e "${GREEN}感谢使用 Proxym-Easy！${NC}"
         echo "下次运行： sudo proxym-easy"
-        echo "谢谢～"
         exit 0
         ;;
       *) warn "无效选项" ;;
@@ -534,7 +523,11 @@ if [ $# -gt 0 ]; then
     restart) restart_xray ;;
     status) status_xray ;;
     logs) logs_xray ;;
-    *) warn "未知命令，支持: start stop restart status logs" ;;
+    install-children) install_children ;;
+    remove-children) remove_children ;;
+    uninstall-scripts) uninstall_all_scripts_only ;;
+    uninstall-all) uninstall_everything_including_xray ;;
+    *) warn "未知命令，支持: start stop restart status logs install-children remove-children uninstall-scripts uninstall-all" ;;
   esac
   exit 0
 fi
