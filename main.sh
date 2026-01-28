@@ -9,7 +9,7 @@ export LC_ALL=C.UTF-8
 # -----------------------
 LOCAL_SCRIPT_DIR="/usr/local/bin/proxym-scripts"
 SCRIPTS_RAW_BASE="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/script"
-REALITY_RAW="${SCRIPTS_RAW_BASE}/vless-reality.sh"
+REALITY_RAW="${SCRIPTS_RAW_BASE}/vless-reality.sh%0A"
 X25519_RAW="${SCRIPTS_RAW_BASE}/vless-x25519.sh"
 MLKEM_RAW="${SCRIPTS_RAW_BASE}/vless-mlkem.sh"
 
