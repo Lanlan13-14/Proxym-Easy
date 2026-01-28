@@ -18,12 +18,36 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# 安装/更新 Xray
+# 安装/更新 Xray 并支持多配置启动
 install_xray() {
     echo -e "${BLUE}安装/更新 Xray...${NC}"
+    # 使用官方脚本安装
     bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) install
     mkdir -p "$CONFIG_DIR"
     echo -e "${GREEN}Xray 安装完成${NC}"
+
+    # 配置 systemd 服务支持多配置文件
+    XRAY_SERVICE="/etc/systemd/system/xray.service"
+    echo -e "${BLUE}配置 systemd 服务支持多配置文件...${NC}"
+    cat > "$XRAY_SERVICE" <<EOF
+[Unit]
+Description=Xray Service
+After=network.target
+
+[Service]
+User=root
+ExecStart=$XRAY_DIR run -config $MAIN_CONFIG -config-dir $CONFIG_DIR
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable xray
+    systemctl restart xray
+    echo -e "${GREEN}Xray 服务已启动并支持多配置文件加载${NC}"
 }
 
 # 更新主脚本
