@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
 # vless-manager.sh - Proxym-Easy 主控脚本（完整）
-# 功能概览：
-#  - 管理 Xray 安装/更新（跨发行版依赖安装）
-#  - 检查并更新 Xray Core（包含 update_xray_core）
-#  - 生成基础配置（不含 inbounds）
-#  - 安装/更新/删除 子脚本（vless-reality.sh / vless-x25519.sh / vless-mlkem.sh）
-#  - 添加节点（调用子脚本交互式添加）
-#  - proxym-easy reset（重置所有：调用子脚本 reset）
-#  - 管理推送（upload）映射并上传/删除已上传
-#  - Cron 管理（重启 / 重置）
-#  - 支持镜像前缀（拉取脚本时套加速）
-#  - CLI 兼容 proxym-easy start|stop|restart|state|reset
-#  - 需要 sudo 权限写 /etc 与 systemd 操作
+# 说明：运行需 sudo 权限。管理 Xray、子脚本、生成 main.json/dns.json、添加节点、reset 等。
 set -euo pipefail
 export LC_ALL=C.UTF-8
 
@@ -20,21 +9,21 @@ export LC_ALL=C.UTF-8
 # -----------------------
 LOCAL_SCRIPT_DIR="/usr/local/bin/proxym-scripts"
 SCRIPTS_RAW_BASE="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/script"
-SCRIPT_REALITY="${LOCAL_SCRIPT_DIR}/vless-reality.sh"
-SCRIPT_X25519="${LOCAL_SCRIPT_DIR}/vless-x25519.sh"
-SCRIPT_MLKEM="${LOCAL_SCRIPT_DIR}/vless-mlkem.sh"
+REALITY_RAW="${SCRIPTS_RAW_BASE}/vless-reality.sh"
+X25519_RAW="${SCRIPTS_RAW_BASE}/vless-x25519.sh"
+MLKEM_RAW="${SCRIPTS_RAW_BASE}/vless-mlkem.sh"
+
 VLESS_JSON="/etc/proxym/vless.json"
-INBOUNDS_DIR="/etc/xray/inbounds.d"
-XDIR="/etc/xray"
-DNS_FILE="${XDIR}/dns.json"
-BASE_CONFIG="${XDIR}/base_config.json"
+XRAY_DIR="/etc/xray"
+DNS_FILE="${XRAY_DIR}/dns.json"
+MAIN_FILE="${XRAY_DIR}/main.json"
 URIS_TOKENS="/etc/proxym/uris_tokens.json"
 MIRROR_CONF="/etc/proxym/mirror.conf"
-LOG_FILE="/var/log/xray/access.log"
 XRAY_SERVICE_NAME="xray"
+LOG_FILE="/var/log/xray/access.log"
 
 # -----------------------
-# 颜色与日志辅助
+# 颜色与符号
 # -----------------------
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 CHECK="✔"
@@ -51,22 +40,23 @@ error(){ printf "${RED}%s %s${NC}\n" "$ERR" "$*"; }
 # -----------------------
 ensure_dirs(){
   sudo mkdir -p "$LOCAL_SCRIPT_DIR"
-  sudo mkdir -p "$INBOUNDS_DIR"
+  sudo mkdir -p "$XRAY_DIR"
   sudo mkdir -p "$(dirname "$VLESS_JSON")"
   sudo mkdir -p "$(dirname "$URIS_TOKENS")"
   sudo mkdir -p "$(dirname "$MIRROR_CONF")"
-  sudo mkdir -p "$(dirname "$DNS_FILE")"
   if [ ! -f "$VLESS_JSON" ]; then echo "[]" | sudo tee "$VLESS_JSON" >/dev/null; fi
   if [ ! -f "$URIS_TOKENS" ]; then echo "{}" | sudo tee "$URIS_TOKENS" >/dev/null; fi
   if [ ! -f "$MIRROR_CONF" ]; then echo "" | sudo tee "$MIRROR_CONF" >/dev/null; fi
 }
 
+# -----------------------
+# 镜像前缀（可选）
+# -----------------------
 load_mirror(){
   ensure_dirs
   MIRROR_PREFIX=$(sudo sed -n '1p' "$MIRROR_CONF" 2>/dev/null || echo "")
   MIRROR_PREFIX=${MIRROR_PREFIX:-}
 }
-
 get_raw_url(){
   local name="$1"
   local raw="${SCRIPTS_RAW_BASE}/${name}"
@@ -142,7 +132,7 @@ detect_init_system() {
 }
 
 # -----------------------
-# Xray 安装/管理
+# Xray 安装/更新/管理
 # -----------------------
 install_xray() {
     local pause=${1:-1}
@@ -184,7 +174,7 @@ install_xray() {
 }
 
 # -----------------------
-# update_xray_core（按用户提供的实现，已整合）
+# update_xray_core（整合）
 # -----------------------
 update_xray_core() {
     log "检查 Xray Core 更新..."
@@ -225,11 +215,11 @@ update_xray_core() {
         if [ "${NON_INTERACTIVE:-}" != "true" ]; then
             read -p "请输入选项 (y/N, 默认 N): " update_choice
         else
-            update_choice="n" # 非交互模式下默认不更新
+            update_choice="n"
         fi
 
         if [[ $update_choice =~ ^[Yy]$ ]]; then
-            install_xray 1 true true # 运行安装脚本即为更新
+            install_xray 1 true true
             return
         else
             log "取消更新，返回主菜单。"
@@ -294,9 +284,11 @@ logs_xray(){
 install_children(){
   ensure_dirs
   log "安装/更新子脚本到 ${LOCAL_SCRIPT_DIR}"
-  for name in "vless-reality.sh" "vless-x25519.sh" "vless-mlkem.sh"; do
+  mkdir -p /tmp/proxym-scripts-download
+  for raw in "$REALITY_RAW" "$X25519_RAW" "$MLKEM_RAW"; do
+    name=$(basename "$raw")
     url=$(get_raw_url "$name")
-    tmp="/tmp/${name}.new"
+    tmp="/tmp/proxym-scripts-download/${name}.new"
     log "下载 ${name} <- ${url}"
     if curl -fsSL "$url" -o "$tmp"; then
       sudo mv "$tmp" "${LOCAL_SCRIPT_DIR}/${name}"
@@ -307,51 +299,72 @@ install_children(){
       [ -f "$tmp" ] && rm -f "$tmp"
     fi
   done
+  rm -rf /tmp/proxym-scripts-download
   log "子脚本安装/更新完成。"
 }
 remove_children(){ ensure_dirs; sudo rm -rf "$LOCAL_SCRIPT_DIR"; log "已删除子脚本目录 ${LOCAL_SCRIPT_DIR}"; }
 
 # -----------------------
-# 生成空配置（不含 inbounds）
+# 写入 main.json 与 dns.json（主配置与 DNS）
 # -----------------------
-generate_new_config(){
-  ensure_dirs
-  if [ -f "$BASE_CONFIG" ]; then
-    echo "检测到已存在基础配置：${BASE_CONFIG}"
-    read -p "是否覆盖现有基础配置（仅包含 DNS/outbounds，不含 inbounds）? (y/N): " ch
-    if [[ ! $ch =~ ^[Yy]$ ]]; then
-      log "保留现有基础配置，返回上一级菜单。"
-      return
-    fi
-  fi
-
-  default1="1.1.1.1"; default2="8.8.8.8"
-  read -p "请输入主 DNS（默认 ${default1}）: " DNS_PRIMARY
-  DNS_PRIMARY=${DNS_PRIMARY:-$default1}
-  read -p "请输入备用 DNS（默认 ${default2}）: " DNS_SECONDARY
-  DNS_SECONDARY=${DNS_SECONDARY:-$default2}
-
-  sudo mkdir -p "$XDIR"
-  sudo tee "$DNS_FILE" >/dev/null <<EOF
+write_main_config(){
+  sudo mkdir -p "$XRAY_DIR"
+  sudo tee "$MAIN_FILE" >/dev/null <<'EOF'
 {
-  "dns": {
-    "servers": ["${DNS_PRIMARY}", "${DNS_SECONDARY}"]
-  }
-}
-EOF
-
-  sudo tee "$BASE_CONFIG" >/dev/null <<EOF
-{
-  "log": { "loglevel": "warning" },
-  "dns": { "servers": ["${DNS_PRIMARY}", "${DNS_SECONDARY}"] },
-  "inbounds": [],
+  "log": {
+    "loglevel": "warning"
+  },
   "outbounds": [
-    { "protocol": "freedom", "settings": {} }
+    {
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4v6"
+      },
+      "tag": "direct"
+    }
   ]
 }
 EOF
+  sudo cp -f "$MAIN_FILE" "${XRAY_DIR}/99-main.json" 2>/dev/null || true
+  log "已写入 ${MAIN_FILE}（并同步到 99-main.json）"
+}
 
-  log "已生成基础配置（不含入站）: ${BASE_CONFIG}"
+write_dns_config(){
+  local dns1="${1:-1.1.1.1}"
+  sudo mkdir -p "$XRAY_DIR"
+  sudo tee "$DNS_FILE" >/dev/null <<EOF
+{
+  "dns": {
+    "servers": [
+      { "address": "${dns1}" }
+    ],
+    "queryStrategy": "UseIPv4"
+  }
+}
+EOF
+  sudo cp -f "$DNS_FILE" "${XRAY_DIR}/20-dns.json" 2>/dev/null || true
+  log "已写入 ${DNS_FILE}（并同步到 20-dns.json）"
+}
+
+# -----------------------
+# inbounds 列表与删除（管理 /etc/xray 下入站文件）
+# -----------------------
+list_inbounds(){
+  ensure_dirs
+  echo "inbounds 文件 (${XRAY_DIR}):"
+  ls -1 "${XRAY_DIR}"/*.json 2>/dev/null | sed -n '/inbound/p' || echo "(无入站文件或未命名为 inbound-*)"
+}
+
+delete_inbound_file(){
+  ensure_dirs
+  read -p "输入要删除的入站文件名（例如 01-inbound-tcp.json）: " fname
+  if [ -z "$fname" ]; then warn "未输入文件名"; return; fi
+  if [ -f "${XRAY_DIR}/${fname}" ]; then
+    sudo rm -f "${XRAY_DIR}/${fname}"
+    log "已删除 ${XRAY_DIR}/${fname}"
+  else
+    warn "文件不存在: ${XRAY_DIR}/${fname}"
+  fi
 }
 
 # -----------------------
@@ -370,24 +383,24 @@ ADDMENU
     read -p "选择 [1-4]: " a
     case "$a" in
       1)
-        if [ -x "$SCRIPT_REALITY" ]; then
-          sudo "$SCRIPT_REALITY"
+        if [ -x "${LOCAL_SCRIPT_DIR}/vless-reality.sh" ]; then
+          sudo "${LOCAL_SCRIPT_DIR}/vless-reality.sh"
         else
-          warn "未安装子脚本: $SCRIPT_REALITY，请先安装子脚本（菜单: 子脚本安装/更新/删除）"
+          warn "未安装子脚本: ${LOCAL_SCRIPT_DIR}/vless-reality.sh，请先安装子脚本（菜单: 子脚本安装/更新/删除）"
         fi
         ;;
       2)
-        if [ -x "$SCRIPT_X25519" ]; then
-          sudo "$SCRIPT_X25519"
+        if [ -x "${LOCAL_SCRIPT_DIR}/vless-x25519.sh" ]; then
+          sudo "${LOCAL_SCRIPT_DIR}/vless-x25519.sh"
         else
-          warn "未安装子脚本: $SCRIPT_X25519，请先安装子脚本"
+          warn "未安装子脚本: ${LOCAL_SCRIPT_DIR}/vless-x25519.sh，请先安装子脚本"
         fi
         ;;
       3)
-        if [ -x "$SCRIPT_MLKEM" ]; then
-          sudo "$SCRIPT_MLKEM"
+        if [ -x "${LOCAL_SCRIPT_DIR}/vless-mlkem.sh" ]; then
+          sudo "${LOCAL_SCRIPT_DIR}/vless-mlkem.sh"
         else
-          warn "未安装子脚本: $SCRIPT_MLKEM，请先安装子脚本"
+          warn "未安装子脚本: ${LOCAL_SCRIPT_DIR}/vless-mlkem.sh，请先安装子脚本"
         fi
         ;;
       4) return ;;
@@ -405,7 +418,7 @@ proxym_easy_reset_all(){
   ensure_dirs
   log "开始 proxym-easy reset：依次调用已安装的子脚本 reset（仅本协议文件）"
   local any=false
-  for s in "$SCRIPT_REALITY" "$SCRIPT_X25519" "$SCRIPT_MLKEM"; do
+  for s in "${LOCAL_SCRIPT_DIR}/vless-reality.sh" "${LOCAL_SCRIPT_DIR}/vless-x25519.sh" "${LOCAL_SCRIPT_DIR}/vless-mlkem.sh"; do
     if [ -x "$s" ]; then
       log "调用 $(basename "$s") reset"
       sudo "$s" reset || warn "调用 $(basename "$s") reset 失败"
@@ -421,15 +434,6 @@ proxym_easy_reset_all(){
   else
     warn "未检测到任何子脚本，未执行 reset。"
   fi
-}
-
-# -----------------------
-# 打印 VLESS URI
-# -----------------------
-print_vless_uris(){
-  ensure_dirs
-  if [ ! -f "$VLESS_JSON" ]; then echo "[]"; return; fi
-  jq -r '.[] | "\(.tag) \(.domain // .ip):\(.port) \n\(.uri)\n"' "$VLESS_JSON"
 }
 
 # -----------------------
@@ -462,7 +466,7 @@ delete_uploaded_single_impl(){ ensure_dirs; read -p "输入要删除已上传的
 delete_all_uploaded_impl(){ ensure_dirs; keys=$(jq -r 'keys[]' "$URIS_TOKENS"); for k in $keys; do echo "---- [$k] ----"; uri=$(jq -r --arg k "$k" '.[$k].uri' "$URIS_TOKENS"); endpoint=$(jq -r --arg k "$k" '.[$k].upload_endpoint // empty' "$URIS_TOKENS"); token=$(jq -r --arg k "$k" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$endpoint" ]; then warn "[$k] 未配置 endpoint"; continue; fi; enc_uri=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$uri" 2>/dev/null || printf '%s' "$uri"); if [ -n "$token" ]; then curl -s -X DELETE "${endpoint}?uri=${enc_uri}" -H "Authorization: Bearer $token" >/dev/null || warn "删除失败 [$k]"; else curl -s -X DELETE "${endpoint}?uri=${enc_uri}" >/dev/null || warn "删除失败 [$k]"; fi; done; log "批量删除已上传完成"; }
 
 # -----------------------
-# Cron 管理（重启/重置） - 简化实现
+# Cron 管理（重启/重置）
 # -----------------------
 set_cron_restart(){
   read -p "输入 cron 表达式（例如 0 4 * * * 表示每天 04:00）: " expr
@@ -481,36 +485,21 @@ list_cron_reset(){ crontab -l 2>/dev/null | nl -ba | sed -n '/vless-manager-rese
 delete_cron_reset(){ (crontab -l 2>/dev/null | grep -v '#vless-manager-reset') | crontab -; log "已删除重置相关 Cron 条目"; }
 
 # -----------------------
-# 子脚本安装/更新 菜单
-# -----------------------
-children_menu(){
-  ensure_dirs
-  echo "[1] 安装/更新 子脚本（从仓库拉取）"
-  echo "[2] 删除 子脚本"
-  echo "[3] 返回"
-  read -p "选择 [1-3]: " c
-  case "$c" in
-    1) install_children ;;
-    2) remove_children ;;
-    3) return ;;
-    *) warn "无效选项" ;;
-  esac
-}
-
-# -----------------------
-# 编辑/测试 配置（简短）
+# 编辑/测试 配置
 # -----------------------
 edit_config(){
   ensure_dirs
-  cfg="$BASE_CONFIG"
   editor="${EDITOR:-vi}"
-  sudo $editor "$cfg"
+  sudo $editor "$MAIN_FILE"
 }
 test_config(){
   ensure_dirs
   if command -v xray >/dev/null 2>&1; then
-    if [ -d "$XDIR" ]; then log "使用 xray 测试 confdir ${XDIR}"; sudo xray test -confdir "$XDIR" || warn "配置测试失败"; else warn "未找到 ${XDIR}"; fi
-  else warn "未安装 xray，无法测试"; fi
+    log "使用 xray 测试 confdir ${XRAY_DIR}"
+    sudo xray test -confdir "$XRAY_DIR" || warn "配置测试失败"
+  else
+    warn "未安装 xray，无法测试"
+  fi
 }
 
 # -----------------------
@@ -532,7 +521,7 @@ HEADER
     cat <<'MENU'
 
 [1] 🔧 安装 Xray
-[2] ⚙️ 生成新配置（仅基础配置，不含入站）
+[2] ⚙️ 生成主配置 main.json 与 dns.json（不含入站）
 [3] ➕ 添加节点（选择 Reality / x25519 / mlkem）
 [4] ▶️ 启动 Xray
 [5] ⏹️ 停止 Xray
@@ -543,30 +532,38 @@ HEADER
 [10] ♻️ proxym-easy reset（重置所有）
 [11] 🌐 镜像设置（拉取脚本时套加速）
 [12] 🧪 检查/更新 Xray Core
-[13] 🗑️ 卸载 子脚本
-[14] 📝 编辑配置
-[15] 🧪 测试配置
-[16] ⏰ 设置 Cron 重启
-[17] 👁️ 查看 Cron 任务 (重启)
-[18] 🗑️ 删除 Cron (重启)
-[19] 🔄 设置 Cron 重置 UUID/密码
-[20] 👁️ 查看 Cron 任务 (重置)
-[21] 🗑️ 删除 Cron (重置)
-[22] 📤 管理推送设置
+[13] 📝 编辑配置
+[14] 🧪 测试配置
+[15] ⏰ Cron 管理（重启/重置）
+[16] 📤 管理推送（upload）
 [0] 退出
 
 MENU
-    read -p "选择 [0-22]: " opt
+    read -p "选择 [0-16]: " opt
     case "$opt" in
       1) install_xray 1 false false ;;
-      2) generate_new_config ;;
+      2)
+         read -p "主 DNS（默认 1.1.1.1）: " dns1
+         dns1=${dns1:-1.1.1.1}
+         write_dns_config "$dns1"
+         write_main_config
+         ;;
       3) add_node_menu ;;
       4) start_xray ;;
       5) stop_xray ;;
       6) restart_xray ;;
       7) status_xray ;;
       8) print_vless_uris ;;
-      9) children_menu ;;
+      9)
+         echo "[1] 安装/更新 子脚本"
+         echo "[2] 删除 子脚本"
+         read -p "选择 [1-2]: " c
+         case "$c" in
+           1) install_children ;;
+           2) remove_children ;;
+           *) warn "无效选项" ;;
+         esac
+         ;;
       10) proxym_easy_reset_all ;;
       11)
          echo "当前镜像前缀: ${MIRROR_PREFIX:-(未设置)}"
@@ -580,16 +577,21 @@ MENU
          fi
          ;;
       12) update_xray_core ;;
-      13) remove_children ;;
-      14) edit_config ;;
-      15) test_config ;;
-      16) set_cron_restart ;;
-      17) list_cron_restart ;;
-      18) delete_cron_restart ;;
-      19) set_cron_reset ;;
-      20) list_cron_reset ;;
-      21) delete_cron_reset ;;
-      22)
+      13) edit_config ;;
+      14) test_config ;;
+      15)
+         echo "[1] 设置 Cron 重启"
+         echo "[2] 查看 Cron 重启"
+         echo "[3] 删除 Cron 重启"
+         read -p "选择 [1-3]: " cc
+         case "$cc" in
+           1) set_cron_restart ;;
+           2) list_cron_restart ;;
+           3) delete_cron_restart ;;
+           *) warn "无效选项" ;;
+         esac
+         ;;
+      16)
          while true; do
            cat <<PUSH
 [1] 列出推送映射
