@@ -9,7 +9,7 @@ export LC_ALL=C.UTF-8
 # -----------------------
 LOCAL_SCRIPT_DIR="/usr/local/bin/proxym-scripts"
 SCRIPTS_RAW_BASE="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/script"
-REALITY_RAW="${SCRIPTS_RAW_BASE}/vless-reality.sh%0A"
+REALITY_RAW="${SCRIPTS_RAW_BASE}/vless-reality.sh"
 X25519_RAW="${SCRIPTS_RAW_BASE}/vless-x25519.sh"
 MLKEM_RAW="${SCRIPTS_RAW_BASE}/vless-mlkem.sh"
 
@@ -31,10 +31,10 @@ CHECK="✔"
 WARN="⚠"
 ERR="✖"
 
-log(){ printf "\( {GREEN}ℹ %s \){NC}\n" "$*"; }
+log(){ printf "%b ℹ %s%b\n" "${GREEN}" "$*" "${NC}"; }
 info(){ log "$*"; }
-warn(){ printf "\( {YELLOW}%s %s \){NC}\n" "\( WARN" " \)*"; }
-error(){ printf "\( {RED}%s %s \){NC}\n" "\( ERR" " \)*"; }
+warn(){ printf "%b %s %s%b\n" "${YELLOW}" "${WARN}" "$*" "${NC}"; }
+error(){ printf "%b %s %s%b\n" "${RED}" "${ERR}" "$*" "${NC}"; }
 
 # -----------------------
 # 基础目录/文件确保
@@ -60,10 +60,10 @@ load_mirror(){
 }
 get_raw_url(){
   local name="$1"
-  local raw="\( {SCRIPTS_RAW_BASE}/ \){name}"
+  local raw="${SCRIPTS_RAW_BASE}/${name}"
   load_mirror
   if [ -n "$MIRROR_PREFIX" ]; then
-    echo "\( {MIRROR_PREFIX} \){raw}"
+    echo "${MIRROR_PREFIX}/${raw}"
   else
     echo "$raw"
   fi
@@ -144,7 +144,9 @@ install_xray() {
 
     if command -v xray &> /dev/null && [ "$is_update" = false ]; then
         log "Xray 已安装。"
-        if [ "\( {pause}" -eq 1 ] && [ " \){NON_INTERACTIVE:-}" != "true" ]; then read -p "按 Enter 返回菜单..."; fi
+        if [ "$pause" -eq 1 ] && [ "${NON_INTERACTIVE:-}" != "true" ]; then
+            read -p "按 Enter 返回菜单..."
+        fi
         return 0
     else
         install_dependencies "$force_deps"
@@ -153,9 +155,9 @@ install_xray() {
             curl -L https://github.com/XTLS/Xray-install/raw/main/alpinelinux/install-release.sh -o /tmp/install-release.sh
             ash /tmp/install-release.sh
             rm -f /tmp/install-release.sh
-            if [ "\( is_update" = false ] && [ " \){NON_INTERACTIVE:-}" != "true" ]; then
+            if [ "$is_update" = false ] && [ "${NON_INTERACTIVE:-}" != "true" ]; then
                 read -p "是否为 Xray 节点降低网络特权（仅保留 cap_net_bind_service）？(y/N): " reduce_priv
-                if [[ \( reduce_priv =~ ^[Yy] \) ]]; then
+                if [[ "$reduce_priv" =~ ^[Yy] ]]; then
                     if [ -f /etc/init.d/xray ]; then
                       sudo sed -i 's/^capabilities=".*"$/capabilities="^cap_net_bind_service"/g' /etc/init.d/xray || true
                       log "已尝试调整 Xray 网络特权，仅保留 cap_net_bind_service。"
@@ -170,7 +172,9 @@ install_xray() {
 
         if command -v xray &> /dev/null; then restart_xray 0 || true; fi
 
-        if [ "\( {pause}" -eq 1 ] && [ " \){NON_INTERACTIVE:-}" != "true" ]; then read -p "按 Enter 返回菜单..."; fi
+        if [ "$pause" -eq 1 ] && [ "${NON_INTERACTIVE:-}" != "true" ]; then
+            read -p "按 Enter 返回菜单..."
+        fi
     fi
 }
 
@@ -188,15 +192,14 @@ update_xray_core() {
 
     # 1. 获取当前版本
     local current_version
-    current_version=$(xray -version 2>/dev/null | awk '/Xray/ {print $2; exit}')
+    current_version=$(xray -version 2>/dev/null | awk '/Xray/ {print $2; exit}' || true)
 
     # 2. 获取最新版本
     local latest_version
-    latest_version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | \
-    grep tag_name | cut -d '"' -f4 | sed 's/^v//')
+    latest_version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep -E '"tag_name"' | head -n1 | cut -d '"' -f4 | sed 's/^v//' || true)
 
     if [ -z "$current_version" ]; then
-        echo -e "\( {WARN} 无法获取当前 Xray 版本。 \){NC}"
+        echo -e "${YELLOW} 无法获取当前 Xray 版本。 ${NC}"
         current_version="未知"
     fi
 
@@ -205,12 +208,12 @@ update_xray_core() {
         return
     fi
 
-    log "当前 Xray 版本: ${YELLOW}\( current_version \){NC}"
-    log "最新 Xray 版本: ${GREEN}\( latest_version \){NC}"
+    log "当前 Xray 版本: ${YELLOW}${current_version}${NC}"
+    log "最新 Xray 版本: ${GREEN}${latest_version}${NC}"
 
     # 3. 版本对比 (简单字符串比较)
     if [ "$current_version" = "$latest_version" ]; then
-        log "您的 Xray 版本已是最新，无需更新。${CHECK}"
+        log "您的 Xray 版本已是最新，无需更新。 ${CHECK}"
     else
         echo -e "${YELLOW}检测到新版本。是否立即更新 Xray Core？ (y/N): ${NC}"
         if [ "${NON_INTERACTIVE:-}" != "true" ]; then
@@ -219,7 +222,7 @@ update_xray_core() {
             update_choice="n"
         fi
 
-        if [[ \( update_choice =~ ^[Yy] \) ]]; then
+        if [[ "$update_choice" =~ ^[Yy] ]]; then
             install_xray 1 true true
             return
         else
@@ -292,8 +295,8 @@ install_children(){
     tmp="/tmp/proxym-scripts-download/${name}.new"
     log "下载 ${name} <- ${url}"
     if curl -fsSL "$url" -o "$tmp"; then
-      sudo mv "\( tmp" " \){LOCAL_SCRIPT_DIR}/${name}"
-      sudo chmod +x "\( {LOCAL_SCRIPT_DIR}/ \){name}"
+      sudo mv "$tmp" "${LOCAL_SCRIPT_DIR}/${name}"
+      sudo chmod +x "${LOCAL_SCRIPT_DIR}/${name}"
       log "已安装/更新 ${name}"
     else
       warn "下载失败: $url"
@@ -311,7 +314,7 @@ remove_children(){ ensure_dirs; sudo rm -rf "$LOCAL_SCRIPT_DIR"; log "已删除�
 write_main_config(){
   if [ -f "$MAIN_FILE" ]; then
     read -p "${MAIN_FILE} 已存在，是否覆盖? (y/N): " overwrite
-    if ! [[ \( overwrite =~ ^[Yy] \) ]]; then
+    if ! [[ "$overwrite" =~ ^[Yy] ]]; then
       log "取消写入 ${MAIN_FILE}"
       return
     fi
@@ -339,7 +342,7 @@ EOF
 write_dns_config(){
   if [ -f "$DNS_FILE" ]; then
     read -p "${DNS_FILE} 已存在，是否覆盖? (y/N): " overwrite
-    if ! [[ \( overwrite =~ ^[Yy] \) ]]; then
+    if ! [[ "$overwrite" =~ ^[Yy] ]]; then
       log "取消写入 ${DNS_FILE}"
       return
     fi
@@ -382,11 +385,11 @@ delete_inbound_file(){
   ensure_dirs
   read -p "输入要删除的入站文件名（例如 01-inbound-tcp.json）: " fname
   if [ -z "$fname" ]; then warn "未输入文件名"; return; fi
-  if [ -f "\( {XRAY_DIR}/ \){fname}" ]; then
-    sudo rm -f "\( {XRAY_DIR}/ \){fname}"
-    log "已删除 \( {XRAY_DIR}/ \){fname}"
+  if [ -f "${XRAY_DIR}/${fname}" ]; then
+    sudo rm -f "${XRAY_DIR}/${fname}"
+    log "已删除 ${XRAY_DIR}/${fname}"
   else
-    warn "文件不存在: \( {XRAY_DIR}/ \){fname}"
+    warn "文件不存在: ${XRAY_DIR}/${fname}"
   fi
 }
 
@@ -441,7 +444,7 @@ proxym_easy_reset_all(){
   ensure_dirs
   log "开始 proxym-easy reset：依次调用已安装的子脚本 reset（仅本协议文件）"
   local any=false
-  for s in "\( {LOCAL_SCRIPT_DIR}/vless-reality.sh" " \){LOCAL_SCRIPT_DIR}/vless-x25519.sh" "${LOCAL_SCRIPT_DIR}/vless-mlkem.sh"; do
+  for s in "${LOCAL_SCRIPT_DIR}/vless-reality.sh" "${LOCAL_SCRIPT_DIR}/vless-x25519.sh" "${LOCAL_SCRIPT_DIR}/vless-mlkem.sh"; do
     if [ -x "$s" ]; then
       log "调用 $(basename "$s") reset"
       sudo "$s" reset || warn "调用 $(basename "$s") reset 失败"
@@ -452,7 +455,7 @@ proxym_easy_reset_all(){
   done
   if [ "$any" = true ]; then
     read -p "是否重启 Xray 以应用变更? (y/N): " rr
-    if [[ \( rr =~ ^[Yy] \) ]]; then restart_xray; fi
+    if [[ "$rr" =~ ^[Yy] ]]; then restart_xray; fi
     log "proxym-easy reset 完成。"
   else
     warn "未检测到任何子脚本，未执行 reset。"
@@ -464,7 +467,11 @@ proxym_easy_reset_all(){
 # -----------------------
 list_uris_tokens(){
   ensure_dirs
-  jq -r 'to_entries[] | "[\(.key)] uri: \(.value.uri) endpoint: \(.value.upload_endpoint // "") token: \(.value.upload_token // "")"' "$URIS_TOKENS" 2>/dev/null || echo "{}"
+  if [ -f "$URIS_TOKENS" ]; then
+    jq -r 'to_entries[] | "[\(.key)] uri: \(.value.uri) endpoint: \(.value.upload_endpoint // "") token: \(.value.upload_token // "")"' "$URIS_TOKENS" 2>/dev/null || echo "{}"
+  else
+    echo "{}"
+  fi
 }
 set_uri_token(){
   ensure_dirs
@@ -483,10 +490,72 @@ delete_uri_token(){
   jq "del(.\"$key\")" "$URIS_TOKENS" > "$tmp" && sudo mv "$tmp" "$URIS_TOKENS"
   log "已删除映射 [$key]"
 }
-upload_single_impl(){ ensure_dirs; read -p "输入要上传的协议_端口: " key; uri=$(jq -r --arg k "$key" '.[$k].uri // empty' "\( URIS_TOKENS"); endpoint= \)(jq -r --arg k "$key" '.[$k].upload_endpoint // empty' "\( URIS_TOKENS"); token= \)(jq -r --arg k "$key" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$uri" ] || [ -z "$endpoint" ]; then error "[$key] 未配置 uri 或 endpoint"; return 1; fi; log "上传 [$key] -> $endpoint"; if [ -n "$token" ]; then curl -s -X POST "$endpoint" -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" | sed -n '1,200p'; else curl -s -X POST "$endpoint" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" | sed -n '1,200p'; fi; }
-upload_all_impl(){ ensure_dirs; keys=$(jq -r 'keys[]' "$URIS_TOKENS"); for k in $keys; do echo "---- [\( k] ----"; uri= \)(jq -r --arg k "$k" '.[$k].uri' "\( URIS_TOKENS"); endpoint= \)(jq -r --arg k "$k" '.[$k].upload_endpoint // empty' "\( URIS_TOKENS"); token= \)(jq -r --arg k "$k" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$endpoint" ]; then warn "[$k] 未配置 endpoint"; continue; fi; if [ -n "$token" ]; then curl -s -X POST "$endpoint" -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" >/dev/null || warn "上传失败 [$k]"; else curl -s -X POST "$endpoint" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" >/dev/null || warn "上传失败 [$k]"; fi; done; log "批量上传完成"; }
-delete_uploaded_single_impl(){ ensure_dirs; read -p "输入要删除已上传的协议_端口: " key; uri=$(jq -r --arg k "$key" '.[$k].uri // empty' "\( URIS_TOKENS"); endpoint= \)(jq -r --arg k "$key" '.[$k].upload_endpoint // empty' "\( URIS_TOKENS"); token= \)(jq -r --arg k "$key" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$uri" ] || [ -z "$endpoint" ]; then error "[\( key] 未配置 uri 或 endpoint"; return 1; fi; enc_uri= \)(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$uri" 2>/dev/null || printf '%s' "$uri"); log "删除已上传 [$key] -> \( {endpoint}?uri= \){enc_uri}"; if [ -n "\( token" ]; then curl -s -X DELETE " \){endpoint}?uri=${enc_uri}" -H "Authorization: Bearer \( token" | sed -n '1,200p'; else curl -s -X DELETE " \){endpoint}?uri=${enc_uri}" | sed -n '1,200p'; fi; }
-delete_all_uploaded_impl(){ ensure_dirs; keys=$(jq -r 'keys[]' "$URIS_TOKENS"); for k in $keys; do echo "---- [\( k] ----"; uri= \)(jq -r --arg k "$k" '.[$k].uri' "\( URIS_TOKENS"); endpoint= \)(jq -r --arg k "$k" '.[$k].upload_endpoint // empty' "\( URIS_TOKENS"); token= \)(jq -r --arg k "$k" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$endpoint" ]; then warn "[\( k] 未配置 endpoint"; continue; fi; enc_uri= \)(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$uri" 2>/dev/null || printf '%s' "$uri"); if [ -n "\( token" ]; then curl -s -X DELETE " \){endpoint}?uri=${enc_uri}" -H "Authorization: Bearer $token" >/dev/null || warn "删除失败 [\( k]"; else curl -s -X DELETE " \){endpoint}?uri=${enc_uri}" >/dev/null || warn "删除失败 [$k]"; fi; done; log "批量删除已上传完成"; }
+upload_single_impl(){
+  ensure_dirs
+  read -p "输入要上传的协议_端口: " key
+  uri=$(jq -r --arg k "$key" '.[$k].uri // empty' "$URIS_TOKENS")
+  endpoint=$(jq -r --arg k "$key" '.[$k].upload_endpoint // empty' "$URIS_TOKENS")
+  token=$(jq -r --arg k "$key" '.[$k].upload_token // empty' "$URIS_TOKENS")
+  if [ -z "$uri" ] || [ -z "$endpoint" ]; then error "[$key] 未配置 uri 或 endpoint"; return 1; fi
+  log "上传 [$key] -> $endpoint"
+  if [ -n "$token" ]; then
+    curl -s -X POST "$endpoint" -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" | sed -n '1,200p'
+  else
+    curl -s -X POST "$endpoint" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" | sed -n '1,200p'
+  fi
+}
+upload_all_impl(){
+  ensure_dirs
+  if [ ! -f "$URIS_TOKENS" ]; then warn "未找到 $URIS_TOKENS"; return; fi
+  keys=$(jq -r 'keys[]' "$URIS_TOKENS")
+  for k in $keys; do
+    echo "---- [${k}] ----"
+    uri=$(jq -r --arg k "$k" '.[$k].uri' "$URIS_TOKENS")
+    endpoint=$(jq -r --arg k "$k" '.[$k].upload_endpoint // empty' "$URIS_TOKENS")
+    token=$(jq -r --arg k "$k" '.[$k].upload_token // empty' "$URIS_TOKENS")
+    if [ -z "$endpoint" ]; then warn "[$k] 未配置 endpoint"; continue; fi
+    if [ -n "$token" ]; then
+      curl -s -X POST "$endpoint" -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" >/dev/null || warn "上传失败 [$k]"
+    else
+      curl -s -X POST "$endpoint" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" >/dev/null || warn "上传失败 [$k]"
+    fi
+  done
+  log "批量上传完成"
+}
+delete_uploaded_single_impl(){
+  ensure_dirs
+  read -p "输入要删除已上传的协议_端口: " key
+  uri=$(jq -r --arg k "$key" '.[$k].uri // empty' "$URIS_TOKENS")
+  endpoint=$(jq -r --arg k "$key" '.[$k].upload_endpoint // empty' "$URIS_TOKENS")
+  token=$(jq -r --arg k "$key" '.[$k].upload_token // empty' "$URIS_TOKENS")
+  if [ -z "$uri" ] || [ -z "$endpoint" ]; then error "[$key] 未配置 uri 或 endpoint"; return 1; fi
+  enc_uri=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$uri" 2>/dev/null || printf '%s' "$uri")
+  log "删除已上传 [$key] -> ${endpoint}?uri=${enc_uri}"
+  if [ -n "$token" ]; then
+    curl -s -X DELETE "${endpoint}?uri=${enc_uri}" -H "Authorization: Bearer ${token}" | sed -n '1,200p'
+  else
+    curl -s -X DELETE "${endpoint}?uri=${enc_uri}" | sed -n '1,200p'
+  fi
+}
+delete_all_uploaded_impl(){
+  ensure_dirs
+  if [ ! -f "$URIS_TOKENS" ]; then warn "未找到 $URIS_TOKENS"; return; fi
+  keys=$(jq -r 'keys[]' "$URIS_TOKENS")
+  for k in $keys; do
+    echo "---- [${k}] ----"
+    uri=$(jq -r --arg k "$k" '.[$k].uri' "$URIS_TOKENS")
+    endpoint=$(jq -r --arg k "$k" '.[$k].upload_endpoint // empty' "$URIS_TOKENS")
+    token=$(jq -r --arg k "$k" '.[$k].upload_token // empty' "$URIS_TOKENS")
+    if [ -z "$endpoint" ]; then warn "[$k] 未配置 endpoint"; continue; fi
+    enc_uri=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$uri" 2>/dev/null || printf '%s' "$uri")
+    if [ -n "$token" ]; then
+      curl -s -X DELETE "${endpoint}?uri=${enc_uri}" -H "Authorization: Bearer ${token}" >/dev/null || warn "删除失败 [$k]"
+    else
+      curl -s -X DELETE "${endpoint}?uri=${enc_uri}" >/dev/null || warn "删除失败 [$k]"
+    fi
+  done
+  log "批量删除已上传完成"
+}
 
 # -----------------------
 # Cron 管理（重启/重置）
@@ -545,7 +614,7 @@ uninstall_all_scripts_only(){
   echo "即将卸载：主脚本、子脚本、/etc/proxym 数据（但保留 Xray 与 /etc/xray 配置）"
   read -p "确认卸载全部脚本与 proxym 数据？(y/N): " yn
   yn=${yn:-N}
-  if [[ \( yn =~ ^[Yy] \) ]]; then
+  if [[ "$yn" =~ ^[Yy] ]]; then
     sudo rm -rf "$LOCAL_SCRIPT_DIR"
     sudo rm -f "$MAIN_SCRIPT_PATH"
     sudo rm -rf /etc/proxym
@@ -560,7 +629,7 @@ uninstall_everything_including_xray(){
   echo "彻底卸载：Xray、主脚本、子脚本、/etc/xray、/etc/proxym 等全部数据"
   read -p "确认彻底卸载并删除 Xray 与所有配置？(y/N): " yn
   yn=${yn:-N}
-  if [[ \( yn =~ ^[Yy] \) ]]; then
+  if [[ "$yn" =~ ^[Yy] ]]; then
     # 停止并禁用服务（如果存在）
     if systemctl list-unit-files | grep -q "^${XRAY_SERVICE_NAME}"; then
       sudo systemctl stop "${XRAY_SERVICE_NAME}" || true
@@ -746,7 +815,7 @@ handle_cli_invocation(){
 # -----------------------
 # 入口
 # -----------------------
-if [[ "\( {BASH_SOURCE[0]}" == " \){0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   ensure_dirs
   load_mirror
   if [ "$#" -ge 1 ]; then
