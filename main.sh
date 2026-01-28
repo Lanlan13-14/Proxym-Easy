@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
-# vless-manager.sh - 主控脚本（含镜像设置、主子脚本同时更新、proxym-easy reset）
+# vless-manager.sh - Proxym-Easy 主控脚本（完整）
+# 功能概览：
+#  - 管理 Xray 安装/更新（跨发行版依赖安装）
+#  - 检查并更新 Xray Core（包含 update_xray_core）
+#  - 生成基础配置（不含 inbounds）
+#  - 安装/更新/删除 子脚本（vless-reality.sh / vless-x25519.sh / vless-mlkem.sh）
+#  - 添加节点（调用子脚本交互式添加）
+#  - proxym-easy reset（重置所有：调用子脚本 reset）
+#  - 管理推送（upload）映射并上传/删除已上传
+#  - Cron 管理（重启 / 重置）
+#  - 支持镜像前缀（拉取脚本时套加速）
+#  - CLI 兼容 proxym-easy start|stop|restart|state|reset
+#  - 需要 sudo 权限写 /etc 与 systemd 操作
 set -euo pipefail
 export LC_ALL=C.UTF-8
 
@@ -8,8 +20,9 @@ export LC_ALL=C.UTF-8
 # -----------------------
 LOCAL_SCRIPT_DIR="/usr/local/bin/proxym-scripts"
 SCRIPTS_RAW_BASE="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/script"
-SCRIPT_NAMES=("vless-reality.sh" "vless-x25519.sh" "vless-mlkem.sh" "vless-manager.sh")
-# note: vless-manager.sh raw path will be constructed from SCRIPTS_RAW_BASE + /vless-manager.sh
+SCRIPT_REALITY="${LOCAL_SCRIPT_DIR}/vless-reality.sh"
+SCRIPT_X25519="${LOCAL_SCRIPT_DIR}/vless-x25519.sh"
+SCRIPT_MLKEM="${LOCAL_SCRIPT_DIR}/vless-mlkem.sh"
 VLESS_JSON="/etc/proxym/vless.json"
 INBOUNDS_DIR="/etc/xray/inbounds.d"
 XDIR="/etc/xray"
@@ -21,12 +34,17 @@ LOG_FILE="/var/log/xray/access.log"
 XRAY_SERVICE_NAME="xray"
 
 # -----------------------
-# 颜色与符号
+# 颜色与日志辅助
 # -----------------------
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
-info(){ printf "${GREEN}ℹ %s${NC}\n" "$*"; }
-warn(){ printf "${YELLOW}⚠ %s${NC}\n" "$*"; }
-err(){ printf "${RED}✖ %s${NC}\n" "$*"; }
+CHECK="✔"
+WARN="⚠"
+ERR="✖"
+
+log(){ printf "${GREEN}ℹ %s${NC}\n" "$*"; }
+info(){ log "$*"; }
+warn(){ printf "${YELLOW}%s %s${NC}\n" "$WARN" "$*"; }
+error(){ printf "${RED}%s %s${NC}\n" "$ERR" "$*"; }
 
 # -----------------------
 # 基础目录/文件确保
@@ -43,34 +61,17 @@ ensure_dirs(){
   if [ ! -f "$MIRROR_CONF" ]; then echo "" | sudo tee "$MIRROR_CONF" >/dev/null; fi
 }
 
-# -----------------------
-# 镜像配置函数
-# -----------------------
 load_mirror(){
   ensure_dirs
-  if [ -f "$MIRROR_CONF" ]; then
-    MIRROR_PREFIX=$(sudo sed -n '1p' "$MIRROR_CONF" 2>/dev/null || echo "")
-  else
-    MIRROR_PREFIX=""
-  fi
+  MIRROR_PREFIX=$(sudo sed -n '1p' "$MIRROR_CONF" 2>/dev/null || echo "")
   MIRROR_PREFIX=${MIRROR_PREFIX:-}
 }
 
-save_mirror(){
-  local prefix="$1"
-  ensure_dirs
-  echo -n "$prefix" | sudo tee "$MIRROR_CONF" >/dev/null
-  load_mirror
-}
-
 get_raw_url(){
-  # 参数：basename（例如 vless-reality.sh）
   local name="$1"
   local raw="${SCRIPTS_RAW_BASE}/${name}"
   load_mirror
   if [ -n "$MIRROR_PREFIX" ]; then
-    # 如果用户输入的镜像前缀以 raw.githubusercontent.com 开头或包含占位，则直接拼接
-    # 允许用户输入像 https://ghproxy.com/ 或 https://mirror.example.com/
     echo "${MIRROR_PREFIX}${raw}"
   else
     echo "$raw"
@@ -78,7 +79,7 @@ get_raw_url(){
 }
 
 # -----------------------
-# 包管理器检测与依赖安装（保留之前实现）
+# 包管理器检测与依赖安装
 # -----------------------
 detect_package_manager(){
   if command -v apt >/dev/null 2>&1; then echo "apt"
@@ -100,13 +101,13 @@ install_dependencies() {
     deps+=("$cron_pkg")
 
     if [ "$force_update" = true ]; then
-        info "安装 Xray 依赖..."
+        log "安装 Xray 依赖..."
         case "$pkg_manager" in
-            apt) sudo apt update; sudo apt install -y "${deps[@]}"; info "Debian/Ubuntu 依赖安装完成。" ;;
-            yum) sudo yum update -y; sudo yum install -y "${deps[@]}"; info "CentOS/RHEL 依赖安装完成。" ;;
-            dnf) sudo dnf update -y; sudo dnf install -y "${deps[@]}"; info "Fedora 依赖安装完成。" ;;
-            apk) sudo apk update; sudo apk add --no-cache "${deps[@]}"; info "Alpine 依赖安装完成。" ;;
-            pacman) sudo pacman -Syu --noconfirm "${deps[@]}"; info "Arch 依赖安装完成。" ;;
+            apt) sudo apt update; sudo apt install -y "${deps[@]}"; log "Debian/Ubuntu 依赖安装完成。" ;;
+            yum) sudo yum update -y; sudo yum install -y "${deps[@]}"; log "CentOS/RHEL 依赖安装完成。" ;;
+            dnf) sudo dnf update -y; sudo dnf install -y "${deps[@]}"; log "Fedora 依赖安装完成。" ;;
+            apk) sudo apk update; sudo apk add --no-cache "${deps[@]}"; log "Alpine 依赖安装完成。" ;;
+            pacman) sudo pacman -Syu --noconfirm "${deps[@]}"; log "Arch 依赖安装完成。" ;;
             *) warn "未检测到包管理器，请手动安装 curl unzip ca-certificates python3 cron jq。" ;;
         esac
     else
@@ -116,17 +117,17 @@ install_dependencies() {
             if ! command -v "$cmd" &> /dev/null; then missing_deps+=("$dep"); fi
         done
         if [ ${#missing_deps[@]} -gt 0 ]; then
-            info "检测到缺少依赖: ${missing_deps[*]}，正在安装..."
+            log "检测到缺少依赖: ${missing_deps[*]}，正在安装..."
             case "$pkg_manager" in
-                apt) sudo apt update; sudo apt install -y "${missing_deps[@]}"; info "Debian/Ubuntu 依赖安装完成。" ;;
-                yum) sudo yum install -y "${missing_deps[@]}"; info "CentOS/RHEL 依赖安装完成。" ;;
-                dnf) sudo dnf install -y "${missing_deps[@]}"; info "Fedora 依赖安装完成。" ;;
-                apk) sudo apk update; sudo apk add --no-cache "${missing_deps[@]}"; info "Alpine 依赖安装完成。" ;;
-                pacman) sudo pacman -S --noconfirm "${missing_deps[@]}"; info "Arch 依赖安装完成。" ;;
+                apt) sudo apt update; sudo apt install -y "${missing_deps[@]}"; log "Debian/Ubuntu 依赖安装完成。" ;;
+                yum) sudo yum install -y "${missing_deps[@]}"; log "CentOS/RHEL 依赖安装完成。" ;;
+                dnf) sudo dnf install -y "${missing_deps[@]}"; log "Fedora 依赖安装完成。" ;;
+                apk) sudo apk update; sudo apk add --no-cache "${missing_deps[@]}"; log "Alpine 依赖安装完成。" ;;
+                pacman) sudo pacman -S --noconfirm "${missing_deps[@]}"; log "Arch 依赖安装完成。" ;;
                 *) warn "未检测到包管理器，请手动安装缺少的依赖: ${missing_deps[*]}。" ;;
             esac
         else
-            info "依赖已满足。"
+            log "依赖已满足。"
         fi
     fi
 }
@@ -141,7 +142,7 @@ detect_init_system() {
 }
 
 # -----------------------
-# Xray 安装/更新/管理（保留并兼容）
+# Xray 安装/管理
 # -----------------------
 install_xray() {
     local pause=${1:-1}
@@ -151,12 +152,12 @@ install_xray() {
     init_system=$(detect_init_system)
 
     if command -v xray &> /dev/null && [ "$is_update" = false ]; then
-        info "Xray 已安装。"
+        log "Xray 已安装。"
         if [ $pause -eq 1 ] && [ "${NON_INTERACTIVE:-}" != "true" ]; then read -p "按 Enter 返回菜单..."; fi
         return 0
     else
         install_dependencies "$force_deps"
-        info "安装/更新 Xray..."
+        log "安装/更新 Xray..."
         if [ "$init_system" = "openrc" ]; then
             curl -L https://github.com/XTLS/Xray-install/raw/main/alpinelinux/install-release.sh -o /tmp/install-release.sh
             ash /tmp/install-release.sh
@@ -166,7 +167,7 @@ install_xray() {
                 if [[ $reduce_priv =~ ^[Yy]$ ]]; then
                     if [ -f /etc/init.d/xray ]; then
                       sudo sed -i 's/^capabilities=".*"$/capabilities="^cap_net_bind_service"/g' /etc/init.d/xray || true
-                      info "已尝试调整 Xray 网络特权，仅保留 cap_net_bind_service。"
+                      log "已尝试调整 Xray 网络特权，仅保留 cap_net_bind_service。"
                     fi
                 fi
             fi
@@ -174,7 +175,7 @@ install_xray() {
             bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
         fi
 
-        if [ $? -eq 0 ]; then info "Xray 安装/更新成功。"; else err "Xray 安装/更新失败。"; fi
+        if [ $? -eq 0 ]; then log "Xray 安装/更新成功。"; else error "Xray 安装/更新失败。"; fi
 
         if command -v xray &> /dev/null; then restart_xray 0 || true; fi
 
@@ -182,50 +183,109 @@ install_xray() {
     fi
 }
 
+# -----------------------
+# update_xray_core（按用户提供的实现，已整合）
+# -----------------------
 update_xray_core() {
-    info "检查 Xray Core 更新..."
+    log "检查 Xray Core 更新..."
+
     if ! command -v xray &> /dev/null; then
-        info "Xray 尚未安装，将转到安装程序。"
+        log "Xray 尚未安装，将转到安装程序。"
         install_xray 1 true
         return
     fi
-    local current_version latest_version
-    current_version=$(xray -version 2>/dev/null | grep -m1 -Eo '([0-9]+\.)+[0-9]+' || true)
-    latest_version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep -m1 '"tag_name"' | cut -d '"' -f4 | sed 's/^v//')
-    if [ -z "$current_version" ]; then warn "无法获取当前 Xray 版本。"; current_version="未知"; fi
-    if [ -z "$latest_version" ]; then err "无法获取 Xray 最新版本，请检查网络连接。"; return; fi
-    info "当前 Xray 版本: ${current_version}"
-    info "最新 Xray 版本: ${latest_version}"
-    if [ "$current_version" = "$latest_version" ]; then info "您的 Xray 版本已是最新。"; else
-        if [ "${NON_INTERACTIVE:-}" != "true" ]; then read -p "检测到新版本，是否立即更新 Xray Core？ (y/N): " update_choice; else update_choice="n"; fi
-        if [[ $update_choice =~ ^[Yy]$ ]]; then install_xray 1 true true; else info "取消更新。"; fi
+
+    # 1. 获取当前版本
+    local current_version
+    current_version=$(xray -version 2>/dev/null | grep Xray | head -n 1 | awk '{print $2}')
+
+    # 2. 获取最新版本
+    local latest_version
+    latest_version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | \
+    grep tag_name | cut -d '"' -f4 | sed 's/^v//')
+
+    if [ -z "$current_version" ]; then
+        echo -e "${WARN} 无法获取当前 Xray 版本。${NC}"
+        current_version="未知"
     fi
-    if [ "${NON_INTERACTIVE:-}" != "true" ]; then read -p "按 Enter 返回菜单..."; fi
+
+    if [ -z "$latest_version" ]; then
+        error "无法获取 Xray 最新版本，请检查网络连接。"
+        return
+    fi
+
+    log "当前 Xray 版本: ${YELLOW}$current_version${NC}"
+    log "最新 Xray 版本: ${GREEN}$latest_version${NC}"
+
+    # 3. 版本对比 (简单字符串比较)
+    if [ "$current_version" = "$latest_version" ]; then
+        log "您的 Xray 版本已是最新，无需更新。${CHECK}"
+    else
+        echo -e "${YELLOW}检测到新版本。是否立即更新 Xray Core？ (y/N): ${NC}"
+        if [ "${NON_INTERACTIVE:-}" != "true" ]; then
+            read -p "请输入选项 (y/N, 默认 N): " update_choice
+        else
+            update_choice="n" # 非交互模式下默认不更新
+        fi
+
+        if [[ $update_choice =~ ^[Yy]$ ]]; then
+            install_xray 1 true true # 运行安装脚本即为更新
+            return
+        else
+            log "取消更新，返回主菜单。"
+        fi
+    fi
+
+    if [ "${NON_INTERACTIVE:-}" != "true" ]; then
+        read -p "按 Enter 返回菜单..."
+    fi
 }
 
+# -----------------------
+# Xray systemd 管理（强制 systemd）
+# -----------------------
 start_xray(){
   if systemctl list-unit-files | grep -q "^${XRAY_SERVICE_NAME}"; then
-    sudo systemctl start "${XRAY_SERVICE_NAME}" && info "Xray 已通过 systemd 启动" || warn "通过 systemd 启动 Xray 失败"
+    sudo systemctl start "${XRAY_SERVICE_NAME}" && log "Xray 已通过 systemd 启动" || warn "通过 systemd 启动 Xray 失败"
   else
-    err "未检测到 systemd 服务 ${XRAY_SERVICE_NAME}。请安装 Xray 的 systemd 服务或创建 unit。"
+    error "未检测到 systemd 服务 ${XRAY_SERVICE_NAME}。请安装 Xray 的 systemd 服务或创建 unit。"
     return 1
   fi
 }
 stop_xray(){
   if systemctl list-unit-files | grep -q "^${XRAY_SERVICE_NAME}"; then
-    sudo systemctl stop "${XRAY_SERVICE_NAME}" && info "Xray 已通过 systemd 停止" || warn "通过 systemd 停止 Xray 失败"
-  else err "未检测到 systemd 服务 ${XRAY_SERVICE_NAME}。无法停止。"; return 1; fi
+    sudo systemctl stop "${XRAY_SERVICE_NAME}" && log "Xray 已通过 systemd 停止" || warn "通过 systemd 停止 Xray 失败"
+  else
+    error "未检测到 systemd 服务 ${XRAY_SERVICE_NAME}。无法停止。"
+    return 1
+  fi
 }
 restart_xray(){
   if systemctl list-unit-files | grep -q "^${XRAY_SERVICE_NAME}"; then
-    sudo systemctl restart "${XRAY_SERVICE_NAME}" && info "Xray 已通过 systemd 重启" || warn "通过 systemd 重启 Xray 失败"
-  else err "未检测到 systemd 服务 ${XRAY_SERVICE_NAME}。无法重启。"; return 1; fi
+    sudo systemctl restart "${XRAY_SERVICE_NAME}" && log "Xray 已通过 systemd 重启" || warn "通过 systemd 重启 Xray 失败"
+  else
+    error "未检测到 systemd 服务 ${XRAY_SERVICE_NAME}。无法重启。"
+    return 1
+  fi
 }
 status_xray(){
-  if systemctl list-unit-files | grep -q "^${XRAY_SERVICE_NAME}"; then sudo systemctl status "${XRAY_SERVICE_NAME}" --no-pager; else err "未检测到 systemd 服务 ${XRAY_SERVICE_NAME}。无法显示状态。"; return 1; fi
+  if systemctl list-unit-files | grep -q "^${XRAY_SERVICE_NAME}"; then
+    sudo systemctl status "${XRAY_SERVICE_NAME}" --no-pager
+  else
+    error "未检测到 systemd 服务 ${XRAY_SERVICE_NAME}。无法显示状态。"
+    return 1
+  fi
 }
 logs_xray(){
-  if [ -f "$LOG_FILE" ]; then sudo tail -n 200 "$LOG_FILE"; else if systemctl list-unit-files | grep -q "^${XRAY_SERVICE_NAME}"; then sudo journalctl -u "${XRAY_SERVICE_NAME}" -n 200 --no-pager; else warn "未找到日志文件 ${LOG_FILE}，也未检测到 systemd 服务"; fi; fi
+  if [ -f "$LOG_FILE" ]; then
+    sudo tail -n 200 "$LOG_FILE"
+  else
+    if systemctl list-unit-files | grep -q "^${XRAY_SERVICE_NAME}"; then
+      sudo journalctl -u "${XRAY_SERVICE_NAME}" -n 200 --no-pager
+    else
+      warn "未找到日志文件 ${LOG_FILE}，也未检测到 systemd 服务"
+    fi
+  fi
 }
 
 # -----------------------
@@ -233,80 +293,44 @@ logs_xray(){
 # -----------------------
 install_children(){
   ensure_dirs
-  info "安装/更新子脚本到 ${LOCAL_SCRIPT_DIR}"
-  for name in "${SCRIPT_NAMES[@]}"; do
-    # 主脚本也包含在 SCRIPT_NAMES，raw path built accordingly
-    url=$(get_raw_url "$name")
-    dest="${LOCAL_SCRIPT_DIR}/${name}"
-    info "下载 ${name} -> ${dest}"
-    if curl -fsSL "$url" -o "/tmp/${name}.new"; then
-      sudo mv "/tmp/${name}.new" "$dest"
-      sudo chmod +x "$dest"
-      info "已安装/更新 ${name}"
-    else
-      warn "下载失败: $url"
-      [ -f "/tmp/${name}.new" ] && rm -f "/tmp/${name}.new"
-    fi
-  done
-  info "子脚本安装/更新完成。"
-}
-
-update_children(){
-  install_children
-}
-
-remove_children(){
-  ensure_dirs
-  sudo rm -rf "$LOCAL_SCRIPT_DIR"
-  info "已删除子脚本目录 ${LOCAL_SCRIPT_DIR}"
-}
-
-# -----------------------
-# 自更新：同时更新主脚本与子脚本（使用镜像）
-# -----------------------
-self_update(){
-  ensure_dirs
-  info "开始更新 主脚本 与 子脚本（使用镜像: ${MIRROR_PREFIX:-none})"
-  # 更新子脚本与主脚本（主脚本名为 vless-manager.sh）
-  for name in "${SCRIPT_NAMES[@]}"; do
+  log "安装/更新子脚本到 ${LOCAL_SCRIPT_DIR}"
+  for name in "vless-reality.sh" "vless-x25519.sh" "vless-mlkem.sh"; do
     url=$(get_raw_url "$name")
     tmp="/tmp/${name}.new"
-    info "下载 ${name} <- ${url}"
+    log "下载 ${name} <- ${url}"
     if curl -fsSL "$url" -o "$tmp"; then
-      if [ "$name" = "vless-manager.sh" ]; then
-        # 更新当前运行脚本：先写临时文件，再替换
-        sudo mv "$tmp" "$(realpath "$0")"
-        sudo chmod +x "$(realpath "$0")"
-        info "已更新主脚本"
-      else
-        sudo mv "$tmp" "${LOCAL_SCRIPT_DIR}/${name}"
-        sudo chmod +x "${LOCAL_SCRIPT_DIR}/${name}"
-        info "已更新 ${name}"
-      fi
+      sudo mv "$tmp" "${LOCAL_SCRIPT_DIR}/${name}"
+      sudo chmod +x "${LOCAL_SCRIPT_DIR}/${name}"
+      log "已安装/更新 ${name}"
     else
       warn "下载失败: $url"
       [ -f "$tmp" ] && rm -f "$tmp"
     fi
   done
-  info "主脚本与子脚本更新完成。"
+  log "子脚本安装/更新完成。"
 }
+remove_children(){ ensure_dirs; sudo rm -rf "$LOCAL_SCRIPT_DIR"; log "已删除子脚本目录 ${LOCAL_SCRIPT_DIR}"; }
 
 # -----------------------
-# DNS 与 基础配置生成
+# 生成空配置（不含 inbounds）
 # -----------------------
 generate_new_config(){
   ensure_dirs
-  if [ -f "$DNS_FILE" ]; then
-    echo "检测到已存在 DNS 配置："
-    cat "$DNS_FILE"
-    read -p "是否要修改 DNS 配置? (y/N): " ch
-    if [[ ! $ch =~ ^[Yy]$ ]]; then info "保留现有 DNS 配置"; return; fi
+  if [ -f "$BASE_CONFIG" ]; then
+    echo "检测到已存在基础配置：${BASE_CONFIG}"
+    read -p "是否覆盖现有基础配置（仅包含 DNS/outbounds，不含 inbounds）? (y/N): " ch
+    if [[ ! $ch =~ ^[Yy]$ ]]; then
+      log "保留现有基础配置，返回上一级菜单。"
+      return
+    fi
   fi
+
   default1="1.1.1.1"; default2="8.8.8.8"
   read -p "请输入主 DNS（默认 ${default1}）: " DNS_PRIMARY
   DNS_PRIMARY=${DNS_PRIMARY:-$default1}
   read -p "请输入备用 DNS（默认 ${default2}）: " DNS_SECONDARY
   DNS_SECONDARY=${DNS_SECONDARY:-$default2}
+
   sudo mkdir -p "$XDIR"
   sudo tee "$DNS_FILE" >/dev/null <<EOF
 {
@@ -315,6 +339,7 @@ generate_new_config(){
   }
 }
 EOF
+
   sudo tee "$BASE_CONFIG" >/dev/null <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -325,35 +350,86 @@ EOF
   ]
 }
 EOF
-  info "已生成基础配置 ${BASE_CONFIG} 并写入 DNS ${DNS_FILE}"
+
+  log "已生成基础配置（不含入站）: ${BASE_CONFIG}"
 }
 
 # -----------------------
-# inbounds 列表与删除
+# 添加节点菜单（调用子脚本交互式添加）
 # -----------------------
-list_inbounds(){
+add_node_menu(){
   ensure_dirs
-  echo "inbounds 文件 (${INBOUNDS_DIR}):"
-  ls -1 "${INBOUNDS_DIR}" 2>/dev/null || echo "(无文件)"
+  while true; do
+    cat <<'ADDMENU'
+
+[1] 添加 VLESS Reality 节点
+[2] 添加 VLESS x25519 节点
+[3] 添加 VLESS MLKEM 节点
+[4] 返回
+ADDMENU
+    read -p "选择 [1-4]: " a
+    case "$a" in
+      1)
+        if [ -x "$SCRIPT_REALITY" ]; then
+          sudo "$SCRIPT_REALITY"
+        else
+          warn "未安装子脚本: $SCRIPT_REALITY，请先安装子脚本（菜单: 子脚本安装/更新/删除）"
+        fi
+        ;;
+      2)
+        if [ -x "$SCRIPT_X25519" ]; then
+          sudo "$SCRIPT_X25519"
+        else
+          warn "未安装子脚本: $SCRIPT_X25519，请先安装子脚本"
+        fi
+        ;;
+      3)
+        if [ -x "$SCRIPT_MLKEM" ]; then
+          sudo "$SCRIPT_MLKEM"
+        else
+          warn "未安装子脚本: $SCRIPT_MLKEM，请先安装子脚本"
+        fi
+        ;;
+      4) return ;;
+      *) warn "无效选项" ;;
+    esac
+    echo
+    read -p "按 Enter 返回 添加节点 菜单..." _ || true
+  done
 }
 
-delete_inbound_file(){
+# -----------------------
+# proxym-easy reset（重置所有）
+# -----------------------
+proxym_easy_reset_all(){
   ensure_dirs
-  read -p "输入要删除的入站文件名（例如 reality_443.json）: " fname
-  if [ -z "$fname" ]; then warn "未输入文件名"; return; fi
-  if [ -f "${INBOUNDS_DIR}/${fname}" ]; then
-    sudo rm -f "${INBOUNDS_DIR}/${fname}"
-    info "已删除 ${INBOUNDS_DIR}/${fname}"
-    proto_port="${fname%.*}"
-    proto="${proto_port%%_*}"
-    port="${proto_port#*_}"
-    if [[ "$port" =~ ^[0-9]+$ ]]; then
-      tmp=$(mktemp)
-      jq "map(select(.port != ($port|tonumber)))" "$VLESS_JSON" > "$tmp" && sudo mv "$tmp" "$VLESS_JSON" && info "已从 vless.json 中移除端口 $port 的条目（若存在）"
+  log "开始 proxym-easy reset：依次调用已安装的子脚本 reset（仅本协议文件）"
+  local any=false
+  for s in "$SCRIPT_REALITY" "$SCRIPT_X25519" "$SCRIPT_MLKEM"; do
+    if [ -x "$s" ]; then
+      log "调用 $(basename "$s") reset"
+      sudo "$s" reset || warn "调用 $(basename "$s") reset 失败"
+      any=true
+    else
+      log "未安装 $(basename "$s")，跳过"
     fi
+  done
+  if [ "$any" = true ]; then
+    read -p "是否重启 Xray 以应用变更? (y/N): " rr
+    if [[ $rr =~ ^[Yy]$ ]]; then restart_xray; fi
+    log "proxym-easy reset 完成。"
   else
-    warn "文件不存在: ${INBOUNDS_DIR}/${fname}"
+    warn "未检测到任何子脚本，未执行 reset。"
   fi
+}
+
+# -----------------------
+# 打印 VLESS URI
+# -----------------------
+print_vless_uris(){
+  ensure_dirs
+  if [ ! -f "$VLESS_JSON" ]; then echo "[]"; return; fi
+  jq -r '.[] | "\(.tag) \(.domain // .ip):\(.port) \n\(.uri)\n"' "$VLESS_JSON"
 }
 
 # -----------------------
@@ -371,236 +447,173 @@ set_uri_token(){
   read -p "输入 upload token (留空无 token): " tok
   tmp=$(mktemp)
   jq --arg k "$key" --arg uri "$uri" --arg ep "$ep" --arg tok "$tok" '. + {($k): {uri:$uri, upload_endpoint:$ep, upload_token:$tok}}' "$URIS_TOKENS" > "$tmp" && sudo mv "$tmp" "$URIS_TOKENS"
-  info "已保存映射 [$key]"
+  log "已保存映射 [$key]"
 }
 delete_uri_token(){
   ensure_dirs
   read -p "输入要删除的协议_端口: " key
   tmp=$(mktemp)
   jq "del(.\"$key\")" "$URIS_TOKENS" > "$tmp" && sudo mv "$tmp" "$URIS_TOKENS"
-  info "已删除映射 [$key]"
+  log "已删除映射 [$key]"
 }
-upload_single_impl(){ ensure_dirs; read -p "输入要上传的协议_端口: " key; uri=$(jq -r --arg k "$key" '.[$k].uri // empty' "$URIS_TOKENS"); endpoint=$(jq -r --arg k "$key" '.[$k].upload_endpoint // empty' "$URIS_TOKENS"); token=$(jq -r --arg k "$key" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$uri" ] || [ -z "$endpoint" ]; then err "[$key] 未配置 uri 或 endpoint"; return 1; fi; info "上传 [$key] -> $endpoint"; if [ -n "$token" ]; then curl -s -X POST "$endpoint" -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" | sed -n '1,200p'; else curl -s -X POST "$endpoint" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" | sed -n '1,200p'; fi; }
-upload_all_impl(){ ensure_dirs; keys=$(jq -r 'keys[]' "$URIS_TOKENS"); for k in $keys; do echo "---- [$k] ----"; uri=$(jq -r --arg k "$k" '.[$k].uri' "$URIS_TOKENS"); endpoint=$(jq -r --arg k "$k" '.[$k].upload_endpoint // empty' "$URIS_TOKENS"); token=$(jq -r --arg k "$k" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$endpoint" ]; then warn "[$k] 未配置 endpoint"; continue; fi; if [ -n "$token" ]; then curl -s -X POST "$endpoint" -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" >/dev/null || warn "上传失败 [$k]"; else curl -s -X POST "$endpoint" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" >/dev/null || warn "上传失败 [$k]"; fi; done; info "批量上传完成"; }
-delete_uploaded_single_impl(){ ensure_dirs; read -p "输入要删除已上传的协议_端口: " key; uri=$(jq -r --arg k "$key" '.[$k].uri // empty' "$URIS_TOKENS"); endpoint=$(jq -r --arg k "$key" '.[$k].upload_endpoint // empty' "$URIS_TOKENS"); token=$(jq -r --arg k "$key" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$uri" ] || [ -z "$endpoint" ]; then err "[$key] 未配置 uri 或 endpoint"; return 1; fi; enc_uri=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$uri" 2>/dev/null || printf '%s' "$uri"); info "删除已上传 [$key] -> ${endpoint}?uri=${enc_uri}"; if [ -n "$token" ]; then curl -s -X DELETE "${endpoint}?uri=${enc_uri}" -H "Authorization: Bearer $token" | sed -n '1,200p'; else curl -s -X DELETE "${endpoint}?uri=${enc_uri}" | sed -n '1,200p'; fi; }
-delete_all_uploaded_impl(){ ensure_dirs; keys=$(jq -r 'keys[]' "$URIS_TOKENS"); for k in $keys; do echo "---- [$k] ----"; uri=$(jq -r --arg k "$k" '.[$k].uri' "$URIS_TOKENS"); endpoint=$(jq -r --arg k "$k" '.[$k].upload_endpoint // empty' "$URIS_TOKENS"); token=$(jq -r --arg k "$k" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$endpoint" ]; then warn "[$k] 未配置 endpoint"; continue; fi; enc_uri=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$uri" 2>/dev/null || printf '%s' "$uri"); if [ -n "$token" ]; then curl -s -X DELETE "${endpoint}?uri=${enc_uri}" -H "Authorization: Bearer $token" >/dev/null || warn "删除失败 [$k]"; else curl -s -X DELETE "${endpoint}?uri=${enc_uri}" >/dev/null || warn "删除失败 [$k]"; fi; done; info "批量删除已上传完成"; }
+upload_single_impl(){ ensure_dirs; read -p "输入要上传的协议_端口: " key; uri=$(jq -r --arg k "$key" '.[$k].uri // empty' "$URIS_TOKENS"); endpoint=$(jq -r --arg k "$key" '.[$k].upload_endpoint // empty' "$URIS_TOKENS"); token=$(jq -r --arg k "$key" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$uri" ] || [ -z "$endpoint" ]; then error "[$key] 未配置 uri 或 endpoint"; return 1; fi; log "上传 [$key] -> $endpoint"; if [ -n "$token" ]; then curl -s -X POST "$endpoint" -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" | sed -n '1,200p'; else curl -s -X POST "$endpoint" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" | sed -n '1,200p'; fi; }
+upload_all_impl(){ ensure_dirs; keys=$(jq -r 'keys[]' "$URIS_TOKENS"); for k in $keys; do echo "---- [$k] ----"; uri=$(jq -r --arg k "$k" '.[$k].uri' "$URIS_TOKENS"); endpoint=$(jq -r --arg k "$k" '.[$k].upload_endpoint // empty' "$URIS_TOKENS"); token=$(jq -r --arg k "$k" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$endpoint" ]; then warn "[$k] 未配置 endpoint"; continue; fi; if [ -n "$token" ]; then curl -s -X POST "$endpoint" -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" >/dev/null || warn "上传失败 [$k]"; else curl -s -X POST "$endpoint" -H "Content-Type: application/json" -d "{\"uri\":\"$uri\"}" >/dev/null || warn "上传失败 [$k]"; fi; done; log "批量上传完成"; }
+delete_uploaded_single_impl(){ ensure_dirs; read -p "输入要删除已上传的协议_端口: " key; uri=$(jq -r --arg k "$key" '.[$k].uri // empty' "$URIS_TOKENS"); endpoint=$(jq -r --arg k "$key" '.[$k].upload_endpoint // empty' "$URIS_TOKENS"); token=$(jq -r --arg k "$key" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$uri" ] || [ -z "$endpoint" ]; then error "[$key] 未配置 uri 或 endpoint"; return 1; fi; enc_uri=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$uri" 2>/dev/null || printf '%s' "$uri"); log "删除已上传 [$key] -> ${endpoint}?uri=${enc_uri}"; if [ -n "$token" ]; then curl -s -X DELETE "${endpoint}?uri=${enc_uri}" -H "Authorization: Bearer $token" | sed -n '1,200p'; else curl -s -X DELETE "${endpoint}?uri=${enc_uri}" | sed -n '1,200p'; fi; }
+delete_all_uploaded_impl(){ ensure_dirs; keys=$(jq -r 'keys[]' "$URIS_TOKENS"); for k in $keys; do echo "---- [$k] ----"; uri=$(jq -r --arg k "$k" '.[$k].uri' "$URIS_TOKENS"); endpoint=$(jq -r --arg k "$k" '.[$k].upload_endpoint // empty' "$URIS_TOKENS"); token=$(jq -r --arg k "$k" '.[$k].upload_token // empty' "$URIS_TOKENS"); if [ -z "$endpoint" ]; then warn "[$k] 未配置 endpoint"; continue; fi; enc_uri=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$uri" 2>/dev/null || printf '%s' "$uri"); if [ -n "$token" ]; then curl -s -X DELETE "${endpoint}?uri=${enc_uri}" -H "Authorization: Bearer $token" >/dev/null || warn "删除失败 [$k]"; else curl -s -X DELETE "${endpoint}?uri=${enc_uri}" >/dev/null || warn "删除失败 [$k]"; fi; done; log "批量删除已上传完成"; }
 
 # -----------------------
-# 调用子脚本 reset（单个）
+# Cron 管理（重启/重置） - 简化实现
 # -----------------------
-call_child_reset(){
-  ensure_dirs
-  echo "[1] reset reality"
-  echo "[2] reset x25519"
-  echo "[3] reset mlkem"
-  read -p "选择 (1/2/3): " r
-  case "$r" in
-    1) script="${LOCAL_SCRIPT_DIR}/vless-reality.sh" ;;
-    2) script="${LOCAL_SCRIPT_DIR}/vless-x25519.sh" ;;
-    3) script="${LOCAL_SCRIPT_DIR}/vless-mlkem.sh" ;;
-    *) warn "取消"; return ;;
-  esac
-  if [ -x "$script" ]; then
-    "$script" reset || warn "调用 reset 失败"
-    info "已调用 $script reset"
-  else warn "未安装或不可执行: $script"; fi
+set_cron_restart(){
+  read -p "输入 cron 表达式（例如 0 4 * * * 表示每天 04:00）: " expr
+  (crontab -l 2>/dev/null | grep -v '#vless-manager-restart' ; echo "${expr} systemctl restart ${XRAY_SERVICE_NAME} #vless-manager-restart") | crontab -
+  log "已设置 Cron 重启"
 }
+list_cron_restart(){ crontab -l 2>/dev/null | nl -ba | sed -n '/vless-manager-restart/,$p' || echo "(无重启 Cron)"; }
+delete_cron_restart(){ (crontab -l 2>/dev/null | grep -v '#vless-manager-restart') | crontab -; log "已删除重启相关 Cron 条目"; }
+
+set_cron_reset(){
+  read -p "输入 cron 表达式（例如 0 3 * * 0 表示每周日 03:00）: " expr
+  (crontab -l 2>/dev/null | grep -v '#vless-manager-reset' ; echo "${expr} ${LOCAL_SCRIPT_DIR}/vless-manager.sh proxym-easy reset #vless-manager-reset") | crontab -
+  log "已设置 Cron 重置"
+}
+list_cron_reset(){ crontab -l 2>/dev/null | nl -ba | sed -n '/vless-manager-reset/,$p' || echo "(无重置 Cron)"; }
+delete_cron_reset(){ (crontab -l 2>/dev/null | grep -v '#vless-manager-reset') | crontab -; log "已删除重置相关 Cron 条目"; }
 
 # -----------------------
-# proxym-easy reset（重置所有）
+# 子脚本安装/更新 菜单
 # -----------------------
-proxym_easy_reset_all(){
+children_menu(){
   ensure_dirs
-  info "开始 proxym-easy reset：依次调用已安装的子脚本 reset（仅本协议文件）"
-  local any=false
-  for s in "vless-reality.sh" "vless-x25519.sh" "vless-mlkem.sh"; do
-    if [ -x "${LOCAL_SCRIPT_DIR}/${s}" ]; then
-      info "调用 ${s} reset"
-      "${LOCAL_SCRIPT_DIR}/${s}" reset || warn "调用 ${s} reset 失败"
-      any=true
-    else
-      info "未安装 ${s}，跳过"
-    fi
-  done
-  if [ "$any" = true ]; then
-    read -p "是否重启 Xray 以应用变更? (y/N): " rr
-    if [[ $rr =~ ^[Yy]$ ]]; then restart_xray; fi
-    info "proxym-easy reset 完成。"
-  else
-    warn "未检测到任何子脚本，未执行 reset。"
-  fi
-}
-
-# -----------------------
-# 打印 VLESS URI
-# -----------------------
-print_vless_uris(){
-  ensure_dirs
-  if [ ! -f "$VLESS_JSON" ]; then echo "[]"; return; fi
-  jq -r '.[] | "\(.tag) \(.domain // .ip):\(.port) \n\(.uri)\n"' "$VLESS_JSON"
-}
-
-# -----------------------
-# 镜像设置菜单
-# -----------------------
-manage_mirror(){
-  ensure_dirs
-  load_mirror
-  echo "当前镜像前缀: ${MIRROR_PREFIX:-(未设置)}"
-  cat <<M
-[1] 设置镜像前缀（例如 https://ghproxy.com/ 或 https://mirror.example.com/）
-[2] 删除镜像设置（恢复直接拉取 raw）
-[3] 返回
-M
-  read -p "选择 [1-3]: " m
-  case "$m" in
-    1)
-      read -p "输入镜像前缀（以 https:// 开头，结尾不强制斜杠）: " prefix
-      prefix=${prefix:-}
-      if [ -n "$prefix" ]; then
-        # 保证以 / 结尾
-        case "$prefix" in */) ;; *) prefix="${prefix}";; esac
-        save_mirror "$prefix"
-        info "已保存镜像前缀: $prefix"
-      else warn "未输入镜像前缀"; fi
-      ;;
-    2)
-      save_mirror ""
-      info "已删除镜像设置，恢复直接拉取 raw"
-      ;;
+  echo "[1] 安装/更新 子脚本（从仓库拉取）"
+  echo "[2] 删除 子脚本"
+  echo "[3] 返回"
+  read -p "选择 [1-3]: " c
+  case "$c" in
+    1) install_children ;;
+    2) remove_children ;;
     3) return ;;
     *) warn "无效选项" ;;
   esac
 }
 
 # -----------------------
-# 编辑/测试配置（简短）
+# 编辑/测试 配置（简短）
 # -----------------------
 edit_config(){
   ensure_dirs
-  if [ -f "/usr/local/etc/xray/config.json" ]; then cfg="/usr/local/etc/xray/config.json"; else cfg="$BASE_CONFIG"; fi
+  cfg="$BASE_CONFIG"
   editor="${EDITOR:-vi}"
   sudo $editor "$cfg"
 }
 test_config(){
   ensure_dirs
   if command -v xray >/dev/null 2>&1; then
-    if [ -d "$XDIR" ]; then info "使用 xray 测试 confdir ${XDIR}"; sudo xray test -confdir "$XDIR" || warn "配置测试失败"; else warn "未找到 ${XDIR}"; fi
+    if [ -d "$XDIR" ]; then log "使用 xray 测试 confdir ${XDIR}"; sudo xray test -confdir "$XDIR" || warn "配置测试失败"; else warn "未找到 ${XDIR}"; fi
   else warn "未安装 xray，无法测试"; fi
 }
 
 # -----------------------
-# 菜单
+# 菜单（带标题）
 # -----------------------
 main_menu(){
   ensure_dirs
   load_mirror
   while true; do
+    clear
+    cat <<'HEADER'
+===========================================
+   Proxym‑Easy VLESS 管理器 — 主控面板
+   仓库: Lanlan13-14/Proxym-Easy
+   脚本位置: /usr/local/bin/proxym-scripts
+===========================================
+HEADER
+
     cat <<'MENU'
 
 [1] 🔧 安装 Xray
-[2] ⚙️ 生成新配置
-[3] ▶️ 启动 Xray
-[4] ⏹️ 停止 Xray
-[5] 🔄 重启 Xray
-[6] 📊 查看状态
-[7] 📝 查看日志
-[8] 🚀 更新 Xray Core
-[9] ⏰ 设置 Cron 重启
-[10] 👁️ 查看 Cron 任务 (重启)
-[11] 🗑️ 删除 Cron (重启)
-[12] 🖨️ 打印 VLESS URI
-[13] 🔄 更新脚本（主脚本 + 子脚本）
-[14] 🗑️ 卸载
-[15] 📝 编辑配置
-[16] 🧪 测试配置
-[17] 🔄 设置 Cron 重置 UUID/密码
-[18] 👁️ 查看 Cron 任务 (重置)
-[19] 🗑️ 删除 Cron (重置)
-[20] 📤 管理推送设置
-[21] 📁 子脚本安装/更新/删除
-[22] 📂 列出 inbounds 文件
-[23] 🔼 上传单个/全部
-[24] 🔽 删除已上传单个/全部
-[25] 🔧 安装依赖
-[26] 🌐 镜像设置（拉取脚本时套加速）
-[27] ♻️ proxym-easy reset（重置所有）
+[2] ⚙️ 生成新配置（仅基础配置，不含入站）
+[3] ➕ 添加节点（选择 Reality / x25519 / mlkem）
+[4] ▶️ 启动 Xray
+[5] ⏹️ 停止 Xray
+[6] 🔄 重启 Xray
+[7] 📊 查看状态
+[8] 📝 打印 VLESS URI
+[9] 📁 子脚本安装/更新/删除
+[10] ♻️ proxym-easy reset（重置所有）
+[11] 🌐 镜像设置（拉取脚本时套加速）
+[12] 🧪 检查/更新 Xray Core
+[13] 🗑️ 卸载 子脚本
+[14] 📝 编辑配置
+[15] 🧪 测试配置
+[16] ⏰ 设置 Cron 重启
+[17] 👁️ 查看 Cron 任务 (重启)
+[18] 🗑️ 删除 Cron (重启)
+[19] 🔄 设置 Cron 重置 UUID/密码
+[20] 👁️ 查看 Cron 任务 (重置)
+[21] 🗑️ 删除 Cron (重置)
+[22] 📤 管理推送设置
 [0] 退出
 
 MENU
-    read -p "选择 [0-27]: " opt
+    read -p "选择 [0-22]: " opt
     case "$opt" in
       1) install_xray 1 false false ;;
       2) generate_new_config ;;
-      3) start_xray ;;
-      4) stop_xray ;;
-      5) restart_xray ;;
-      6) status_xray ;;
-      7) logs_xray ;;
-      8) update_xray_core ;;
-      9) set_cron_restart ;;
-      10) list_cron_restart ;;
-      11) delete_cron_restart ;;
-      12) print_vless_uris ;;
-      13) self_update ;;   # 同时更新主子脚本
-      14) uninstall ;;
-      15) edit_config ;;
-      16) test_config ;;
-      17) set_cron_reset ;;
-      18) list_cron_reset ;;
-      19) delete_cron_reset ;;
-      20)
+      3) add_node_menu ;;
+      4) start_xray ;;
+      5) stop_xray ;;
+      6) restart_xray ;;
+      7) status_xray ;;
+      8) print_vless_uris ;;
+      9) children_menu ;;
+      10) proxym_easy_reset_all ;;
+      11)
+         echo "当前镜像前缀: ${MIRROR_PREFIX:-(未设置)}"
+         read -p "输入镜像前缀（留空取消）: " prefix
+         if [ -n "$prefix" ]; then
+           echo -n "$prefix" | sudo tee "$MIRROR_CONF" >/dev/null
+           info "已保存镜像前缀: $prefix"
+         else
+           sudo tee "$MIRROR_CONF" >/dev/null <<< ""
+           info "已清除镜像前缀，恢复直接拉取 raw"
+         fi
+         ;;
+      12) update_xray_core ;;
+      13) remove_children ;;
+      14) edit_config ;;
+      15) test_config ;;
+      16) set_cron_restart ;;
+      17) list_cron_restart ;;
+      18) delete_cron_restart ;;
+      19) set_cron_reset ;;
+      20) list_cron_reset ;;
+      21) delete_cron_reset ;;
+      22)
          while true; do
            cat <<PUSH
 [1] 列出推送映射
 [2] 添加映射
-[3] 修改映射
-[4] 删除映射
-[5] 返回
+[3] 删除映射
+[4] 上传单个
+[5] 上传全部
+[6] 删除已上传单个
+[7] 删除已上传全部
+[8] 返回
 PUSH
-           read -p "选择 [1-5]: " p
+           read -p "选择 [1-8]: " p
            case "$p" in
              1) list_uris_tokens ;;
              2) set_uri_token ;;
-             3) modify_push_setting ;; # 若未定义，可用 set_uri_token + delete_uri_token 替代
-             4) delete_uri_token ;;
-             5) break ;;
+             3) delete_uri_token ;;
+             4) upload_single_impl ;;
+             5) upload_all_impl ;;
+             6) delete_uploaded_single_impl ;;
+             7) delete_all_uploaded_impl ;;
+             8) break ;;
              *) warn "无效选项" ;;
            esac
          done
-         ;;
-      21)
-         echo "[1] 安装子脚本"
-         echo "[2] 更新子脚本"
-         echo "[3] 删除子脚本"
-         read -p "选择 [1-3]: " c
-         case "$c" in
-           1) install_children ;;
-           2) update_children ;;
-           3) remove_children ;;
-           *) warn "无效选项" ;;
-         esac
-         ;;
-      22) list_inbounds ;;
-      23)
-         echo "[1] 上传单个"
-         echo "[2] 上传全部"
-         read -p "选择 [1/2]: " u
-         if [ "$u" = "1" ]; then upload_single_impl; else upload_all_impl; fi
-         ;;
-      24)
-         echo "[1] 删除已上传单个"
-         echo "[2] 删除已上传全部"
-         read -p "选择 [1/2]: " d
-         if [ "$d" = "1" ]; then delete_uploaded_single_impl; else delete_all_uploaded_impl; fi
-         ;;
-      25)
-         read -p "是否强制更新并安装所有依赖? (y/N): " f
-         if [[ $f =~ ^[Yy]$ ]]; then install_dependencies true; else install_dependencies false; fi
-         ;;
-      26) manage_mirror ;;
-      27)
-         proxym_easy_reset_all
          ;;
       0) info "退出"; exit 0 ;;
       *) warn "无效选项" ;;
@@ -623,6 +636,7 @@ handle_cli_invocation(){
     restart) restart_xray ;;
     state|status) status_xray ;;
     reset) proxym_easy_reset_all ;;
+    update-xray) update_xray_core ;;
     *) warn "未知命令: $cmd"; return 2 ;;
   esac
   exit 0
