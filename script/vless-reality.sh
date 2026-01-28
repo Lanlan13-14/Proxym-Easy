@@ -1,150 +1,162 @@
-#!/usr/bin/env bash
-# vless-reality.sh
-# 作用：交互式添加 VLESS+Reality 入站（写入 /etc/xray 顶层 JSON 文件）
-set -euo pipefail
-export LC_ALL=C.UTF-8
+#!/bin/bash
+# VLESS+Reality 配置管理工具
+# 功能: 1.生成配置 2.查看URI 3.重置UUID
+CONFIG_DIR="/etc/xray"
+URI_FILE="/etc/proxym-easy/uri.json"
+mkdir -p "$CONFIG_DIR"
+mkdir -p "$(dirname "$URI_FILE")"
 
-XRAY_DIR="/etc/xray"
-URI_DIR="/etc/proxym-easy"
-URI_FILE="${URI_DIR}/uri.json"
-VLESS_JSON="/etc/proxym/vless.json"
-PROTOCOL="reality"
+# 默认 SNI
+DEFAULT_SNI="mensura.cdn-apple.com"
 
-# 简略国家映射（可后续扩展）
-declare -A FLAGS=([CN]="🇨🇳" [US]="🇺🇸")
-
-ensure_dirs(){
-  sudo mkdir -p "$XRAY_DIR" "$URI_DIR" "$(dirname "$VLESS_JSON")"
-  sudo touch "$URI_FILE" "$VLESS_JSON" 2>/dev/null || true
-  if [ ! -s "$URI_FILE" ]; then echo "[]" | sudo tee "$URI_FILE" >/dev/null; fi
-  if [ ! -s "$VLESS_JSON" ]; then echo "[]" | sudo tee "$VLESS_JSON" >/dev/null; fi
+# 获取本机 IPv4（优先）
+get_ipv4() {
+    ip -4 addr show scope global | grep inet | awk '{print $2}' | cut -d/ -f1 | head -n1
 }
 
-generate_uuid(){
-  if command -v xray >/dev/null 2>&1; then xray uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid; else cat /proc/sys/kernel/random/uuid; fi
+# 生成数字编号
+get_existing_numbers() {
+    local nums=()
+    for f in "$CONFIG_DIR"/*.json; do
+        [[ -e "$f" ]] || continue
+        name=$(basename "$f" .json)
+        num=$(echo "$name" | grep -o '^[0-9]\+')
+        nums+=("$num")
+    done
+    echo "${nums[@]}"
 }
 
-list_used_numbers(){
-  find "$XRAY_DIR" -maxdepth 1 -type f -name '[0-9]*' -printf '%f\n' 2>/dev/null | sed -n 's/^\([0-9]\+\).*/\1/p' | sort -u
+choose_number() {
+    local existing=($(get_existing_numbers))
+    while true; do
+        read -rp "请输入数字编号（不能与现有重复，默认最大+1）: " NUM_INPUT
+        if [[ -z "$NUM_INPUT" ]]; then
+            max=0
+            for n in "${existing[@]}"; do ((n>max)) && max=$n; done
+            NUM=$((max+1))
+            break
+        fi
+        if ! [[ "$NUM_INPUT" =~ ^[0-9]+$ ]]; then
+            echo "❌ 必须输入正整数"; continue
+        fi
+        duplicate=false
+        for n in "${existing[@]}"; do [[ "$NUM_INPUT" -eq "$n" ]] && duplicate=true && break; done
+        if $duplicate; then echo "❌ 编号已存在"; continue; fi
+        NUM=$NUM_INPUT
+        break
+    done
 }
 
-tag_exists(){
-  local tag="$1"
-  # search for tag in existing json files
-  for f in "$XRAY_DIR"/*.json; do
-    [ -e "$f" ] || continue
-    if grep -q "\"tag\"[[:space:]]*:[[:space:]]*\"${tag}\"" "$f" 2>/dev/null; then
-      return 0
-    fi
-  done
-  return 1
-}
+# 生成配置
+generate_config() {
+    choose_number
+    read -rp "请输入监听端口 (默认443): " PORT
+    PORT=${PORT:-443}
+    read -rp "请输入伪装域名/SNI (默认 $DEFAULT_SNI): " SNI
+    SNI=${SNI:-$DEFAULT_SNI}
+    UUID=$(cat /proc/sys/kernel/random/uuid)
+    PUB_KEY=$(head -c 32 /dev/urandom | xxd -p)
+    SHORTID="shortid1"
+    OUT_FILE="$CONFIG_DIR/${NUM}-vless-${PORT}.json"
 
-append_uri(){
-  local name="$1"
-  local uri="$2"
-  local tmp
-  tmp=$(mktemp)
-  sudo jq --arg name "$name" --arg uri "$uri" '. += [{"name":$name,"uri":$uri}]' "$URI_FILE" > "$tmp" && sudo mv "$tmp" "$URI_FILE"
-}
-
-write_inbound_file(){
-  local prefix="$1" proto="$2" port="$3" uuid="$4" dest="$5" sni="$6" privateKey="$7" shortId="$8" fp="$9"
-  local tag="${prefix}-${proto}-${port}"
-  local fname="${prefix}-${proto}-${port}.json"
-  # build inbound JSON
-  local json
-  json=$(jq -n \
-    --arg tag "$tag" \
-    --arg port "$port" \
-    --arg uuid "$uuid" \
-    --arg dest "$dest" \
-    --arg sni "$sni" \
-    --arg privateKey "$privateKey" \
-    --arg shortId "$shortId" \
-    --arg fp "$fp" \
-    '{
-      "inbounds":[
-        {
-          "tag": $tag,
-          "port": ($port|tonumber),
-          "protocol": "vless",
-          "settings": { "clients":[{"id":$uuid}], "decryption":"none" },
-          "streamSettings": { "network":"tcp", "security":"reality", "realitySettings": { "dest": $dest, "serverNames": [$sni], "privateKey": $privateKey, "shortIds": [$shortId], "fingerprint": $fp } }
+    cat > "$OUT_FILE" <<EOF
+{
+  "inbounds": [
+    {
+      "port": $PORT,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "$UUID",
+            "flow": "xtls-rprx-vision",
+            "email": "user@example.com"
+          }
+        ],
+        "decryption": "none",
+        "fallbacks": []
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": "$PUB_KEY",
+          "shortIds": ["$SHORTID"],
+          "serverName": "$SNI"
         }
-      ]
-    }')
-  echo "$json" | sudo tee "${XRAY_DIR}/${fname}" >/dev/null
-  echo "${fname}"
+      }
+    }
+  ]
+}
+EOF
+    echo "✅ 配置生成完成: $OUT_FILE"
+    generate_uri "$OUT_FILE" "$NUM"
 }
 
-main(){
-  ensure_dirs
-  echo "添加 VLESS+Reality 节点"
-
-  echo "当前已用数字前缀："
-  list_used_numbers || true
-
-  read -r -p "输入数字前缀（例如 01）: " prefix
-  prefix=${prefix:-01}
-  # validate numeric
-  if ! echo "$prefix" | grep -qE '^[0-9]+$'; then
-    echo "前缀必须为数字"
-    exit 1
-  fi
-
-  read -r -p "端口 (默认 443): " port
-  port=${port:-443}
-
-  read -r -p "dest (host:port) [默认 127.0.0.1:443]: " dest
-  dest=${dest:-127.0.0.1:443}
-
-  read -r -p "SNI（留空使用 dest 主机）: " sni
-  if [ -z "$sni" ]; then sni=$(echo "$dest" | cut -d: -f1); fi
-
-  read -r -p "fingerprint (默认 chrome): " fp
-  fp=${fp:-chrome}
-
-  tag="${prefix}-${PROTOCOL}-${port}"
-  if tag_exists "$tag"; then
-    echo "检测到相同 tag 已存在: $tag，请更换前缀或端口"
-    exit 1
-  fi
-
-  uuid=$(generate_uuid)
-  shortid=$(head -c6 /dev/urandom | xxd -p -c6 2>/dev/null || date +%s)
-
-  # try to get privateKey via xray if available
-  privateKey=""
-  if command -v xray >/dev/null 2>&1; then
-    out=$(xray x25519 2>/dev/null || true)
-    privateKey=$(echo "$out" | sed -n 's/.*PrivateKey: *//p' | tr -d '\r\n' || true)
-  fi
-
-  fname=$(write_inbound_file "$prefix" "$PROTOCOL" "$port" "$uuid" "$dest" "$sni" "$privateKey" "$shortid" "$fp")
-  # build URI
-  server=$(hostname -f 2>/dev/null || hostname)
-  name="${FLAGS[CN]:-🌍} ${prefix}-${PROTOCOL}-${port}"
-  name_enc=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$name" 2>/dev/null || printf '%s' "$name")
-  sni_enc=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$sni" 2>/dev/null || printf '%s' "$sni")
-  uri="vless://${uuid}@${server}:${port}?type=tcp&security=reality&encryption=none&sni=${sni_enc}&fp=${fp}&sid=${shortid}#${name_enc}"
-
-  # append to /etc/proxym-easy/uri.json
-  append_uri "$name" "$uri"
-
-  # append to /etc/proxym/vless.json (metadata)
-  tmp=$(mktemp)
-  jq -n --arg uuid "$uuid" --arg port "$port" --arg tag "$name" --arg uri "$uri" --arg proto "$PROTOCOL" --arg prefix "$prefix" \
-    '{uuid:$uuid,port:($port|tonumber),tag:$tag,uri:$uri,protocol:$proto,prefix:$prefix}' > "$tmp"
-  # merge into vless.json
-  tmp2=$(mktemp)
-  sudo jq --argfile n "$tmp" '. += [$n]' "$VLESS_JSON" > "$tmp2" 2>/dev/null || (cat "$tmp" > "$VLESS_JSON" && tmp2="$VLESS_JSON")
-  sudo mv "$tmp2" "$VLESS_JSON" 2>/dev/null || true
-  rm -f "$tmp"
-
-  echo "已写入入站文件: ${XRAY_DIR}/${fname}"
-  echo "URI: $uri"
-  echo "提示：请运行 'sudo xray test -confdir /etc/xray' 验证配置，或重启 Xray：sudo systemctl restart xray"
+# 生成 URI 并保存
+generate_uri() {
+    local file="$1"
+    local num="$2"
+    local ip=$(get_ipv4)
+    local json=$(cat "$file")
+    local uuid=$(echo "$json" | grep '"id":' | head -n1 | awk -F'"' '{print $4}')
+    local pub=$(echo "$json" | grep '"show":' | head -n1 | awk -F'"' '{print $4}')
+    local port=$(echo "$json" | grep '"port":' | head -n1 | awk -F'[:,]' '{gsub(/ /,"",$2); print $2}')
+    local sni=$(echo "$json" | grep '"serverName":' | head -n1 | awk -F'"' '{print $4}')
+    
+    # 节点名称 tag: 国家缩写+城市-数字（简单用本机IP替代地区）
+    COUNTRY="CN"
+    CITY=$(curl -s https://ipapi.co/$ip/city || echo "Unknown")
+    NODE_NAME="${COUNTRY}${CITY}-${num}"
+    
+    # URI 拼接
+    URI="vless://${uuid}@${ip}:${port}?type=tcp&security=reality&encryption=none&pbk=${pub}&sni=${sni}#${NODE_NAME}"
+    URI_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$URI'''))")
+    
+    # 保存
+    if [[ ! -f "$URI_FILE" ]]; then echo "[]" > "$URI_FILE"; fi
+    jq ". += [\"$URI\"]" "$URI_FILE" > "$URI_FILE.tmp" && mv "$URI_FILE.tmp" "$URI_FILE"
+    echo "✅ URI 已生成并保存: $URI_FILE"
 }
 
-main "$@"
+# 查看所有 URI
+view_uri() {
+    if [[ ! -f "$URI_FILE" ]]; then
+        echo "❌ URI 文件不存在"
+        return
+    fi
+    echo "==== 已生成 URI ===="
+    cat "$URI_FILE" | jq -r '.[]'
+}
+
+# 重置 UUID
+reset_uuid() {
+    echo "可用配置文件:"
+    ls "$CONFIG_DIR"/*.json | nl
+    read -rp "选择文件序号重置UUID: " idx
+    file=$(ls "$CONFIG_DIR"/*.json | sed -n "${idx}p")
+    if [[ -z "$file" ]]; then echo "❌ 文件不存在"; return; fi
+    new_uuid=$(cat /proc/sys/kernel/random/uuid)
+    sed -i "s/\"id\": \".*\"/\"id\": \"$new_uuid\"/" "$file"
+    # 更新 URI
+    num=$(basename "$file" | grep -o '^[0-9]\+')
+    generate_uri "$file" "$num"
+    echo "✅ UUID 已重置: $new_uuid"
+}
+
+# 菜单
+while true; do
+    echo "==== VLESS+Reality 管理 ===="
+    echo "1. 生成配置"
+    echo "2. 查看 URI"
+    echo "3. 重置 UUID"
+    echo "0. 退出"
+    read -rp "选择操作: " choice
+    case $choice in
+        1) generate_config ;;
+        2) view_uri ;;
+        3) reset_uuid ;;
+        0) exit 0 ;;
+        *) echo "❌ 无效选项" ;;
+    esac
+done
