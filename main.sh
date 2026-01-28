@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# vless-manager.sh - Proxym-Easy 主控脚本（完整）
-# 说明：运行需 sudo 权限。管理 Xray、子脚本、生成 main.json/dns.json、添加节点、reset 等。
+# vless-manager.sh - Proxym-Easy 主控脚本（完整、已修正）
+# 说明：运行需 sudo 权限。管理 Xray、子脚本、生成 main.json/dns.json、添加节点、reset、卸载等。
 set -euo pipefail
 export LC_ALL=C.UTF-8
 
@@ -21,6 +21,7 @@ URIS_TOKENS="/etc/proxym/uris_tokens.json"
 MIRROR_CONF="/etc/proxym/mirror.conf"
 XRAY_SERVICE_NAME="xray"
 LOG_FILE="/var/log/xray/access.log"
+MAIN_SCRIPT_PATH="${LOCAL_SCRIPT_DIR}/vless-manager.sh"  # if installed here
 
 # -----------------------
 # 颜色与符号
@@ -352,7 +353,13 @@ EOF
 list_inbounds(){
   ensure_dirs
   echo "inbounds 文件 (${XRAY_DIR}):"
-  ls -1 "${XRAY_DIR}"/*.json 2>/dev/null | sed -n '/inbound/p' || echo "(无入站文件或未命名为 inbound-*)"
+  # 列出包含 inbounds 的文件或以 inbound/ vless- 前缀命名的文件
+  for f in "${XRAY_DIR}"/*.json; do
+    [ -e "$f" ] || continue
+    if grep -q '"inbounds"' "$f" 2>/dev/null || echo "$f" | grep -q -E 'inbound|vless'; then
+      echo " - $(basename "$f")"
+    fi
+  done
 }
 
 delete_inbound_file(){
@@ -503,7 +510,87 @@ test_config(){
 }
 
 # -----------------------
-# 菜单（带标题）
+# 打印 VLESS URIs（从 /etc/proxym/vless.json）
+# -----------------------
+print_vless_uris(){
+  ensure_dirs
+  if [ ! -f "$VLESS_JSON" ]; then
+    echo "无 vless.json 文件。"
+    return
+  fi
+  jq -r '.[] | "Name: \(.tag // \"-\")\nURI: \(.uri // \"-\")\n---"' "$VLESS_JSON" 2>/dev/null || echo "(无节点或格式不正确)"
+}
+
+# -----------------------
+# 卸载模块（两种模式）
+# -----------------------
+uninstall_all_scripts_only(){
+  ensure_dirs
+  echo "即将卸载：主脚本、子脚本、/etc/proxym 数据（但保留 Xray 与 /etc/xray 配置）"
+  read -p "确认卸载全部脚本与 proxym 数据？(y/N): " yn
+  yn=${yn:-N}
+  if [[ $yn =~ ^[Yy]$ ]]; then
+    sudo rm -rf "$LOCAL_SCRIPT_DIR"
+    sudo rm -f "$MAIN_SCRIPT_PATH"
+    sudo rm -rf /etc/proxym
+    log "已删除子脚本、主脚本（若位于 ${MAIN_SCRIPT_PATH}）与 /etc/proxym 数据。"
+  else
+    log "已取消。"
+  fi
+}
+
+uninstall_everything_including_xray(){
+  ensure_dirs
+  echo "彻底卸载：Xray、主脚本、子脚本、/etc/xray、/etc/proxym 等全部数据"
+  read -p "确认彻底卸载并删除 Xray 与所有配置？(y/N): " yn
+  yn=${yn:-N}
+  if [[ $yn =~ ^[Yy]$ ]]; then
+    # 停止并禁用服务（如果存在）
+    if systemctl list-unit-files | grep -q "^${XRAY_SERVICE_NAME}"; then
+      sudo systemctl stop "${XRAY_SERVICE_NAME}" || true
+      sudo systemctl disable "${XRAY_SERVICE_NAME}" || true
+      sudo rm -f "/etc/systemd/system/${XRAY_SERVICE_NAME}.service" || true
+      sudo systemctl daemon-reload || true
+    fi
+    # 尝试使用包管理器卸载 xray（按常见包名）
+    pkgmgr=$(detect_package_manager)
+    case "$pkgmgr" in
+      apt) sudo apt remove --purge -y xray || true; sudo apt autoremove -y || true ;;
+      dnf) sudo dnf remove -y xray || true ;;
+      yum) sudo yum remove -y xray || true ;;
+      apk) sudo apk del xray || true ;;
+      pacman) sudo pacman -Rns --noconfirm xray || true ;;
+      *) warn "未识别包管理器，未自动卸载 xray，请手动卸载。" ;;
+    esac
+    # 删除文件与目录
+    sudo rm -rf "$LOCAL_SCRIPT_DIR"
+    sudo rm -f "$MAIN_SCRIPT_PATH"
+    sudo rm -rf /etc/proxym
+    sudo rm -rf /etc/xray
+    sudo rm -rf /var/log/xray
+    log "已尝试卸载 Xray 并删除所有相关文件与配置。请手动检查残留服务或文件。"
+  else
+    log "已取消。"
+  fi
+}
+
+# -----------------------
+# 子脚本安装/更新/删除（菜单入口）
+# -----------------------
+manage_children_menu(){
+  ensure_dirs
+  echo "[1] 安装/更新 子脚本"
+  echo "[2] 删除 子脚本"
+  read -p "选择 [1-2]: " c
+  case "$c" in
+    1) install_children ;;
+    2) remove_children ;;
+    *) warn "无效选项" ;;
+  esac
+}
+
+# -----------------------
+# 菜单（带标题，包含卸载选项）
 # -----------------------
 main_menu(){
   ensure_dirs
@@ -536,10 +623,11 @@ HEADER
 [14] 🧪 测试配置
 [15] ⏰ Cron 管理（重启/重置）
 [16] 📤 管理推送（upload）
+[17] 🗑️ 卸载（脚本 / Xray）
 [0] 退出
 
 MENU
-    read -p "选择 [0-16]: " opt
+    read -p "选择 [0-17]: " opt
     case "$opt" in
       1) install_xray 1 false false ;;
       2)
@@ -554,16 +642,7 @@ MENU
       6) restart_xray ;;
       7) status_xray ;;
       8) print_vless_uris ;;
-      9)
-         echo "[1] 安装/更新 子脚本"
-         echo "[2] 删除 子脚本"
-         read -p "选择 [1-2]: " c
-         case "$c" in
-           1) install_children ;;
-           2) remove_children ;;
-           *) warn "无效选项" ;;
-         esac
-         ;;
+      9) manage_children_menu ;;
       10) proxym_easy_reset_all ;;
       11)
          echo "当前镜像前缀: ${MIRROR_PREFIX:-(未设置)}"
@@ -617,6 +696,16 @@ PUSH
            esac
          done
          ;;
+      17)
+         echo "[1] 卸载全部脚本（保留 Xray 与 /etc/xray）"
+         echo "[2] 卸载 Xray 及全部脚本与配置（彻底）"
+         read -p "选择 [1-2]: " u
+         case "$u" in
+           1) uninstall_all_scripts_only ;;
+           2) uninstall_everything_including_xray ;;
+           *) warn "无效选项" ;;
+         esac
+         ;;
       0) info "退出"; exit 0 ;;
       *) warn "无效选项" ;;
     esac
@@ -639,6 +728,8 @@ handle_cli_invocation(){
     state|status) status_xray ;;
     reset) proxym_easy_reset_all ;;
     update-xray) update_xray_core ;;
+    uninstall-scripts) uninstall_all_scripts_only ;;
+    uninstall-all) uninstall_everything_including_xray ;;
     *) warn "未知命令: $cmd"; return 2 ;;
   esac
   exit 0
