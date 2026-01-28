@@ -144,7 +144,7 @@ install_xray() {
 
     if command -v xray &> /dev/null && [ "$is_update" = false ]; then
         log "Xray 已安装。"
-        if [ \( pause -eq 1 ] && [ " \){NON_INTERACTIVE:-}" != "true" ]; then read -p "按 Enter 返回菜单..."; fi
+        if [ "\( {pause}" -eq 1 ] && [ " \){NON_INTERACTIVE:-}" != "true" ]; then read -p "按 Enter 返回菜单..."; fi
         return 0
     else
         install_dependencies "$force_deps"
@@ -170,7 +170,7 @@ install_xray() {
 
         if command -v xray &> /dev/null; then restart_xray 0 || true; fi
 
-        if [ \( pause -eq 1 ] && [ " \){NON_INTERACTIVE:-}" != "true" ]; then read -p "按 Enter 返回菜单..."; fi
+        if [ "\( {pause}" -eq 1 ] && [ " \){NON_INTERACTIVE:-}" != "true" ]; then read -p "按 Enter 返回菜单..."; fi
     fi
 }
 
