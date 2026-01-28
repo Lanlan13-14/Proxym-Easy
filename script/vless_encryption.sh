@@ -6,6 +6,7 @@
 # - add_vless 支持：添加完一种类型节点后继续添加另一种；若发现与现有节点冲突，询问用户是覆盖、附加还是跳过
 # - regenerate_full_config 在生成前交互式询问两个 DNS（直接回车使用默认 1.1.1.1 / 8.8.8.8）
 # - 生成的 tag 格式为: 国旗 + 空格 + 国家缩写 + 空格 + 城市（例如: 🇭🇰 HKG Hong Kong），并在 URI 中进行 URL 编码
+# - 修复了城市包含空格导致的变量分割问题（使用 '|' 分隔 get_location_from_ip 输出并用 IFS='|' 读取）
 # - 保持与主脚本兼容的函数名与行为
 
 set -euo pipefail
@@ -137,23 +138,24 @@ generate_random_port() {
   fi
 }
 
-# get_location_from_ip（保留原实现）
+# get_location_from_ip（改为用 '|' 分隔输出，避免城市包含空格导致 read 分割问题）
 get_location_from_ip() {
   local ip=$1
   local location_info
   location_info=$(curl -s --max-time 8 "http://ip-api.com/json/$ip?fields=status,message,countryCode,city" 2>/dev/null || echo "")
   if [ -z "$location_info" ] || echo "$location_info" | grep -q '"status":"fail"'; then
-    echo "Unknown" "Unknown"
+    echo "Unknown|Unknown"
     return
   fi
   local country city
   country=$(echo "$location_info" | grep -o '"countryCode":"[^"]*"' | sed 's/.*"countryCode":"\([^"]*\)".*/\1/')
   city=$(echo "$location_info" | grep -o '"city":"[^"]*"' | sed 's/.*"city":"\([^"]*\)".*/\1/')
   if [ -z "$country" ] || [ -z "$city" ]; then
-    echo "Unknown" "Unknown"
+    echo "Unknown|Unknown"
     return
   fi
-  echo "$country" "$city"
+  # 使用 '|' 分隔，确保城市中包含空格也能完整读取
+  echo "${country}|${city}"
 }
 
 # 生成节点信息（与主脚本兼容）
@@ -187,8 +189,8 @@ generate_node_info() {
   "fingerprint": "$fingerprint",
   "is_custom_tag": $is_custom,
   "push_enabled": $push_enabled,
-  "push_url": $push_url,
-  "push_token": $push_token,
+  "push_url": "$push_url",
+  "push_token": "$push_token",
   "serverNames": $servernames_json,
   "privateKey": "$private_key",
   "kex": "$kex",
@@ -214,8 +216,8 @@ EOF
   "fingerprint": "$fingerprint",
   "is_custom_tag": $is_custom,
   "push_enabled": $push_enabled,
-  "push_url": $push_url,
-  "push_token": $push_token,
+  "push_url": "$push_url",
+  "push_token": "$push_token",
   "kex": "$kex",
   "method": "$method",
   "rtt": "$rtt",
@@ -263,7 +265,10 @@ find_conflicting_node() {
   fi
   # 精确匹配 domain/ip+port 或 tag
   local idx
-  idx=$(jq -r --arg s "$server" --arg p "$port" --arg t "$tag" 'to_entries[] | select((.value.domain == $s or .value.ip == $s) and (.value.port|tostring == $p) or (.value.tag == $t)) | .key' "$VLESS_JSON" 2>/dev/null || true)
+  idx=$(jq -r --arg s "$server" --arg p "$port" --arg t "$tag" '
+    to_entries[]
+    | select(((.value.domain == $s) or (.value.ip == $s)) and ((.value.port|tostring) == $p) or (.value.tag == $t))
+    | .key' "$VLESS_JSON" 2>/dev/null || true)
   if [ -n "$idx" ]; then
     echo "$idx"
     return 0
@@ -348,14 +353,14 @@ add_vless() {
 
     suggested_country="Unknown"; suggested_city="Unknown"; suggested_country_code=""
     if [ -n "$probe_ip" ]; then
-      read suggested_country suggested_city <<< "$(get_location_from_ip "$probe_ip" || echo "Unknown Unknown")"
+      IFS='|' read -r suggested_country suggested_city <<< "$(get_location_from_ip "$probe_ip" || echo "Unknown|Unknown")"
       suggested_country_code="$suggested_country"
     fi
 
     suggested_country_short="${suggested_country_code}"
     read -p "国家代码（ISO alpha-2，建议: ${suggested_country_code:-HK}）: " country_code
     country_code=${country_code:-$suggested_country_code}
-    country_code_upper=$(echo "$country_code" | tr '[:lower:]' '[:upper:]')
+    country_code_upper=$(echo "${country_code:-}" | tr '[:lower:]' '[:upper:]')
 
     read -p "国家缩写（显示用，例如 HKG, TWN，留空使用 ${suggested_country_short:-$country_code_upper}）: " country_short
     country_short=${country_short:-${suggested_country_short:-$country_code_upper}}
@@ -364,7 +369,79 @@ add_vless() {
     city=${city:-$suggested_city}
 
     # 生成 tag
-    flag="${FLAGS[$country_code_upper]:-🌍}"
+    flag="${FLAGS[${country_code_upper}]:-🌍}"
+    tag="${flag} ${country_short} ${city}"
+    tag_encoded=$(url_encode "$tag")
+
+    # encryption/decryption 默认 none（保留原逻辑）
+    decryption="none"; encryption="none"
+
+    # 生成 URI 参数
+    uri_params="type=${network}&encryption=${encryption}&packetEncoding=xudp"
+    if [ "$network" = "ws" ]; then
+      uri_params="${uri_params}&path=$(url_encode "$path")"
+      if [ -n "$host" ]; then uri_params="${uri_params}&host=$(url_encode "$host")"; fi
+    fi
+    if [ "$security" = "tls" ]; then
+      if [ -n "$sni" ]; then uri_params="${uri_params}&security=tls&sni=$(url_encode "$sni")&fp=chrome"
+      else uri_params="${uri_params}&security=tls&fp=chrome"; fi
+    else
+      uri_params="${uri_params}&security=none"
+    fi
+
+    server_address="$server_addr"
+    if [[ "$server_address" =~ : ]] && ! [[ "$server_address" =~ \[.*\] ]]; then server_address="[$server_address]"; fi
+
+    uri="vless://${uuid}@${server_address}:${port}?${uri_params uuid=$(xray uuid); else uuid=$(cat /proc/sys/kernel/random/uuid); fi
+    fi
+
+    # network/path/host
+    read -p "网络类型 (tcp/ws) [ws]: " network
+    network=${network:-ws}
+    path=""; host=""
+    if [ "$network" = "ws" ]; then
+      read -p "Path (留空自动生成): " path
+      if [ -z "$path" ]; then path="/$(generate_random_path)"; fi
+      read -p "Host (留空使用域名或 IP): " host
+      if [ -z "$host" ]; then host="$server_addr"; fi
+    fi
+
+    # TLS/SNI
+    read -p "是否启用 TLS? (y/N): " use_tls
+    if [[ $use_tls =~ ^[Yy]$ ]]; then
+      security="tls"
+      read -p "SNI（留空使用域名）: " sni
+    else
+      security="none"
+      sni=""
+    fi
+
+    # 国家/城市/国家缩写自动检测并确认
+    probe_ip="$resolved_ipv4"
+    if [ -z "$probe_ip" ]; then
+      if [[ "$server_addr" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then probe_ip="$server_addr"; else probe_ip=$(resolve_ipv4_for "$server_addr" || true); fi
+    fi
+    if [ -z "$probe_ip" ]; then probe_ip="$(detect_public_ipv4 || true)"; fi
+
+    suggested_country="Unknown"; suggested_city="Unknown"; suggested_country_code=""
+    if [ -n "$probe_ip" ]; then
+      IFS='|' read -r suggested_country suggested_city <<< "$(get_location_from_ip "$probe_ip" || echo "Unknown|Unknown")"
+      suggested_country_code="$suggested_country"
+    fi
+
+    suggested_country_short="${suggested_country_code}"
+    read -p "国家代码（ISO alpha-2，建议: ${suggested_country_code:-HK}）: " country_code
+    country_code=${country_code:-$suggested_country_code}
+    country_code_upper=$(echo "${country_code:-}" | tr '[:lower:]' '[:upper:]')
+
+    read -p "国家缩写（显示用，例如 HKG, TWN，留空使用 ${suggested_country_short:-$country_code_upper}）: " country_short
+    country_short=${country_short:-${suggested_country_short:-$country_code_upper}}
+
+    read -p "城市（留空使用建议: ${suggested_city:-Unknown}）: " city
+    city=${city:-$suggested_city}
+
+    # 生成 tag
+    flag="${FLAGS[${country_code_upper}]:-🌍}"
     tag="${flag} ${country_short} ${city}"
     tag_encoded=$(url_encode "$tag")
 
@@ -401,9 +478,10 @@ add_vless() {
       if [ "$conflict_choice" = "1" ]; then
         # 覆盖：替换该索引
         tmpfile="$(mktemp)"
-        new_node_json=$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$server_addr" "$tag" "$uri" "$server_addr" "$network" "$path" "$host" "chrome" "false" "$use_reality" "" "$sni" "[]" "" "" "$push_enabled" "" "" "[]" "" "" "" "")
-        # jq 替换指定索引
-        jq --argjson n "$new_node_json" --arg idx "$conflict_idx" '(.['"$conflict_idx"'] ) = $n' "$VLESS_JSON" > "$tmpfile" && mv "$tmpfile" "$VLESS_JSON"
+        # 生成新的节点 JSON 字符串并用 jq 替换指定索引
+        new_node_json=$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$server_addr" "$tag" "$uri" "$server_addr" "$network" "$path" "$host" "chrome" "false" "$use_reality" "" "$sni" "[]" "" "" "false" "" "" "[]" "" "" "" "")
+        # new_node_json is a JSON string; use jq to replace element at index
+        jq --argjson n "$(echo "$new_node_json")" --arg idx "$conflict_idx" '(.['"$conflict_idx"']) = $n' "$VLESS_JSON" > "$tmpfile" && mv "$tmpfile" "$VLESS_JSON"
         log "已覆盖索引 $conflict_idx 的节点。"
       elif [ "$conflict_choice" = "2" ]; then
         # 附加
@@ -486,7 +564,6 @@ add_vless() {
       log "已添加新节点。"
     fi
 
-    # 如果启用了 push（在本流程中默认未启用），可在此处理（保留原逻辑）
     # 调用主脚本的 regenerate_full_config/restart_xray（如果存在）
     if declare -f regenerate_full_config >/dev/null 2>&1; then regenerate_full_config; fi
     if declare -f restart_xray >/dev/null 2>&1; then restart_xray; fi
@@ -551,6 +628,8 @@ reset_all() {
     if [ "$use_reality" = false ]; then
       if [ "$rtt" = "0rtt" ]; then time_server="600s"; else time_server="0s"; fi
       x25519_output=$(xray x25519 2>/dev/null || true)
+     s"; else time_server="0s"; fi
+      x25519_output=$(xray x25519 2>/dev/null || true)
       private=$(echo "$x25519_output" | grep -oP '(?<=PrivateKey:).*' | sed 's/^ *//;s/ *$//' || true)
       password=$(echo "$x25519_output" | grep -oP '(?<=Password:).*' | sed 's/^ *//;s/ *$//' || true)
       seed=""; client_param=""
@@ -578,7 +657,7 @@ reset_all() {
 
     tag=$(echo "$node" | jq -r '.tag // ""')
     if [ "$is_custom" = false ] || [ -z "$tag" ]; then
-      read country city <<< $(get_location_from_ip "$ip" || echo "Unknown Unknown")
+      IFS='|' read -r country city <<< "$(get_location_from_ip "$ip" || echo "Unknown|Unknown")"
       flag="${FLAGS[$country]:-🌍}"
       tag="${flag} ${city}"
     fi
