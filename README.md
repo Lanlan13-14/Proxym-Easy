@@ -64,6 +64,10 @@ VLESS Encryption+ws+tls传输推荐搭配[Cert-Easy](https://github.com/Lanlan13
 Reality域名选择推荐
 [点击查看](https://www.v2ray-agent.com/archives/1689439383686)
 >
+Openvpn简单脚本
+```
+curl -fsSL https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/openvpn.sh -o /usr/local/bin/openvpn-easy.sh && chmod +x /usr/local/bin/openvpn-easy.sh && ln -sf /usr/local/bin/openvpn-easy.sh /usr/local/bin/openvpn-easy && openvpn-easy
+```
 部分功能解答(可选)
 [点击查看](https://github.com/Lanlan13-14/Proxym-Easy/blob/main/script%2Fworker.md)
 >
