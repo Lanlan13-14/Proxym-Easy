@@ -1,10 +1,10 @@
 #!/bin/bash
 # OpenVPN 一键管理脚本 (静态密钥 + AES-128-GCM + 多客户端)
-# 安装后可通过 `openvpn-easy` 调出菜单
 
 OVPN_DIR="/etc/openvpn"
 SECRET_FILE="$OVPN_DIR/static.key"
 SERVER_CONF="$OVPN_DIR/server.conf"
+CLIENT_OVPN="$OVPN_DIR/client.ovpn"
 STATUS_LOG="$OVPN_DIR/status.log"
 SERVICE_NAME="openvpn-server@server.service"
 
@@ -44,7 +44,6 @@ uninstall_ovpn() {
         yum remove -y openvpn
     fi
     echo -e "${GREEN}卸载完成${NC}"
-    # 删除脚本自己
     SCRIPT_PATH="$(realpath "$0")"
     echo -e "${RED}删除脚本自身: $SCRIPT_PATH${NC}"
     rm -f "$SCRIPT_PATH"
@@ -116,7 +115,9 @@ generate_config() {
     read -p "请输入客户端连接地址 (域名或回车默认 $DEFAULT_SERVER_IP): " CLIENT_ADDR
     CLIENT_ADDR=${CLIENT_ADDR:-$DEFAULT_SERVER_IP}
 
+    # --------------------------
     # 生成服务端配置
+    # --------------------------
     cat > "$SERVER_CONF" <<EOF
 dev tun
 proto $PROTO
@@ -140,7 +141,9 @@ EOF
         done
     fi
 
+    # --------------------------
     # systemd 服务
+    # --------------------------
     if [ ! -f "/etc/systemd/system/$SERVICE_NAME" ]; then
         cat > /etc/systemd/system/$SERVICE_NAME <<EOF
 [Unit]
@@ -163,23 +166,27 @@ EOF
     systemctl restart "$SERVICE_NAME"
     echo -e "${GREEN}OpenVPN 服务已启动并设置开机自启${NC}"
 
-    # 生成客户端模板
-    CLIENT_TEMPLATE="$OVPN_DIR/client-template.ovpn"
-    cat > "$CLIENT_TEMPLATE" <<EOF
+    # --------------------------
+    # 生成客户端单文件模板（内嵌 static.key）
+    # --------------------------
+    cat > "$CLIENT_OVPN" <<EOF
 client
 dev tun
 proto $PROTO
 remote $CLIENT_ADDR $PORT
-secret static.key
 cipher AES-128-GCM
 auth SHA256
 persist-key
 persist-tun
 verb 3
+<secret>
 EOF
 
-    echo -e "${GREEN}客户端模板生成完成: $CLIENT_TEMPLATE${NC}"
-    echo -e "${GREEN}请将 $SECRET_FILE 和 client-template.ovpn 分发给客户端即可，服务器会自动分配 VPN 内网 IP${NC}"
+    cat "$SECRET_FILE" >> "$CLIENT_OVPN"
+    echo "</secret>" >> "$CLIENT_OVPN"
+
+    echo -e "${GREEN}客户端单文件模板生成完成: $CLIENT_OVPN${NC}"
+    echo -e "${GREEN}客户端只需要这一个文件即可连接 VPN，服务器会自动分配 VPN 内网 IP${NC}"
 }
 
 # --------------------------
