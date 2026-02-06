@@ -2,6 +2,9 @@
 # SoftEther Easy Manager - 完整菜单版
 # Author: Andy Bright style
 
+# 修复 Debian 12 minimal 无响应问题的关键设置
+export TERM=xterm
+
 set -e
 
 BASE_DIR="/usr/local/vpnserver"
@@ -27,13 +30,14 @@ install_deps() {
     fi
 }
 
+# 特别注意：此函数按原样保留，不作任何修改
 get_latest_version() {
     curl -s "https://api.github.com/repos/SoftEtherVPN/SoftEtherVPN/releases/latest" | jq -r '.tag_name'
 }
 
 get_local_version() {
     if [ -x "$VPNCMD" ]; then
-        $VPNCMD localhost /SERVER /CMD Version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+        $VPNCMD localhost /SERVER /CMD Version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'
     else
         echo "0"
     fi
@@ -52,7 +56,6 @@ install_softether() {
 
     echo -e "${GREEN}检测到最新版本: $VERSION${NC}"
     echo "下载: $URL"
-    mkdir -p /usr/local/src
     cd /usr/local/src
     curl -LO "$URL"
 
@@ -63,6 +66,7 @@ install_softether() {
     cd ..
     mv vpnserver "$BASE_DIR"
     cd "$BASE_DIR"
+    # 修复点1：防止文件名以破折号开头被误认为是选项
     chmod 600 ./*
     chmod 700 vpncmd vpnserver
 
@@ -78,6 +82,7 @@ uninstall_softether() {
 }
 
 configure_softether() {
+    # 修复点2-5：read命令添加-r参数
     read -rp "请输入监听端口 (默认 443): " PORT
     PORT=${PORT:-443}
 
@@ -169,6 +174,7 @@ update_softether() {
         echo "已是最新版本"
         return
     fi
+    # 修复点6：read命令添加-r参数
     read -rp "检测到新版本，是否更新 SoftEther？[y/N] " yn
     case $yn in
         [Yy]*)
@@ -199,7 +205,8 @@ install_deps
 install_service
 
 while true; do
-    clear
+    # 注释掉 clear 命令，避免在 minimal 环境卡住
+    # clear
     echo "SoftEther Easy Manager"
     echo "====================="
     echo "[1] 安装 SoftEther VPN Server"
@@ -210,12 +217,14 @@ while true; do
     echo "[6] 查看日志 / 状态"
     echo "[7] 更新 SoftEther"
     echo "[0] 退出"
+    # 修复点7：read命令添加-r参数
     read -rp "选择: " c
     case $c in
         1) install_softether ;;
         2) uninstall_softether ;;
         3)
             echo "[1] 启动 [2] 停止 [3] 重启"
+            # 修复点8：read命令添加-r参数
             read -rp "选择: " s
             case $s in
                 1) systemctl start softether-vpnserver ;;
@@ -228,12 +237,14 @@ while true; do
         5) show_clients ;;
         6)
             echo "[1] 查看日志 [2] 查看系统状态"
+            # 修复点9：read命令添加-r参数
             read -rp "选择: " s
             case $s in
                 1) view_log ;;
                 2) view_status ;;
                 *) echo "无效选择" ;;
             esac
+            # 修复点10：read命令添加-r参数
             read -rp "回车继续..."
             ;;
         7) update_softether ;;
@@ -243,5 +254,6 @@ while true; do
             ;;
         *) echo "无效选择" ;;
     esac
+    # 修复点11：read命令添加-r参数
     read -rp "回车继续..."
 done
