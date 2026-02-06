@@ -28,7 +28,7 @@ install_deps() {
 }
 
 get_latest_version() {
-    curl -s "https://api.github.com/repos/SoftEtherVPN/SoftEtherVPN_Stable/releases/latest" | jq -r '.tag_name' | sed 's/^v//'
+    curl -s "https://api.github.com/repos/SoftEtherVPN/SoftEtherVPN/releases/latest" | jq -r '.tag_name'
 }
 
 get_local_version() {
