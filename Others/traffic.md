@@ -13,7 +13,7 @@ wget https://ex-files.leikwanhost.com/traffic.sh && chmod +x traffic.sh && bash 
 ```
 And
 ```
-curl -fsSL https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/Others/traffic.sh -o ~/traffic.sh && chmod +x ~/traffic.sh && ln -sf ~/traffic.sh /usr/local/bin/traffic-easy && traffic-easy
+curl -fsSL https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/Others/traffic-easy.sh -o ~/traffic-easy.sh && chmod +x ~/traffic-easy.sh && ln -sf ~/traffic-easy.sh /usr/local/bin/traffic-easy && traffic-easy
 ```
 
 Explanation:
