@@ -237,12 +237,8 @@ update_script() {
         return 1
     fi
 
-    # 备份当前脚本
-    local backup_script="/tmp/proxym-easy.backup.$(date +%Y%m%d%H%M%S)"
-    cp "$is_sh_bin" "$backup_script"
-    _yellow "已备份当前脚本到: $backup_script"
-
-    # 替换脚本
+    # 语法正确，直接替换
+    _green "语法验证通过，正在更新..."
     cp "$tmp_script" "$is_sh_bin"
     chmod +x "$is_sh_bin"
     rm -f "$tmp_script"
@@ -250,7 +246,7 @@ update_script() {
     _green "脚本更新成功！"
     _green "将在3秒后重新启动新版本..."
     sleep 3
-    exec "$is_sh_bin"  # 用新脚本替换当前进程
+    exec "$is_sh_bin"
 }
 
 # ========== 卸载菜单 ==========
