@@ -76,3 +76,12 @@ Reality域名选择推荐
 >本次更新为破坏式更新请重新执行代码
 
 3.decryption生成存在错误（之后修复
+
+重构版
+```
+wget -O /usr/local/bin/proxym-easy https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/xray.sh && chmod +x /usr/local/bin/proxym-easy && /usr/local/bin/proxym-easy
+```
+xray内核及配置文件
+```
+/etc/xray
+```
