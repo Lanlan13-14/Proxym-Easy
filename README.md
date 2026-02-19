@@ -77,7 +77,7 @@ Reality域名选择推荐
 
 3.decryption生成存在错误（之后修复
 
-重构版
+***重构版***
 ```
 wget -O /usr/local/bin/proxym-easy https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/xray.sh && chmod +x /usr/local/bin/proxym-easy && /usr/local/bin/proxym-easy
 ```
