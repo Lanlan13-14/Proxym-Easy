@@ -1,13 +1,14 @@
 #!/bin/bash
-# Xray 极简安装管理脚本
-# 版本: 1.2
+# Xray 极简管理脚本 (最终版)
+# 版本: 2.1
 
 # ========== 颜色定义 ==========
-red='\e[31m'; yellow='\e[33m'; green='\e[92m'; blue='\e[94m'; none='\e[0m'
+red='\e[31m'; yellow='\e[33m'; green='\e[92m'; blue='\e[94m'; cyan='\e[96m'; none='\e[0m'
 _red() { echo -e "${red}$*${none}"; }
 _green() { echo -e "${green}$*${none}"; }
 _yellow() { echo -e "${yellow}$*${none}"; }
 _blue() { echo -e "${blue}$*${none}"; }
+_cyan() { echo -e "${cyan}$*${none}"; }
 
 # ========== 基础变量 ==========
 is_core="xray"
@@ -19,11 +20,12 @@ is_log_dir="/var/log/$is_core"
 is_config_json="/etc/$is_core/config.json"
 is_sh_bin="/usr/local/bin/proxym-easy"
 
+# GitHub 脚本基础 URL
+SCRIPT_BASE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/script"
+
 # ========== 工具函数 ==========
 err() { _red "\n错误: $*\n" && exit 1; }
-
 _wget() { wget --no-check-certificate -q --show-progress "$@"; }
-
 check_root() { [[ $EUID != 0 ]] && err "请使用 root 用户执行"; }
 
 get_arch() {
@@ -239,10 +241,10 @@ modify_dns() {
     
     echo
     echo "请选择 DNS 查询策略:"
-    echo "1) UseIPv4 - 强制只返回 IPv4 地址"
-    echo "2) UseIPv6 - 强制只返回 IPv6 地址"
-    echo "3) UseIP - 返回所有 IP (默认策略)"
-    echo "4) IPIfNonMatch - 优先匹配，找不到再用其他类型"
+    echo "[1] UseIPv4 - 强制只返回 IPv4 地址"
+    echo "[2] UseIPv6 - 强制只返回 IPv6 地址"
+    echo "[3] UseIP - 返回所有 IP (默认策略)"
+    echo "[4] IPIfNonMatch - 优先匹配，找不到再用其他类型"
     echo
     read -r -p "请选择 [1-4] (默认: 1): " strategy
     
@@ -273,15 +275,95 @@ EOF
     _green "Xray 已重启"
 }
 
+# ========== 服务控制 ==========
+control_service() {
+    local action=$1
+    local action_cn
+    case $action in
+        start) action_cn="启动" ;;
+        stop) action_cn="停止" ;;
+        restart) action_cn="重启" ;;
+        *) return ;;
+    esac
+    
+    if [[ ! -f $is_core_bin ]]; then
+        _red "Xray 未安装，无法执行此操作"
+        return
+    fi
+    
+    _yellow "正在${action_cn} Xray 服务..."
+    systemctl $action xray
+    sleep 2
+    _green "当前状态: $(systemctl is-active xray)"
+}
+
+# ========== 查看日志 ==========
+view_logs() {
+    if [[ ! -f $is_core_bin ]]; then
+        _red "Xray 未安装，无法查看日志"
+        return
+    fi
+    
+    echo -e "\n${cyan}══════ Xray 最新 50 条日志 ══════${none}"
+    journalctl -u xray -n 50 --no-pager -q
+    echo -e "${cyan}══════════════════════════════════${none}\n"
+}
+
+# ========== 查看状态详情 ==========
+view_status() {
+    if [[ ! -f $is_core_bin ]]; then
+        _red "Xray 未安装，无法查看状态"
+        return
+    fi
+    systemctl status xray --no-pager
+}
+
 # ========== 显示当前状态 ==========
 show_status() {
+    echo -e "\n${cyan}══════════ Xray 状态 ══════════${none}"
     if [[ -f $is_core_bin ]]; then
-        _green "Xray 状态: $(systemctl is-active xray)"
-        _green "Xray 版本: $($is_core_bin version | head -n1)"
+        _green "● 安装状态: 已安装"
+        _green "● 运行状态: $(systemctl is-active xray)"
+        _green "● 启用状态: $(systemctl is-enabled xray 2>/dev/null || echo '未启用')"
+        _green "● 核心版本: $($is_core_bin version 2>/dev/null | head -n1)"
     else
-        _yellow "Xray 未安装"
+        _yellow "○ 安装状态: 未安装"
     fi
-    echo
+    echo -e "${cyan}═══════════════════════════════${none}\n"
+}
+
+# ========== 入站管理菜单 ==========
+inbound_menu() {
+    while true; do
+        clear
+        echo "========== 入站管理 =========="
+        echo "[1] SS2022"
+        echo "[2] Vless-Reality"
+        echo "[3] 返回主菜单"
+        echo "================================"
+        echo
+        read -r -p "请选择 [1-3]: " inbound_choice
+        
+        case $inbound_choice in
+            1)
+                _yellow "正在获取 SS2022 安装脚本..."
+                bash <(curl -sL "${SCRIPT_BASE_URL}/ss2022.sh") || _red "脚本执行失败"
+                read -r -p "按回车键继续..."
+                ;;
+            2)
+                _yellow "正在获取 Vless-Reality 安装脚本..."
+                bash <(curl -sL "${SCRIPT_BASE_URL}/vless_reality.sh") || _red "脚本执行失败"
+                read -r -p "按回车键继续..."
+                ;;
+            3)
+                break
+                ;;
+            *)
+                _red "无效选择"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 # ========== 主菜单 ==========
@@ -289,14 +371,17 @@ show_menu() {
     clear
     echo "========== Xray 极简管理菜单 =========="
     show_status
-    echo "1. 安装 Xray"
-    echo "2. 更新 Xray"
-    echo "3. 卸载 Xray"
-    echo "4. 修改 DNS 配置"
-    echo "5. 入站管理 (待实现)"
-    echo "6. 退出"
-    echo "========================================"
-    echo "提示: 下次使用请输入: proxym-easy"
+    echo "[1] 安装 Xray"
+    echo "[2] 更新 Xray"
+    echo "[3] 卸载 Xray"
+    echo "[4] 修改 DNS 配置"
+    echo "[5] 入站管理"
+    echo "[6] 启动 Xray"
+    echo "[7] 停止 Xray"
+    echo "[8] 重启 Xray"
+    echo "[9] 查看最近 50 条日志"
+    echo "[10] 查看 systemctl status"
+    echo "[11] 退出"
     echo
 }
 
@@ -305,42 +390,50 @@ main() {
     check_root
     
     # 创建软链接
-    if [[ ! -f $is_sh_bin ]]; then
+    if [[ ! -f $is_sh_bin ]] && [[ -f $0 ]]; then
         local script_path
         script_path=$(realpath "$0")
-        ln -sf "$script_path" "$is_sh_bin"
+        ln -sf "$script_path" "$is_sh_bin" 2>/dev/null && _green "软链接创建成功: $is_sh_bin"
     fi
     
     while true; do
         show_menu
         local choice
-        read -r -p "请选择 [1-6]: " choice
+        read -r -p "请选择 [1-11]: " choice
         case $choice in
             1) 
                 local ver
                 read -r -p "请输入版本号 (直接回车安装最新版): " ver
                 [[ -n $ver ]] && ver="v${ver#v}"
                 install_xray "$ver"
+                read -r -p "按回车键继续..."
                 ;;
-            2) update_xray ;;
+            2) 
+                update_xray
+                read -r -p "按回车键继续..."
+                ;;
             3) 
                 local confirm
                 read -r -p "确定卸载 Xray？[y/N]: " confirm
                 [[ $confirm == [yY] ]] && uninstall_xray
+                read -r -p "按回车键继续..."
                 ;;
-            4) modify_dns ;;
-            5) 
-                _yellow "入站管理功能待实现"
-                _yellow "请访问: https://github.com/233boy/xray 获取完整脚本"
+            4) 
+                modify_dns
+                read -r -p "按回车键继续..."
                 ;;
-            6) 
+            5) inbound_menu ;;
+            6) control_service start; read -r -p "按回车键继续..." ;;
+            7) control_service stop; read -r -p "按回车键继续..." ;;
+            8) control_service restart; read -r -p "按回车键继续..." ;;
+            9) view_logs; read -r -p "按回车键继续..." ;;
+            10) view_status; read -r -p "按回车键继续..." ;;
+            11) 
                 _green "退出，下次使用请输入: proxym-easy"
                 exit 0
                 ;;
-            *) _red "无效选择" ;;
+            *) _red "无效选择"; sleep 1 ;;
         esac
-        echo
-        read -r -p "按回车键继续..."
     done
 }
 
