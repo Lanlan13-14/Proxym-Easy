@@ -339,10 +339,11 @@ inbound_menu() {
         echo "========== 入站管理 =========="
         echo "[1] SS2022"
         echo "[2] Vless-Reality"
-        echo "[3] 返回主菜单"
+        echo "[3] Vless-ENC"
+        echo "[4] 返回主菜单"
         echo "================================"
         echo
-        read -r -p "请选择 [1-3]: " inbound_choice
+        read -r -p "请选择 [1-4]: " inbound_choice  
         
         case $inbound_choice in
             1)
@@ -355,7 +356,12 @@ inbound_menu() {
                 bash <(curl -sL "${SCRIPT_BASE_URL}/vless_reality.sh") || _red "脚本执行失败"
                 read -r -p "按回车键继续..."
                 ;;
-            3)
+            3)  # <--- 新增的选项处理
+                _yellow "正在获取 Vless-ENC 安装脚本..."
+                bash <(curl -sL "${SCRIPT_BASE_URL}/vless_encryption.sh") || _red "脚本执行失败"
+                read -r -p "按回车键继续..."
+                ;;
+            4)  # <--- 原返回选项
                 break
                 ;;
             *)
