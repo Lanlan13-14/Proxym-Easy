@@ -94,10 +94,10 @@ add_inbound() {
     read -rp "SNI（默认 updates.cdn-apple.com）: " sni
     [[ -z "$sni" ]] && sni="updates.cdn-apple.com"
 
-    uuid=$(xray uuid)
+    uuid=$(/etc/xray/bin/xray uuid)
 
     # 生成 Reality 私钥、公钥（Password 字段即 publicKey）
-    keys=$(xray x25519)
+    keys=$(/etc/xray/bin/xray x25519)
     privateKey=$(echo "$keys" | awk '/PrivateKey/ {print $2}')
     publicKey=$(echo "$keys" | awk '/Password/ {print $2}')
 
@@ -191,7 +191,7 @@ delete_inbound() {
 
 reset_uuid() {
     file=$(select_file_with_exit) || return
-    newuuid=$(xray uuid)
+    newuuid=$(/etc/xray/bin/xray uuid)
     jq ".inbounds[0].settings.clients[0].id=\"$newuuid\"" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
     echo "UUID 已重置"
     print_uri "$file"
