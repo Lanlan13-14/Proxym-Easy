@@ -1,854 +1,332 @@
 #!/bin/bash
-# vless_encryption.sh - 节点生成与管理脚本（被 proxym-easy source）
-# 放置: script/vless_encryption.sh (仓库路径)
-# 说明:
-# - 支持生成 VLESS (tcp/ws) 与 VLESS+Reality 节点
-# - 支持选择非抗量子 (x25519) 与抗量子 (mlkem) 加密参数
-# - 支持循环添加节点、冲突检测并询问 覆盖 / 附加 / 跳过
-# - 支持交互式 DNS 输入（regenerate_full_config 时，回车使用默认 1.1.1.1 / 8.8.8.8）
-# - 生成的 tag 格式为: 国旗 + 空格 + 国家缩写 + 空格 + 城市（例如: 🇭🇰 HKG Hong Kong），并在 URI 中进行 URL 编码
-# - 兼容主脚本函数名：add_vless, delete_node_local, reset_all, regenerate_full_config, push_to_remote
-# - 尽量保留并不改变你原脚本的默认逻辑与字段命名
+CONF_DIR="/etc/xray/conf.d"
+XRAY_BIN="/etc/xray/bin/xray"
+mkdir -p "$CONF_DIR"
 
-set -euo pipefail
-export LC_ALL=C.UTF-8
+getnextnumber() {
+    for i in {40..50}; do
+        if ! ls "$CONF_DIR" 2>/dev/null | grep -q "^$i-inbound-vlessenc_"; then
+            echo $i
+            return
+        fi
+    done
+    echo "No available number (40-50)"
+    exit 1
+}
 
-# ---------- 路径 ----------
-VLESS_JSON="/etc/proxym/vless.json"
-GLOBAL_JSON="/etc/proxym/global.json"
-CONFIG="/usr/local/etc/xray/config.json"
+check_port() {
+    local port="$1"
+    ss -tuln | grep -q ":$port " && return 1 || return 0
+}
 
-# ---------- 颜色与符号 ----------
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-INFO="${BLUE}ℹ️${NC}"; WARN="${YELLOW}⚠️${NC}"
+get_ipv4() { curl -s -4 ip.sb; }
+get_ipv6() { curl -s -6 ip.sb; }
 
-log()  { echo -e "${INFO} $1${NC}"; }
-warn() { echo -e "${WARN} $1${NC}"; }
-err()  { echo -e "${RED}✖ $1${NC}"; }
+generatemlkemparams() {
+    local rtt_mode="$1"
+    local appearance="$2"
+    local kex_type="$3"
 
-# ---------- 完整国旗映射（ISO 3166-1 alpha-2 -> emoji） ----------
-declare -A FLAGS=(
-    [AD]="🇦🇩" [AE]="🇦🇪" [AF]="🇦🇫" [AG]="🇦🇬" [AI]="🇦🇮"
-    [AL]="🇦🇱" [AM]="🇦🇲" [AO]="🇦🇴" [AQ]="🇦🇶" [AR]="🇦🇷"
-    [AS]="🇦🇸" [AT]="🇦🇹" [AU]="🇦🇺" [AW]="🇦🇼" [AX]="🇦🇽"
-    [AZ]="🇦🇿" [BA]="🇧🇦" [BB]="🇧🇧" [BD]="🇧🇩" [BE]="🇧🇪"
-    [BF]="🇧🇫" [BG]="🇧🇬" [BH]="🇧🇭" [BI]="🇧🇮" [BJ]="🇧🇯"
-    [BL]="🇧🇱" [BM]="🇧🇲" [BN]="🇧🇳" [BO]="🇧🇴" [BQ]="🇧🇶"
-    [BR]="🇧🇷" [BS]="🇧🇸" [BT]="🇧🇹" [BV]="🇧🇻" [BW]="🇧🇼"
-    [BY]="🇧🇾" [BZ]="🇧🇿" [CA]="🇨🇦" [CC]="🇨🇨" [CD]="🇨🇩"
-    [CF]="🇨🇫" [CG]="🇨🇬" [CH]="🇨🇭" [CI]="🇨🇮" [CK]="🇨🇰"
-    [CL]="🇨🇱" [CM]="🇨🇲" [CN]="🇨🇳" [CO]="🇨🇴" [CR]="🇨🇷"
-    [CU]="🇨🇺" [CV]="🇨🇻" [CW]="🇨🇼" [CX]="🇨🇽" [CY]="🇨🇾"
-    [CZ]="🇨🇿" [DE]="🇩🇪" [DJ]="🇩🇯" [DK]="🇩🇰" [DM]="🇩🇲"
-    [DO]="🇩🇴" [DZ]="🇩🇿" [EC]="🇪🇨" [EE]="🇪🇪" [EG]="🇪🇬"
-    [EH]="🇪🇭" [ER]="🇪🇷" [ES]="🇪🇸" [ET]="🇪🇹" [FI]="🇫🇮"
-    [FJ]="🇫🇯" [FK]="🇫🇰" [FM]="🇫🇲" [FO]="🇫🇴" [FR]="🇫🇷"
-    [GA]="🇬🇦" [GB]="🇬🇧" [GD]="🇬🇩" [GE]="🇬🇪" [GF]="🇬🇫"
-    [GG]="🇬🇬" [GH]="🇬🇭" [GI]="🇬🇮" [GL]="🇬🇱" [GM]="🇬🇲"
-    [GN]="🇬🇳" [GP]="🇬🇵" [GQ]="🇬🇶" [GR]="🇬🇷" [GS]="🇬🇸"
-    [GT]="🇬🇹" [GU]="🇬🇺" [GW]="🇬🇼" [GY]="🇬🇾" [HK]="🇭🇰"
-    [HM]="🇭🇲" [HN]="🇭🇳" [HR]="🇭🇷" [HT]="🇭🇹" [HU]="🇭🇺"
-    [ID]="🇮🇩" [IE]="🇮🇪" [IL]="🇮🇱" [IM]="🇮🇲" [IN]="🇮🇳"
-    [IO]="🇮🇴" [IQ]="🇮🇶" [IR]="🇮🇷" [IS]="🇮🇸" [IT]="🇮🇹"
-    [JE]="🇯🇪" [JM]="🇯🇲" [JO]="🇯🇴" [JP]="🇯🇵" [KE]="🇰🇪"
-    [KG]="🇰🇬" [KH]="🇰🇭" [KI]="🇰🇮" [KM]="🇰🇲" [KN]="🇰🇳"
-    [KP]="🇰🇵" [KR]="🇰🇷" [KW]="🇰🇼" [KY]="🇰🇾" [KZ]="🇰🇿"
-    [LA]="🇱🇦" [LB]="🇱🇧" [LC]="🇱🇨" [LI]="🇱🇮" [LK]="🇱🇰"
-    [LR]="🇱🇷" [LS]="🇱🇸" [LT]="🇱🇹" [LU]="🇱🇺" [LV]="🇱🇻"
-    [LY]="🇱🇾" [MA]="🇲🇦" [MC]="🇲🇨" [MD]="🇲🇩" [ME]="🇲🇪"
-    [MF]="🇲🇫" [MG]="🇲🇬" [MH]="🇲🇭" [MK]="🇲🇰" [ML]="🇲🇱"
-    [MM]="🇲🇲" [MN]="🇲🇳" [MO]="🇲🇴" [MP]="🇲🇵" [MQ]="🇲🇶"
-    [MR]="🇲🇷" [MS]="🇲🇸" [MT]="🇲🇹" [MU]="🇲🇺" [MV]="🇲🇻"
-    [MW]="🇲🇼" [MX]="🇲🇽" [MY]="🇲🇾" [MZ]="🇲🇿" [NA]="🇳🇦"
-    [NC]="🇳🇨" [NE]="🇳🇪" [NF]="🇳🇫" [NG]="🇳🇬" [NI]="🇳🇮"
-    [NL]="🇳🇱" [NO]="🇳🇴" [NP]="🇳🇵" [NR]="🇳🇷" [NU]="🇳🇺"
-    [NZ]="🇳🇿" [OM]="🇴🇲" [PA]="🇵🇦" [PE]="🇵🇪" [PF]="🇵🇫"
-    [PG]="🇵🇬" [PH]="🇵🇭" [PK]="🇵🇰" [PL]="🇵🇱" [PM]="🇵🇲"
-    [PN]="🇵🇳" [PR]="🇵🇷" [PS]="🇵🇸" [PT]="🇵🇹" [PW]="🇵🇼"
-    [PY]="🇵🇾" [QA]="🇶🇦" [RE]="🇷🇪" [RO]="🇷🇴" [RS]="🇷🇸"
-    [RU]="🇷🇺" [RW]="🇷🇼" [SA]="🇸🇦" [SB]="🇸🇧" [SC]="🇸🇨"
-    [SD]="🇸🇩" [SE]="🇸🇪" [SG]="🇸🇬" [SH]="🇸🇭" [SI]="🇸🇮"
-    [SJ]="🇸🇯" [SK]="🇸🇰" [SL]="🇸🇱" [SM]="🇸🇲" [SN]="🇸🇳"
-    [SO]="🇸🇴" [SR]="🇸🇷" [SS]="🇸🇸" [ST]="🇸🇹" [SV]="🇸🇻"
-    [SX]="🇸🇽" [SY]="🇸🇾" [SZ]="🇸🇿" [TC]="🇹🇨" [TD]="🇹🇩"
-    [TF]="🇹🇫" [TG]="🇹🇬" [TH]="🇹🇭" [TJ]="🇹🇯" [TK]="🇹🇰"
-    [TL]="🇹🇱" [TM]="🇹🇲" [TN]="🇹🇳" [TO]="🇹🇴" [TR]="🇹🇷"
-    [TT]="🇹🇹" [TV]="🇹🇻" [TW]="🇹🇼" [TZ]="🇹🇿" [UA]="🇺🇦"
-    [UG]="🇺🇬" [UM]="🇺🇲" [US]="🇺🇸" [UY]="🇺🇾" [UZ]="🇺🇿"
-    [VA]="🇻🇦" [VC]="🇻🇨" [VE]="🇻🇪" [VG]="🇻🇬" [VI]="🇻🇮"
-    [VN]="🇻🇳" [VU]="🇻🇺" [WF]="🇼🇫" [WS]="🇼🇸" [YE]="🇾🇪"
-    [YT]="🇾🇹" [ZA]="🇿🇦" [ZM]="🇿🇲" [ZW]="🇿🇼"
+    if [[ "$rtt_mode" == "0rtt" ]]; then
+        ticket="600s"
+    else
+        ticket="0s"
+    fi
+
+    if [[ "$kex_type" == "x25519" ]]; then
+        out=$("$XRAY_BIN" x25519)
+        priv=$(echo "$out" | awk -F':' '/PrivateKey/ {gsub(/ /,"",$2);print $2}')
+        pwd=$( echo "$out" | awk -F':' '/Password/   {gsub(/ /,"",$2);print $2}')
+        decryption="mlkem768x25519plus.${appearance}.${ticket}.${priv}"
+        encryption="mlkem768x25519plus.${appearance}.${rtt_mode}.${pwd}"
+    else
+        out=$("$XRAY_BIN" mlkem768)
+        seed=$(  echo "$out" | awk -F':' '/Seed/   {gsub(/ /,"",$2);print $2}')
+        client=$(echo "$out" | awk -F':' '/Client/ {gsub(/ /,"",$2);print $2}')
+        decryption="mlkem768x25519plus.${appearance}.${ticket}.${seed}"
+        encryption="mlkem768x25519plus.${appearance}.${rtt_mode}.${client}"
+    fi
+
+    echo "$decryption" "$encryption"
+}
+
+select_fingerprint() {
+    echo "选择 uTLS 指纹（默认 chrome）"
+    echo "[1] chrome"
+    echo "[2] firefox"
+    echo "[3] safari"
+    echo "[4] ios"
+    echo "[5] android"
+    echo "[6] edge"
+    echo "[7] 360"
+    echo "[8] qq"
+    echo "[9] random"
+    read -rp "选择 [1-9]: " fp_sel
+    case "$fp_sel" in
+        2) echo "firefox" ;;
+        3) echo "safari" ;;
+        4) echo "ios" ;;
+        5) echo "android" ;;
+        6) echo "edge" ;;
+        7) echo "360" ;;
+        8) echo "qq" ;;
+        9) echo "random" ;;
+        *) echo "chrome" ;;
+    esac
+}
+
+print_uri() {
+    local file="$1"
+
+    port=$(jq -r '.inbounds[0].port' "$file")
+    uuid=$(jq -r '.inbounds[0].settings.clients[0].id' "$file")
+    encryption=$(jq -r '.inbounds[0].encryption' "$file")
+    network=$(jq -r '.inbounds[0].streamSettings.network // "tcp"' "$file")
+    security=$(jq -r '.inbounds[0].streamSettings.security // "none"' "$file")
+
+    host=""
+    path=""
+    fingerprint=""
+    domain=""
+
+    if [[ "$network" == "ws" ]]; then
+        path=$(jq -r '.inbounds[0].streamSettings.wsSettings.path // ""' "$file")
+        host=$(jq -r '.inbounds[0].streamSettings.wsSettings.headers.Host // ""' "$file")
+    fi
+
+    if [[ "$security" == "tls" ]]; then
+        fingerprint=$(jq -r '.inbounds[0].streamSettings.tlsSettings.fingerprint // ""' "$file")
+        cert_file=$(jq -r '.inbounds[0].streamSettings.tlsSettings.certificates[0].certificateFile // ""' "$file")
+        domain=$(basename "$(dirname "$cert_file")")
+    fi
+
+    ipv4=$(get_ipv4)
+    ipv6=$(get_ipv6)
+    [[ -n "$ipv4" ]] && hostip="$ipv4" || hostip="[$ipv6]"
+
+    uri_params="type=${network}&encryption=${encryption}"
+    [[ -n "$host" ]] && uri_params="${uri_params}&host=${host}"
+    [[ -n "$path" ]] && uri_params="${uri_params}&path=${path}"
+
+    if [[ "$security" == "tls" ]]; then
+        uri_params="${uri_params}&security=tls&sni=${domain}&fp=${fingerprint}"
+    else
+        uri_params="${uri_params}&security=none"
+    fi
+
+    # ⭐ 只在打印 URI 时询问节点名，不保存
+    read -rp "节点名称（默认 $port）: " nodename
+    [[ -z "$nodename" ]] && nodename="$port"
+
+    echo "vless://$uuid@$hostip:$port?${uri_params}#${nodename}"
+}
+
+selectfilewith_exit() {
+    mapfile -t files < <(ls "$CONF_DIR"/*-inbound-vlessenc_*.json 2>/dev/null)
+    if [[ ${#files[@]} -eq 0 ]]; then
+        echo "没有 vless enc 配置文件" >&2
+        return 1
+    fi
+    echo "请选择文件 (输入 0 退出)：" >&2
+    for i in "${!files[@]}"; do
+        echo "[$((i+1))] ${files[$i]}" >&2
+    done
+
+    while true; do
+        read -rp "选择 [0-${#files[@]}]: " sel
+        if [[ "$sel" =~ ^[0-9]+$ ]]; then
+            if [[ "$sel" -eq 0 ]]; then
+                return 1
+            elif [[ "$sel" -ge 1 && "$sel" -le "${#files[@]}" ]]; then
+                printf "%s" "${files[$((sel-1))]}"
+                return 0
+            fi
+        fi
+        echo "无效选择，请重新输入" >&2
+    done
+}
+
+add_inbound() {
+    while :; do
+        port=$((RANDOM % 50000 + 10000))
+        check_port "$port" && break
+    done
+
+    echo "选择密钥交换算法："
+    echo "[1] X25519"
+    echo "[2] MLKEM768（默认，高安全）"
+    read -rp "选择 [1-2]: " ksel
+    [[ "$ksel" == "1" ]] && kex_type="x25519" || kex_type="mlkem768"
+
+    echo "选择外观模式："
+    echo "[1] native"
+    echo "[2] xorpub"
+    echo "[3] random（默认）"
+    read -rp "选择 [1-3]: " aesel
+    case "$aesel" in
+        1) appearance="native" ;;
+        2) appearance="xorpub" ;;
+        *) appearance="random" ;;
+    esac
+
+    echo "RTT 模式："
+    echo "[1] 1-RTT"
+    echo "[2] 0-RTT（默认，高安全）"
+    read -rp "选择 [1-2]: " rsel
+    [[ "$rsel" == "1" ]] && rtt_mode="1rtt" || rtt_mode="0rtt"
+
+    echo "选择传输协议："
+    echo "[1] tcp"
+    echo "[2] ws"
+    read -rp "选择 [1-2]（默认 tcp）: " nsel
+    [[ "$nsel" == "2" ]] && network="ws" || network="tcp"
+
+    domain=""
+    host=""
+    path="/"
+    fingerprint="chrome"
+
+    if [[ "$network" == "ws" ]]; then
+        read -rp "WS 路径（默认 /）： " path_in
+        [[ -n "$path_in" ]] && path="$path_in"
+        read -rp "WS Host（可空）： " host_in
+        [[ -n "$host_in" ]] && host="$host_in"
+
+        echo "是否启用 TLS？"
+        echo "[1] 不启用"
+        echo "[2] 启用 TLS"
+        read -rp "选择 [1-2]（默认 1）: " tsel
+        if [[ "$tsel" == "2" ]]; then
+            read -rp "域名（用于证书路径和 SNI）: " domain
+            fingerprint=$(select_fingerprint)
+        fi
+    fi
+
+    uuid=$("$XRAY_BIN" uuid)
+    read decryption encryption < <(generatemlkemparams "$rtt_mode" "$appearance" "$kex_type")
+
+    number=$(getnextnumber)
+    file="$CONF_DIR/$number-inbound-vlessenc_$port.json"
+    tag="vless-enc-$port-in"
+    listen="0.0.0.0"
+
+    if [[ -n "$domain" ]]; then
+        cert_path="/etc/ssl/acme/$domain/fullchain.pem"
+        key_path="/etc/ssl/acme/$domain/privkey.key"
+
+        tls_settings=$(cat <<EOF
+{
+  "certificates":[{"certificateFile":"$cert_path","keyFile":"$key_path"}],
+  "fingerprint":"$fingerprint"
+}
+EOF
 )
 
-# ---------- 基本工具函数 ----------
-# URL 编码（使用 python3）
-url_encode() {
-  if command -v python3 &>/dev/null; then
-    python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.buffer.read().decode('utf-8').strip(), safe=''))" <<< "$1"
-  else
-    # 最小替代：空格与 # 编码
-    echo "${1// /%20}" | sed 's/#/%23/g'
-  fi
-}
-
-generate_random_path() {
-  openssl rand -hex 5 2>/dev/null || echo "path$(date +%s | cut -c1-5)"
-}
-
-generate_random_port() {
-  if command -v shuf &>/dev/null; then
-    shuf -i 1025-65535 -n 1
-  else
-    echo $(( (RANDOM % 64511) + 1025 ))
-  fi
-}
-
-detect_public_ipv4() {
-  local ip=""
-  if command -v curl &>/dev/null; then
-    ip=$(curl -s4 --max-time 5 https://api.ipify.org || true)
-  fi
-  if [ -z "$ip" ] && command -v wget &>/dev/null; then
-    ip=$(wget -qO- --timeout=5 https://api.ipify.org || true)
-  fi
-  echo "$ip"
-}
-
-resolve_ipv4_for() {
-  local name="$1"
-  local ip=""
-  if command -v dig &>/dev/null; then
-    ip=$(dig +short A "$name" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1 || true)
-  fi
-  if [ -z "$ip" ] && command -v host &>/dev/null; then
-    ip=$(host -t A "$name" 2>/dev/null | awk '/has address/ {print $4; exit}' || true)
-  fi
-  if [ -z "$ip" ] && command -v getent &>/dev/null; then
-    ip=$(getent ahosts "$name" | awk '{print $1; exit}' | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' || true)
-  fi
-  echo "$ip"
-}
-
-# get_location_from_ip: 输出 country|city，避免城市包含空格导致 read 分割问题
-get_location_from_ip() {
-  local ip=$1
-  local info
-  info=$(curl -s --max-time 8 "http://ip-api.com/json/$ip?fields=status,message,countryCode,city" 2>/dev/null || echo "")
-  if [ -z "$info" ] || echo "$info" | grep -q '"status":"fail"'; then
-    echo "Unknown|Unknown"
-    return
-  fi
-  local country city
-  country=$(echo "$info" | grep -o '"countryCode":"[^"]*"' | sed 's/.*"countryCode":"\([^"]*\)".*/\1/')
-  city=$(echo "$info" | grep -o '"city":"[^"]*"' | sed 's/.*"city":"\([^"]*\)".*/\1/')
-  country=${country:-Unknown}
-  city=${city:-Unknown}
-  echo "${country}|${city}"
-}
-
-load_global_config_local() {
-  if [ -f "$GLOBAL_JSON" ]; then
-    CLIENT_TOKEN_FILE=$(jq -r '.client_token // empty' "$GLOBAL_JSON" 2>/dev/null || echo "")
-    if [ -n "$CLIENT_TOKEN_FILE" ]; then CLIENT_TOKEN="$CLIENT_TOKEN_FILE"; fi
-  fi
-}
-
-# ---------- 生成节点 JSON（与主脚本兼容） ----------
-generate_node_info() {
-  local uuid=$1; local port=$2; local decryption=$3; local encryption=$4; local ip=$5
-  local tag=$6; local uri=$7; local domain=$8; local network=$9; local path=${10}
-  local host=${11}; local fingerprint=${12}; local is_custom=${13}; local use_reality=${14}
-  local dest=${15}; local sni=${16}; local shortids_json=${17}; local public_key_base64=${18}
-  local flow=${19}; local push_enabled=${20}; local push_url=${21}; local push_token=${22}
-  local servernames_json=${23}; local private_key=${24:-""}; local kex=${25}; local method=${26}
-  local rtt=${27}; local use_mlkem=${28}
-  if [ "$use_reality" = true ]; then
-    cat <<EOF
-{
-  "uuid": "$uuid",
-  "port": $port,
-  "decryption": "$decryption",
-  "encryption": "$encryption",
-  "ip": "$ip",
-  "tag": "$tag",
-  "uri": "$uri",
-  "domain": "$domain",
-  "network": "$network",
-  "path": "$path",
-  "use_reality": true,
-  "dest": "$dest",
-  "sni": "$sni",
-  "shortIds": $shortids_json,
-  "public_key": "$public_key_base64",
-  "flow": "$flow",
-  "fingerprint": "$fingerprint",
-  "is_custom_tag": $is_custom,
-  "push_enabled": $push_enabled,
-  "push_url": "$push_url",
-  "push_token": "$push_token",
-  "serverNames": $servernames_json,
-  "privateKey": "$private_key",
-  "kex": "$kex",
-  "method": "$method",
-  "rtt": "$rtt",
-  "use_mlkem": $use_mlkem
-}
+        if [[ "$network" == "ws" ]]; then
+            ws_settings=$(cat <<EOF
+{"path":"$path","headers":{"Host":"$host"}}
 EOF
-  else
-    cat <<EOF
-{
-  "uuid": "$uuid",
-  "port": $port,
-  "decryption": "$decryption",
-  "encryption": "$encryption",
-  "ip": "$ip",
-  "tag": "$tag",
-  "uri": "$uri",
-  "domain": "$domain",
-  "network": "$network",
-  "path": "$path",
-  "host": "$host",
-  "fingerprint": "$fingerprint",
-  "is_custom_tag": $is_custom,
-  "push_enabled": $push_enabled,
-  "push_url": "$push_url",
-  "push_token": "$push_token",
-  "kex": "$kex",
-  "method": "$method",
-  "rtt": "$rtt",
-  "use_mlkem": $use_mlkem
-}
+)
+            stream_settings=$(cat <<EOF
+{"network":"ws","security":"tls","tlsSettings":$tls_settings,"wsSettings":$ws_settings}
 EOF
-  fi
-}
-
-# ---------- push 到远端 ----------
-push_to_remote() {
-  local uri=$1; local push_url=$2; local push_token=$3
-  if [ -z "$push_url" ] || [ -z "$push_token" ]; then
-    log "Push 配置不完整，跳过。"
-    return
-  fi
-  local payload='{"token":"'"$push_token"'","uri":"'"$uri"'"}'
-  curl -s -X POST "$push_url" -H "Content-Type: application/json" -d "$payload" >/dev/null 2>&1 || warn "推送失败"
-  log "已尝试推送 URI 到 $push_url"
-}
-
-# ---------- 交互式 DNS ----------
-ask_dns_interactive() {
-  local default1="1.1.1.1"
-  local default2="8.8.8.8"
-  read -p "请输入主 DNS（默认 ${default1}，直接回车使用默认）: " DNS_PRIMARY
-  DNS_PRIMARY=${DNS_PRIMARY:-$default1}
-  read -p "请输入备用 DNS（默认 ${default2}，直接回车使用默认）: " DNS_SECONDARY
-  DNS_SECONDARY=${DNS_SECONDARY:-$default2}
-  export DNS_PRIMARY DNS_SECONDARY
-}
-
-# ---------- 冲突检测 helper ----------
-find_conflicting_node() {
-  local server="$1"
-  local port="$2"
-  local tag="$3"
-  if [ ! -f "$VLESS_JSON" ]; then
-    return 1
-  fi
-  local idx
-  idx=$(jq -r --arg s "$server" --arg p "$port" --arg t "$tag" '
-    to_entries[]
-    | select(((.value.domain == $s) or (.value.ip == $s)) and ((.value.port|tostring) == $p) or (.value.tag == $t))
-    | .key' "$VLESS_JSON" 2>/dev/null || true)
-  if [ -n "$idx" ]; then
-    echo "$idx"
-    return 0
-  fi
-  return 1
-}
-
-# ---------- 添加节点：支持 tcp/ws/reality 与 x25519/mlkem 选择，循环添加，冲突处理 ----------
-add_vless() {
-  load_global_config_local
-  mkdir -p "$(dirname "$VLESS_JSON")"
-  if [ ! -f "$VLESS_JSON" ]; then echo "[]" > "$VLESS_JSON"; fi
-
-  echo "进入添加节点流程。每次添加后可选择继续添加其他类型或退出。"
-
-  while true; do
-    echo "---- 新节点 ----"
-    default_server="$(detect_public_ipv4 || true)"
-    read -p "服务器 IP 或域名（留空使用建议: ${default_server:-none}）: " server_addr
-    if [ -z "$server_addr" ]; then server_addr="$default_server"; fi
-
-    resolved_ipv4=""
-    if [ -n "$server_addr" ] && [[ ! "$server_addr" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      resolved_ipv4=$(resolve_ipv4_for "$server_addr" || true)
-      if [ -n "$resolved_ipv4" ]; then
-        echo "检测到域名的 IPv4: $resolved_ipv4"
-        read -p "使用该 IPv4 作为节点 IP? (Y/n): " use_resolved
-        if [[ $use_resolved =~ ^[Nn]$ ]]; then resolved_ipv4=""; fi
-      fi
-    fi
-
-    # 选择类型： vless (tcp/ws) 或 reality
-    echo "选择节点类型:"
-    echo "1) VLESS (tcp/ws)"
-    echo "2) VLESS + Reality"
-    read -p "请选择 (1/2, 默认 1): " type_choice
-    type_choice=${type_choice:-1}
-
-    if [ "$type_choice" = "2" ]; then
-      node_type="reality"
-      default_port="443"
-    else
-      node_type="vless"
-      default_port="$(generate_random_port)"
-    fi
-
-    read -p "端口（留空使用建议: ${default_port}）: " port
-    if [ -z "$port" ]; then port="$default_port"; fi
-
-    # UUID
-    read -p "UUID (留空自动生成): " uuid
-    if [ -z "$uuid" ]; then
-      if command -v xray &>/dev/null; then uuid=$(xray uuid); else uuid=$(cat /proc/sys/kernel/random/uuid); fi
-    fi
-
-    # network/path/host (仅对非-reality 的 VLESS 有效)
-    network="tcp"; path=""; host=""
-    if [ "$node_type" != "reality" ]; then
-      read -p "网络类型 (tcp/ws) [ws]: " network
-      network=${network:-ws}
-      if [ "$network" = "ws" ]; then
-        read -p "Path (留空自动生成): " path
-        if [ -z "$path" ]; then path="/$(generate_random_path)"; fi
-        read -p "Host (留空使用域名或 IP): " host
-        if [ -z "$host" ]; then host="$server_addr"; fi
-      fi
-    fi
-
-    # TLS/SNI（对 VLESS/ws 有意义；reality 使用 realitySettings）
-    security="none"; sni=""
-    if [ "$node_type" != "reality" ]; then
-      read -p "是否启用 TLS? (y/N): " use_tls
-      if [[ $use_tls =~ ^[Yy]$ ]]; then
-        security="tls"
-        read -p "SNI（留空使用域名）: " sni
-      fi
-    fi
-
-    # 加密方案选择：非抗量子 (x25519) 或 抗量子 (mlkem)
-    echo "选择密钥/加密方案:"
-    echo "1) 非抗量子 (x25519)"
-    echo "2) 抗量子 (mlkem) - 如果 Xray 支持 mlkem"
-    read -p "请选择 (1/2, 默认 1): " enc_choice
-    enc_choice=${enc_choice:-1}
-    if [ "$enc_choice" = "2" ]; then
-      use_mlkem=true
-      kex="mlkem"
-      method="mlkem"
-    else
-      use_mlkem=false
-      kex="x25519"
-      method="x25519"
-    fi
-
-    # rtt / flow 选择（保留原字段）
-    read -p "是否启用 0rtt? (y/N): " rtt_choice
-    if [[ $rtt_choice =~ ^[Yy]$ ]]; then rtt="0rtt"; else rtt=""; fi
-    read -p "flow (留空默认空): " flow
-
-    # 国家/城市/国家缩写自动检测并确认
-    probe_ip="$resolved_ipv4"
-    if [ -z "$probe_ip" ]; then
-      if [[ "$server_addr" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then probe_ip="$server_addr"; else probe_ip=$(resolve_ipv4_for "$server_addr" || true); fi
-    fi
-    if [ -z "$probe_ip" ]; then probe_ip="$(detect_public_ipv4 || true)"; fi
-
-    suggested_country="Unknown"; suggested_city="Unknown"; suggested_country_code=""
-    if [ -n "$probe_ip" ]; then
-      IFS='|' read -r suggested_country suggested_city <<< "$(get_location_from_ip "$probe_ip" || echo "Unknown|Unknown")"
-      suggested_country_code="$suggested_country"
-    fi
-
-    read -p "国家代码（ISO alpha-2，建议: ${suggested_country_code:-HK}）: " country_code
-    country_code=${country_code:-$suggested_country_code}
-    country_code_upper=$(echo "${country_code:-}" | tr '[:lower:]' '[:upper:]')
-
-    read -p "国家缩写（显示用，例如 HKG, TWN，留空使用 ${country_code_upper}）: " country_short
-    country_short=${country_short:-${country_code_upper}}
-
-    read -p "城市（留空使用建议: ${suggested_city:-Unknown}）: " city
-    city=${city:-$suggested_city}
-
-    # 生成 tag: 国旗 + 空格 + 国家缩写 + 空格 + 城市
-    flag="${FLAGS[$country_code_upper]:-🌍}"
-    tag="${flag} ${country_short} ${city}"
-    tag_encoded=$(url_encode "$tag")
-
-    # 生成 encryption/decryption 字段
-    decryption="none"; encryption="none"
-    public_key_base64=""; private_key=""
-    if [ "$node_type" = "reality" ]; then
-      # reality 模式下，生成或获取公私钥（尝试使用 xray）
-      if command -v xray &>/dev/null; then
-        if [ "$use_mlkem" = true ]; then
-          mlkem_out=$(xray mlkem768 2>/dev/null || true)
-          seed=$(echo "$mlkem_out" | grep -oP '(?<=Seed:).*' | sed 's/^ *//;s/ *$//' || true)
-          client_param=$(echo "$mlkem_out" | grep -oP '(?<=Client:).*' | sed 's/^ *//;s/ *$//' || true)
-          public_key_base64="${client_param:-}"
-          private_key=$(echo "$mlkem_out" | grep -oP '(?<=Private:).*' | sed 's/^ *//;s/ *$//' || true)
+)
         else
-          x25519_out=$(xray x25519 2>/dev/null || true)
-          public_key_base64=$(echo "$x25519_out" | grep -oP '(?<=Password:).*' | sed 's/^ *//;s/ *$//' || true)
-          private_key=$(echo "$x25519_out" | grep -oP '(?<=PrivateKey:).*' | sed 's/^ *//;s/ *$//' || true)
+            stream_settings=$(cat <<EOF
+{"network":"tcp","security":"tls","tlsSettings":$tls_settings}
+EOF
+)
         fi
-      fi
-      decryption="none"; encryption="none"
     else
-      # 非 reality: 生成 x25519 或 mlkem params for encryption/decryption strings
-      if command -v xray &>/dev/null; then
-        x25519_out=$(xray x25519 2>/dev/null || true)
-        private_val=$(echo "$x25519_out" | grep -oP '(?<=PrivateKey:).*' | sed 's/^ *//;s/ *$//' || true)
-        password_val=$(echo "$x25519_out" | grep -oP '(?<=Password:).*' | sed 's/^ *//;s/ *$//' || true)
-      else
-        private_val=""; password_val=""
-      fi
-      time_server="0s"
-      if [ "$rtt" = "0rtt" ]; then time_server="600s"; fi
-      decryption="${kex}.${method}.${time_server}"
-      if [ -n "$private_val" ]; then decryption="${decryption}.${private_val}"; fi
-      if [ "$use_mlkem" = true ]; then
-        if command -v xray &>/dev/null; then
-          mlkem_out=$(xray mlkem768 2>/dev/null || true)
-          seed=$(echo "$mlkem_out" | grep -oP '(?<=Seed:).*' | sed 's/^ *//;s/ *$//' || true)
-          client_param=$(echo "$mlkem_out" | grep -oP '(?<=Client:).*' | sed 's/^ *//;s/ *$//' || true)
+        if [[ "$network" == "ws" ]]; then
+            ws_settings=$(cat <<EOF
+{"path":"$path","headers":{"Host":"$host"}}
+EOF
+)
+            stream_settings=$(cat <<EOF
+{"network":"ws","security":"none","wsSettings":$ws_settings}
+EOF
+)
+        else
+            stream_settings='{"network":"tcp","security":"none"}'
         fi
-        if [ -n "$seed" ]; then decryption="${decryption}.${seed}"; fi
-        encryption="${kex}.${method}.${rtt}"
-        if [ -n "$password_val" ]; then encryption="${encryption}.${password_val}"; fi
-        if [ -n "$client_param" ]; then encryption="${encryption}.${client_param}"; fi
-      else
-        encryption="${kex}.${method}.${rtt}"
-        if [ -n "$password_val" ]; then encryption="${encryption}.${password_val}"; fi
-      fi
     fi
 
-    # 生成 URI
-    if [ "$node_type" = "reality" ]; then
-      flow_param="${flow:-}"
-      sni_param="${sni:-$server_addr}"
-      fp="chrome"
-      pbk_enc=$(url_encode "${public_key_base64:-}")
-      sni_enc=$(url_encode "${sni_param:-}")
-      uri_params="type=tcp&encryption=none&flow=${flow_param}&security=reality&sni=${sni_enc}&fp=${fp}&sid=&pbk=${pbk_enc}&packetEncoding=xudp"
-      server_address="$server_addr"
-      if [[ "$server_address" =~ : ]] && ! [[ "$server_address" =~ \[.*\] ]]; then server_address="[$server_address]"; fi
-      uri="vless://${uuid}@${server_address}:${port}?${uri_params}#${tag_encoded}"
-    else
-      uri_params="type=${network}&encryption=${encryption}&packetEncoding=xudp"
-      if [ "$network" = "ws" ]; then
-        uri_params="${uri_params}&path=$(url_encode "$path")"
-        if [ -n "$host" ]; then uri_params="${uri_params}&host=$(url_encode "$host")"; fi
-      fi
-      if [ "$security" = "tls" ]; then
-        sni_enc=$(url_encode "${sni:-$server_addr}")
-        uri_params="${uri_params}&security=tls&sni=${sni_enc}&fp=chrome"
-      else
-        uri_params="${uri_params}&security=none"
-      fi
-      server_address="$server_addr"
-      if [[ "$server_address" =~ : ]] && ! [[ "$server_address" =~ \[.*\] ]]; then server_address="[$server_address]"; fi
-      uri="vless://${uuid}@${server_address}:${port}?${uri_params}#${tag_encoded}"
-    fi
-
-    # 检查冲突
-    conflict_idx=$(find_conflicting_node "$server_addr" "$port" "$tag" || true)
-    if [ -n "$conflict_idx" ]; then
-      echo "检测到与现有节点冲突（索引: $conflict_idx）。"
-      echo "1) 覆盖现有节点"
-      echo "2) 附加为新节点"
-      echo "3) 跳过添加"
-      read -p "请选择操作 (1/2/3, 默认 2 附加): " conflict_choice
-      conflict_choice=${conflict_choice:-2}
-      if [ "$conflict_choice" = "1" ]; then
-        tmpfile="$(mktemp)"
-        new_node_json=$(generate_node_info "$uuid" "$port" "$decryption" "$encryption" "$server_addr" "$tag" "$uri" "$server_addr" "$network" "$path" "$host" "chrome" "false" "$([ "$node_type" = "reality" ] && echo true || echo false)" "$([ "$node_type" = "reality" ] && echo "$server_addr" || echo "") "$sni" "[]" "$public_key_base64" "$flow" "false" "" "" "[]" "$private_key" "$kex" "$method" "$rtt" "$use_mlkem")
-        # 使用 jq 替换指定索引（将 JSON 文本解析后替换）
-        echo "$new_node_json" | jq '.' > "${tmpfile}.node" || true
-        jq --argfile n "${tmpfile}.node" --arg idx "$conflict_idx" '(.['"$conflict_idx"']) = $n' "$VLESS_JSON" > "$tmpfile" && mv "$tmpfile" "$VLESS_JSON"
-        rm -f "${tmpfile}.node"
-        log "已覆盖索引 $conflict_idx 的节点。"
-      elif [ "$conflict_choice" = "2" ]; then
-        tmpfile="$(mktemp)"
-        node_json=$(jq -n \
-          --arg uuid "$uuid" \
-          --arg port "$port" \
-          --arg decryption "$decryption" \
-          --arg encryption "$encryption" \
-          --arg ip "$server_addr" \
-          --arg tag "$tag" \
-          --arg uri "$uri" \
-          --arg domain "$server_addr" \
-          --arg network "$network" \
-          --arg path "$path" \
-          --arg host "$host" \
-          --arg fingerprint "chrome" \
-          --argjson is_custom false \
-          --argjson push_enabled false \
-          --arg kex "$kex" \
-          --arg method "$method" \
-          --arg rtt "$rtt" \
-          --argjson use_mlkem "$use_mlkem" \
-          '{
-            uuid: $uuid,
-            port: ($port|tonumber),
-            decryption: $decryption,
-            encryption: $encryption,
-            ip: $ip,
-            tag: $tag,
-            uri: $uri,
-            domain: $domain,
-            network: $network,
-            path: $path,
-            host: $host,
-            fingerprint: $fingerprint,
-            is_custom_tag: $is_custom,
-            push_enabled: $push_enabled,
-            push_url: "",
-            push_token: "",
-            kex: $kex,
-            method: $method,
-            rtt: $rtt,
-            use_mlkem: $use_mlkem
-          }')
-        jq --argjson n "$node_json" '. += [$n]' "$VLESS_JSON" > "$tmpfile" && mv "$tmpfile" "$VLESS_JSON"
-        log "已附加新节点。"
-      else
-        log "已跳过添加该节点。"
-      fi
-    else
-      tmpfile="$(mktemp)"
-      node_json=$(jq -n \
-        --arg uuid "$uuid" \
-        --arg port "$port" \
-        --arg decryption "$decryption" \
-        --arg encryption "$encryption" \
-        --arg ip "$server_addr" \
-        --arg tag "$tag" \
-        --arg uri "$uri" \
-        --arg domain "$server_addr" \
-        --arg network "$network" \
-        --arg path "$path" \
-        --arg host "$host" \
-        --arg fingerprint "chrome" \
-        --argjson is_custom false \
-        --argjson push_enabled false \
-        --arg kex "$kex" \
-        --arg method "$method" \
-        --arg rtt "$rtt" \
-        --argjson use_mlkem "$use_mlkem" \
-        '{
-          uuid: $uuid,
-          port: ($port|tonumber),
-          decryption: $decryption,
-          encryption: $encryption,
-          ip: $ip,
-          tag: $tag,
-          uri: $uri,
-          domain: $domain,
-          network: $network,
-          path: $path,
-          host: $host,
-          fingerprint: $fingerprint,
-          is_custom_tag: $is_custom,
-          push_enabled: $push_enabled,
-          push_url: "",
-          push_token: "",
-          kex: $kex,
-          method: $method,
-          rtt: $rtt,
-          use_mlkem: $use_mlkem
-        }')
-      jq --argjson n "$node_json" '. += [$n]' "$VLESS_JSON" > "$tmpfile" && mv "$tmpfile" "$VLESS_JSON"
-      log "已添加新节点。"
-    fi
-
-    # 调用 regenerate_full_config/restart_xray（若主脚本提供）
-    if declare -f regenerate_full_config >/dev/null 2>&1; then regenerate_full_config; fi
-    if declare -f restart_xray >/dev/null 2>&1; then restart_xray; fi
-
-    read -p "是否继续添加另一个节点？(Y/n): " continue_choice
-    continue_choice=${continue_choice:-Y}
-    if [[ $continue_choice =~ ^[Nn]$ ]]; then
-      break
-    fi
-  done
-
-  log "退出添加节点流程。"
-}
-
-# ---------- 删除节点（本地） ----------
-delete_node_local() {
-  local identifier="$1"
-  if [ -z "$identifier" ]; then echo "Missing identifier"; return 1; fi
-  if [ ! -f "$VLESS_JSON" ]; then echo "No nodes file"; return 1; fi
-  jq --arg id "$identifier" 'map(select(.tag != $id and (.push_token // "") != $id))' "$VLESS_JSON" > "${VLESS_JSON}.tmp" && mv "${VLESS_JSON}.tmp" "$VLESS_JSON"
-  log "已删除匹配标识: $identifier"
-  if declare -f regenerate_full_config >/dev/null 2>&1; then regenerate_full_config; fi
-  if declare -f restart_xray >/dev/null 2>&1; then restart_xray; fi
-}
-
-# ---------- reset_all（重置所有节点的 UUID/密钥等） ----------
-reset_all() {
-  if [ ! -f "$VLESS_JSON" ]; then err "未找到 $VLESS_JSON"; return 1; fi
-  log "重置所有节点的 UUID 和密码..."
-  nodes=$(jq -c '.[]' "$VLESS_JSON")
-  new_nodes=()
-  while IFS= read -r node; do
-    ip=$(echo "$node" | jq -r '.ip')
-    port=$(echo "$node" | jq -r '.port')
-    domain=$(echo "$node" | jq -r '.domain // ""')
-    network=$(echo "$node" | jq -r '.network')
-    path=$(echo "$node" | jq -r '.path // ""')
-    host=$(echo "$node" | jq -r '.host // ""')
-    fingerprint=$(echo "$node" | jq -r '.fingerprint // "chrome"')
-    is_custom=$(echo "$node" | jq -r '.is_custom_tag // false')
-    use_reality=$(echo "$node" | jq -r '.use_reality // false')
-    dest=$(echo "$node" | jq -r '.dest // ""')
-    sni=$(echo "$node" | jq -r '.sni // ""')
-    shortids_json=$(echo "$node" | jq -r '.shortIds // []')
-    flow=$(echo "$node" | jq -r '.flow // ""')
-    push_enabled=$(echo "$node" | jq -r '.push_enabled // false')
-    push_url=$(echo "$node" | jq -r '.push_url // ""')
-    push_token=$(echo "$node" | jq -r '.push_token // ""')
-    servernames_json=$(echo "$node" | jq -r '.serverNames // []')
-    private_key=$(echo "$node" | jq -r '.privateKey // ""')
-    kex=$(echo "$node" | jq -r '.kex // "x25519"')
-    method=$(echo "$node" | jq -r '.method // "x25519"')
-    rtt=$(echo "$node" | jq -r '.rtt // ""')
-    use_mlkem=$(echo "$node" | jq -r '.use_mlkem // false')
-
-    if command -v xray &>/dev/null; then new_uuid=$(xray uuid); else new_uuid=$(cat /proc/sys/kernel/random/uuid); fi
-
-    if [ "$use_reality" = false ]; then
-      if [ "$rtt" = "0rtt" ]; then time_server="600s"; else time_server="0s"; fi
-      x25519_output=$(xray x25519 2>/dev/null || true)
-      private=$(echo "$x25519_output" | grep -oP '(?<=PrivateKey:).*' | sed 's/^ *//;s/ *$//' || true)
-      password=$(echo "$x25519_output" | grep -oP '(?<=Password:).*' | sed 's/^ *//;s/ *$//' || true)
-      seed=""; client_param=""
-      if [ "$use_mlkem" = true ]; then
-        mlkem_output=$(xray mlkem768 2>/dev/null || true)
-        seed=$(echo "$mlkem_output" | grep -oP '(?<=Seed:).*' | sed 's/^ *//;s/ *$//' || true)
-        client_param=$(echo "$mlkem_output" | grep -oP '(?<=Client:).*' | sed 's/^ *//;s/ *$//' || true)
-      fi
-      kex_val="${kex:-x25519}"; method_val="${method:-x25519}"
-      private_val="${private:-}"; password_val="${password:-}"
-      decryption="${kex_val}.${method_val}.${time_server}"
-      if [ -n "$private_val" ]; then decryption="${decryption}.${private_val}"; fi
-      if [ "$use_mlkem" = true ] && [ -n "$seed" ]; then decryption="${decryption}.${seed}"; fi
-      encryption="${kex_val}.${method_val}.${rtt}"
-      if [ -n "$password_val" ]; then encryption="${encryption}.${password_val}"; fi
-      if [ "$use_mlkem" = true ] && [ -n "$client_param" ]; then encryption="${encryption}.${client_param}"; fi
-    else
-      x25519_output=$(xray x25519 2>/dev/null || true)
-      private=$(echo "$x25519_output" | grep -oP '(?<=PrivateKey:).*' | sed 's/^ *//;s/ *$//' || true)
-      password=$(echo "$x25519_output" | grep -oP '(?<=Password:).*' | sed 's/^ *//;s/ *$//' || true)
-      public_key_base64="$password"
-      private_key="$private"
-      decryption="none"; encryption="none"
-    fi
-
-    tag=$(echo "$node" | jq -r '.tag // ""')
-    if [ "$is_custom" = false ] || [ -z "$tag" ]; then
-      IFS='|' read -r country city <<< "$(get_location_from_ip "$ip" || echo "Unknown|Unknown")"
-      flag="${FLAGS[$country]:-🌍}"
-      tag="${flag} ${city}"
-    fi
-
-    if [ -n "$domain" ]; then server_address="$domain"; else server_address="$ip"; fi
-    if [[ "$server_address" =~ : ]] && ! [[ "$server_address" =~ \[.*\] ]]; then server_address="[$server_address]"; fi
-
-    uri_params="type=${network}&encryption=${encryption}&packetEncoding=xudp"
-    if [ "$network" = "ws" ]; then
-      encoded_path=$(url_encode "$path")
-      encoded_host=$(url_encode "$host")
-      uri_params="${uri_params}&host=${encoded_host}&path=${encoded_path}"
-    fi
-    if [ -n "$domain" ]; then
-      uri_params="${uri_params}&security=tls&sni=${domain}&fp=${fingerprint}"
-    else
-      uri_params="${uri_params}&security=none"
-    fi
-
-    if [ "$use_reality" = true ]; then
-      shortId=""
-      if [ -n "$shortids_json" ] && [ "$shortids_json" != "null" ]; then
-        shortId=$(echo "$shortids_json" | jq -r '.[0] // empty' 2>/dev/null || echo "")
-      fi
-      uri_params="type=tcp&encryption=none&flow=${flow}&security=reality&sni=${sni}&fp=${fingerprint}&sid=${shortId}&pbk=${public_key_base64}&packetEncoding=xudp"
-    fi
-
-    encoded_tag=$(url_encode "$tag")
-    uri="vless://${new_uuid}@${server_address}:${port}?${uri_params}#${encoded_tag}"
-
-    new_node=$(generate_node_info "$new_uuid" "$port" "$decryption" "$encryption" "$ip" "$tag" "$uri" "$domain" "$network" "$path" "$host" "$fingerprint" "$is_custom" "$use_reality" "$dest" "$sni" "$shortids_json" "$public_key_base64" "$flow" "$push_enabled" "$push_url" "$push_token" "$servernames_json" "$private_key" "$kex" "$method" "$rtt" "$use_mlkem")
-    new_nodes+=("$new_node")
-  done <<< "$nodes"
-
-  printf '%s\n' "${new_nodes[@]}" | jq -s '.' > "$VLESS_JSON"
-  log "所有节点已重置并保存到 $VLESS_JSON"
-
-  if declare -f regenerate_full_config >/dev/null 2>&1; then regenerate_full_config; fi
-  if declare -f restart_xray >/dev/null 2>&1; then restart_xray 0; fi
-
-  nodes=$(jq -c '.[]' "$VLESS_JSON")
-  while IFS= read -r node; do
-    push_enabled=$(echo "$node" | jq -r '.push_enabled // false')
-    if [ "$push_enabled" = true ]; then
-      uri=$(echo "$node" | jq -r '.uri')
-      push_url=$(echo "$node" | jq -r '.push_url')
-      push_token=$(echo "$node" | jq -r '.push_token')
-      push_to_remote "$uri" "$push_url" "$push_token"
-    fi
-  done <<< "$nodes"
-
-  log "reset_all 完成。"
-}
-
-# ---------- regenerate_full_config: 生成 config.json（交互式 DNS） ----------
-regenerate_full_config() {
-  ask_dns_interactive
-
-  if [ -f "$GLOBAL_JSON" ]; then
-    strategy=$(jq -r '.strategy // "UseIPv4"' "$GLOBAL_JSON")
-    domain_strategy=$(jq -r '.domain_strategy // "UseIPv4v6"' "$GLOBAL_JSON")
-  else
-    strategy="UseIPv4"
-    domain_strategy="UseIPv4v6"
-  fi
-
-  if [ ! -f "$VLESS_JSON" ]; then
-    log "未找到 $VLESS_JSON，跳过 regenerate_full_config"
-    return
-  fi
-
-  nodes=$(jq -c '.[]' "$VLESS_JSON")
-  inbounds_json="[]"
-  while IFS= read -r node; do
-    port=$(echo "$node" | jq -r '.port')
-    uuid=$(echo "$node" | jq -r '.uuid')
-    network=$(echo "$node" | jq -r '.network')
-    path=$(echo "$node" | jq -r '.path // ""')
-    host=$(echo "$node" | jq -r '.host // ""')
-    fingerprint=$(echo "$node" | jq -r '.fingerprint // "chrome"')
-    use_reality=$(echo "$node" | jq -r '.use_reality // false')
-    dest=$(echo "$node" | jq -r '.dest // ""')
-    servernames_json=$(echo "$node" | jq -r '.serverNames // []')
-    private_key=$(echo "$node" | jq -r '.privateKey // ""')
-    shortids_json=$(echo "$node" | jq -r '.shortIds // []')
-    flow=$(echo "$node" | jq -r '.flow // ""')
-    domain=$(echo "$node" | jq -r '.domain // ""')
-
-    if [ "$use_reality" = true ]; then
-      inbound=$(jq -n \
-        --arg port "$port" \
-        --arg uuid "$uuid" \
-        --arg dest "$dest" \
-        --argjson serverNames "$servernames_json" \
-        --arg privateKey "$private_key" \
-        --argjson shortIds "$shortids_json" \
-        --arg fingerprint "$fingerprint" \
-        --arg flow "$flow" \
-        '{
-          "port": ($port|tonumber),
-          "protocol": "vless",
-          "settings": {
-            "clients": [
-              {
-                "id": $uuid,
-                "flow": $flow
-              }
-            ],
-            "decryption": "none"
-          },
-          "streamSettings": {
-            "network": "tcp",
-            "security": "reality",
-            "realitySettings": {
-              "dest": $dest,
-              "serverNames": $serverNames,
-              "privateKey": $privateKey,
-              "shortIds": $shortIds,
-              "fingerprint": $fingerprint
-            }
-          },
-          "tag": $uuid
-        }')
-    else
-      if [ "$network" = "ws" ]; then
-        streamSettings=$(jq -n --arg path "$path" --arg host "$host" '{
-          "network":"ws",
-          "wsSettings": {
-            "path": $path,
-            "headers": {"Host": $host}
-          }
-        }')
-      else
-        streamSettings=$(jq -n --arg network "$network" '{
-          "network": $network
-        }')
-      fi
-
-      inbound=$(jq -n \
-        --arg port "$port" \
-        --arg uuid "$uuid" \
-        --arg fingerprint "$fingerprint" \
-        --argjson streamSettings "$streamSettings" \
-        '{
-          "port": ($port|tonumber),
-          "protocol": "vless",
-          "settings": {
-            "clients": [
-              {
-                "id": $uuid
-              }
-            ],
-            "decryption": "none"
-          },
-          "streamSettings": $streamSettings,
-          "tag": $uuid
-        }')
-    fi
-
-    inbounds_json=$(jq -s '.[0] + [.[1]]' <(echo "$inbounds_json") <(echo "$inbound"))
-  done <<< "$nodes"
-
-  DNS_PRIMARY=${DNS_PRIMARY:-"1.1.1.1"}
-  DNS_SECONDARY=${DNS_SECONDARY:-"8.8.8.8"}
-
-  cat > "$CONFIG" <<EOF
+    cat > "$file" <<EOF
 {
-  "log": {
-    "loglevel": "warning"
-  },
-  "dns": {
-    "servers": ["${DNS_PRIMARY}","${DNS_SECONDARY}"]
-  },
-  "inbounds": $(echo "$inbounds_json" | jq -c '.'),
-  "outbounds": [
+  "inbounds":[
     {
-      "protocol": "freedom",
-      "settings": {}
+      "tag":"$tag",
+      "listen":"$listen",
+      "port":$port,
+      "protocol":"vless",
+      "settings":{"clients":[{"id":"$uuid"}],"decryption":"$decryption"},
+      "streamSettings":$stream_settings,
+      "encryption":"$encryption",
+      "network":"$network",
+      "domain":"$domain",
+      "rtt":"$rtt_mode"
     }
   ]
 }
 EOF
 
-  log "已根据 $VLESS_JSON 生成 $CONFIG（DNS: ${DNS_PRIMARY} 主, ${DNS_SECONDARY} 备用）。"
+    echo "生成成功: $file"
+    print_uri "$file"
 }
 
-# ---------- 如果脚本被直接执行，打印可用函数 ----------
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  echo "vless_encryption.sh - 可用函数：add_vless, delete_node_local, reset_all, regenerate_full_config, generate_node_info, push_to_remote"
-  exit 0
-fi
+reset_password() {
+    file=$(selectfilewith_exit) || return
+    uuid=$("$XRAY_BIN" uuid)
+    enc=$(jq -r '.inbounds[0].encryption' "$file")
+    appearance=$(echo "$enc" | cut -d. -f2)
+    rtt_mode=$(echo "$enc" | cut -d. -f3)
+    kex_type="mlkem768"
+
+    read decryption encryption < <(generatemlkemparams "$rtt_mode" "$appearance" "$kex_type")
+
+    jq ".inbounds[0].settings.clients[0].id=\"$uuid\" |
+        .inbounds[0].settings.decryption=\"$decryption\" |
+        .inbounds[0].encryption=\"$encryption\"" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+
+    echo "密码与UUID已重置"
+    print_uri "$file"
+}
+
+delete_inbound() {
+    file=$(selectfilewith_exit) || return
+    rm -f "$file"
+    echo "已删除 $file"
+}
+
+modify_inbound() {
+    file=$(selectfilewith_exit) || return
+    ${EDITOR:-vim} "$file"
+}
+
+print_uris() {
+    file=$(selectfilewith_exit) || return
+    print_uri "$file"
+}
+
+while true; do
+    echo
+    echo "==== VLESS ENC 入站管理 ===="
+    echo "[1] 添加入站"
+    echo "[2] 删除入站"
+    echo "[3] 重置密码"
+    echo "[4] 修改入站配置"
+    echo "[5] 打印 URI"
+    echo "[6] 退出"
+    read -rp "选择操作 [1-6]: " opt
+
+    case $opt in
+        1) add_inbound ;;
+        2) delete_inbound ;;
+        3) reset_password ;;
+        4) modify_inbound ;;
+        5) print_uris ;;
+        6) exit 0 ;;
+        *) echo "无效选择" ;;
+    esac
+done
