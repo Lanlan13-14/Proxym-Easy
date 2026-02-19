@@ -114,7 +114,7 @@ print_uri() {
         uri_params="${uri_params}&security=none"
     fi
 
-    # ⭐ 只在打印 URI 时询问节点名，不保存
+    # ⭐ 打印 URI 时临时输入节点名，不保存
     read -rp "节点名称（默认 $port）: " nodename
     [[ -z "$nodename" ]] && nodename="$port"
 
@@ -183,12 +183,17 @@ add_inbound() {
 
     domain=""
     host=""
-    path="/"
+
+    # ⭐ WS 路径默认随机生成
+    randpath=$(tr -dc 'a-z0-9' </dev/urandom | head -c 16)
+    path="/$randpath"
+
     fingerprint="chrome"
 
     if [[ "$network" == "ws" ]]; then
-        read -rp "WS 路径（默认 /）： " path_in
+        read -rp "WS 路径（默认随机 $path）： " path_in
         [[ -n "$path_in" ]] && path="$path_in"
+
         read -rp "WS Host（可空）： " host_in
         [[ -n "$host_in" ]] && host="$host_in"
 
