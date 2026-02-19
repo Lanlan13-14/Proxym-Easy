@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 极简管理脚本 (最终版)
-# 版本: 2.1
+# 版本: 3.0
 
 # ========== 颜色定义 ==========
 red='\e[31m'; yellow='\e[33m'; green='\e[92m'; blue='\e[94m'; cyan='\e[96m'; none='\e[0m'
@@ -19,6 +19,7 @@ is_conf_dir="/etc/$is_core/conf.d"
 is_log_dir="/var/log/$is_core"
 is_config_json="/etc/$is_core/config.json"
 is_sh_bin="/usr/local/bin/proxym-easy"
+SCRIPT_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/xray.sh"
 
 # GitHub 脚本基础 URL
 SCRIPT_BASE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/script"
@@ -212,18 +213,111 @@ update_xray() {
     _green "更新完成: $old_version -> $new_version"
 }
 
-# ========== 卸载 Xray ==========
-uninstall_xray() {
-    [[ ! -f $is_core_bin ]] && err "Xray 未安装"
-    _yellow "正在卸载 Xray..."
-    systemctl stop xray
-    systemctl disable xray &>/dev/null
-    rm -rf /etc/systemd/system/xray.service
-    systemctl daemon-reload
-    rm -rf "$is_core_dir"
-    rm -rf "$is_log_dir"
-    rm -f "$is_sh_bin"
-    _green "Xray 卸载完成"
+# ========== 更新脚本自身 ==========
+update_script() {
+    _yellow "正在检查脚本更新..."
+    
+    local tmp_script="/tmp/proxym-easy.tmp"
+    
+    # 下载新脚本
+    if ! _wget "$SCRIPT_URL" -O "$tmp_script"; then
+        _red "下载新脚本失败"
+        rm -f "$tmp_script"
+        return 1
+    fi
+    
+    # 验证语法
+    _yellow "验证脚本语法..."
+    if ! bash -n "$tmp_script"; then
+        _red "新脚本语法错误，取消更新"
+        rm -f "$tmp_script"
+        return 1
+    fi
+    
+    # 备份当前脚本
+    local backup_script="/tmp/proxym-easy.backup.$(date +%Y%m%d%H%M%S)"
+    cp "$is_sh_bin" "$backup_script"
+    _yellow "已备份当前脚本到: $backup_script"
+    
+    # 替换脚本
+    cp "$tmp_script" "$is_sh_bin"
+    chmod +x "$is_sh_bin"
+    rm -f "$tmp_script"
+    
+    _green "脚本更新成功！"
+    _green "将在3秒后重新启动新版本..."
+    sleep 3
+    exec "$is_sh_bin"  # 用新脚本替换当前进程
+}
+
+# ========== 卸载菜单 ==========
+uninstall_menu() {
+    while true; do
+        clear
+        echo "========== 卸载选项 =========="
+        echo "[1] 仅删除本脚本 (保留 Xray)"
+        echo "[2] 仅删除 Xray (保留本脚本)"
+        echo "[3] 全部删除 (Xray + 本脚本)"
+        echo "[4] 返回主菜单"
+        echo "================================"
+        echo
+        read -r -p "请选择 [1-4]: " uninstall_choice
+        
+        case $uninstall_choice in
+            1)
+                _yellow "正在删除本脚本..."
+                rm -f "$is_sh_bin"
+                _green "脚本已删除，Xray 服务保留"
+                _green "退出..."
+                exit 0
+                ;;
+            2)
+                if [[ ! -f $is_core_bin ]]; then
+                    _red "Xray 未安装"
+                else
+                    read -r -p "确定仅删除 Xray？[y/N]: " confirm
+                    if [[ $confirm == [yY] ]]; then
+                        _yellow "正在卸载 Xray..."
+                        systemctl stop xray 2>/dev/null
+                        systemctl disable xray 2>/dev/null
+                        rm -rf /etc/systemd/system/xray.service
+                        systemctl daemon-reload
+                        rm -rf "$is_core_dir"
+                        rm -rf "$is_log_dir"
+                        _green "Xray 卸载完成，本脚本已保留"
+                    fi
+                fi
+                read -r -p "按回车键继续..."
+                ;;
+            3)
+                read -r -p "确定卸载 Xray 并删除本脚本？[y/N]: " confirm
+                if [[ $confirm == [yY] ]]; then
+                    _yellow "正在卸载 Xray..."
+                    systemctl stop xray 2>/dev/null
+                    systemctl disable xray 2>/dev/null
+                    rm -rf /etc/systemd/system/xray.service
+                    systemctl daemon-reload
+                    rm -rf "$is_core_dir"
+                    rm -rf "$is_log_dir"
+                    _green "Xray 卸载完成"
+                    
+                    _yellow "正在删除本脚本..."
+                    rm -f "$is_sh_bin"
+                    _green "脚本已删除"
+                    _green "退出..."
+                    exit 0
+                fi
+                read -r -p "按回车键继续..."
+                ;;
+            4)
+                break
+                ;;
+            *)
+                _red "无效选择"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 # ========== 修改 DNS 配置 ==========
@@ -356,12 +450,12 @@ inbound_menu() {
                 bash <(curl -sL "${SCRIPT_BASE_URL}/vless_reality.sh") || _red "脚本执行失败"
                 read -r -p "按回车键继续..."
                 ;;
-            3)  # <--- 新增的选项处理
+            3)
                 _yellow "正在获取 Vless-ENC 安装脚本..."
                 bash <(curl -sL "${SCRIPT_BASE_URL}/vless_encryption.sh") || _red "脚本执行失败"
                 read -r -p "按回车键继续..."
                 ;;
-            4)  # <--- 原返回选项
+            4)
                 break
                 ;;
             *)
@@ -387,7 +481,8 @@ show_menu() {
     echo "[8] 重启 Xray"
     echo "[9] 查看最近 50 条日志"
     echo "[10] 查看 systemctl status"
-    echo "[11] 退出"
+    echo "[11] 更新本脚本"
+    echo "[12] 退出"
     echo "========================================"
     echo
 }
@@ -396,17 +491,10 @@ show_menu() {
 main() {
     check_root
     
-    # 创建软链接
-    if [[ ! -f $is_sh_bin ]] && [[ -f $0 ]]; then
-        local script_path
-        script_path=$(realpath "$0")
-        ln -sf "$script_path" "$is_sh_bin" 2>/dev/null && _green "软链接创建成功: $is_sh_bin"
-    fi
-    
     while true; do
         show_menu
         local choice
-        read -r -p "请选择 [1-11]: " choice
+        read -r -p "请选择 [1-12]: " choice
         case $choice in
             1) 
                 local ver
@@ -420,10 +508,7 @@ main() {
                 read -r -p "按回车键继续..."
                 ;;
             3) 
-                local confirm
-                read -r -p "确定卸载 Xray？[y/N]: " confirm
-                [[ $confirm == [yY] ]] && uninstall_xray
-                read -r -p "按回车键继续..."
+                uninstall_menu
                 ;;
             4) 
                 modify_dns
@@ -436,6 +521,9 @@ main() {
             9) view_logs; read -r -p "按回车键继续..." ;;
             10) view_status; read -r -p "按回车键继续..." ;;
             11) 
+                update_script
+                ;;
+            12) 
                 _green "退出，下次使用请输入: proxym-easy"
                 exit 0
                 ;;
