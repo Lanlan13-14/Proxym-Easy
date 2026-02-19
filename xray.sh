@@ -586,12 +586,12 @@ show_menu() {
     echo "[9] 查看最近 50 条日志"
     echo "[10] 查看 systemctl status"
     echo "[11] 更新本脚本"
-    echo "[12] 退出"
-    echo "[13] 开启 Xray 开机自启"
-    echo "[14] 关闭 Xray 开机自启"
-    echo "[15] 设置 定时重启 Xray (每天/每周/每月/自定义)"
-    echo "[16] 查看 定时重启 任务"
-    echo "[17] 删除 定时重启 任务"
+    echo "[12] 开启 Xray 开机自启"
+    echo "[13] 关闭 Xray 开机自启"
+    echo "[14] 设置 定时重启 Xray (每天/每周/每月/自定义)"
+    echo "[15] 查看 定时重启 任务"
+    echo "[16] 删除 定时重启 任务"
+    echo "[17] 退出"
     echo "========================================"
     echo
 }
@@ -632,15 +632,15 @@ main() {
             11) 
                 update_script
                 ;;
-            12) 
+            12) enable_autostart; read -r -p "按回车键继续..." ;;
+            13) disable_autostart; read -r -p "按回车键继续..." ;;
+            14) set_timed_restart; read -r -p "按回车键继续..." ;;
+            15) view_cron_restart; read -r -p "按回车键继续..." ;;
+            16) delete_cron_restart; read -r -p "按回车键继续..." ;;
+            17) 
                 _green "退出，下次使用请输入: proxym-easy"
                 exit 0
                 ;;
-            13) enable_autostart; read -r -p "按回车键继续..." ;;
-            14) disable_autostart; read -r -p "按回车键继续..." ;;
-            15) set_timed_restart; read -r -p "按回车键继续..." ;;
-            16) view_cron_restart; read -r -p "按回车键继续..." ;;
-            17) delete_cron_restart; read -r -p "按回车键继续..." ;;
             *) _red "无效选择"; sleep 1 ;;
         esac
     done
