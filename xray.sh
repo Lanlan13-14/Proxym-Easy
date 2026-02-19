@@ -382,6 +382,7 @@ show_menu() {
     echo "[9] 查看最近 50 条日志"
     echo "[10] 查看 systemctl status"
     echo "[11] 退出"
+    echo "========================================"
     echo
 }
 
