@@ -540,14 +540,28 @@ view_status() {
 # ========== 显示当前状态 ==========
 show_status() {
     echo -e "\n${cyan}══════════ Xray 状态 ══════════${none}"
+
     if [[ -f $is_core_bin ]]; then
         _green "● 安装状态: 已安装"
+
+        # 运行状态
         _green "● 运行状态: $(systemctl is-active xray)"
-        _green "● 启用状态: $(systemctl is-enabled xray 2>/dev/null || echo '未启用')"
+
+        # 开机自启状态（改为更清晰的判断方式）
+        local status
+        status=$(systemctl is-enabled xray 2>/dev/null)
+        if [[ $status == "enabled" ]]; then
+            _green "● 开机自启: 已开启"
+        else
+            _yellow "● 开机自启: 未开启"
+        fi
+
+        # 核心版本
         _green "● 核心版本: $($is_core_bin version 2>/dev/null | head -n1)"
     else
         _yellow "○ 安装状态: 未安装"
     fi
+
     echo -e "${cyan}═══════════════════════════════${none}\n"
 }
 
