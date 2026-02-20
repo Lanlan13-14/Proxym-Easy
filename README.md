@@ -199,7 +199,7 @@ sudo proxym-easy reset
 
 ---
 
-# ⚠ 重要提示
+# ⚠ 重要提示（仅旧版）
 
 ### ❗ VLESS Encryption 与 VLESS Reality **无法同时启用**  
 当你启用 Reality 时，之前生成的 VLESS Encryption 配置将不会生效。
