@@ -24,6 +24,10 @@ SCRIPT_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads
 # GitHub 脚本基础 URL
 SCRIPT_BASE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/script"
 
+# GitHub 加速前缀持久化文件（改为 /etc/xray/githubproxy）
+GITHUB_PROXY_FILE="/etc/xray/githubproxy"
+GITHUB_PROXY=""
+
 # 标记 crontab 条目的标识字符串，便于查找/删除
 CRON_TAG="proxym-easy xray-restart"
 
@@ -31,6 +35,23 @@ CRON_TAG="proxym-easy xray-restart"
 err() { _red "\n错误: $*\n" && exit 1; }
 _wget() { wget --no-check-certificate -q --show-progress "$@"; }
 check_root() { [[ $EUID != 0 ]] && err "请使用 root 用户执行"; }
+
+# 读取持久化的 GitHub 加速前缀（如果存在）
+load_github_proxy() {
+    if [[ -f "$GITHUB_PROXY_FILE" ]]; then
+        GITHUB_PROXY="$(sed -n '1p' "$GITHUB_PROXY_FILE" | tr -d '\r\n')"
+    fi
+}
+
+# 将 URL 加上加速前缀（如果已设置）
+add_proxy() {
+    local url="$1"
+    if [[ -n "$GITHUB_PROXY" ]]; then
+        echo "${GITHUB_PROXY}${url}"
+    else
+        echo "$url"
+    fi
+}
 
 get_arch() {
     case $(uname -m) in
@@ -71,7 +92,8 @@ install_jq() {
         arch=$(uname -m)
         local jq_arch="amd64"
         [[ $arch == *aarch64* || $arch == *armv8* ]] && jq_arch="arm64"
-        _wget "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-$jq_arch" -O /usr/bin/jq
+        local jq_url="https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-$jq_arch"
+        _wget "$(add_proxy "$jq_url")" -O /usr/bin/jq || err "jq 下载失败"
         chmod +x /usr/bin/jq
     fi
 }
@@ -84,10 +106,13 @@ download_xray() {
     local url="https://github.com/${is_core_repo}/releases/latest/download/${is_core}-linux-${arch}.zip"
     [[ -n $version ]] && url="https://github.com/${is_core_repo}/releases/download/${version}/${is_core}-linux-${arch}.zip"
 
+    local proxied_url
+    proxied_url="$(add_proxy "$url")"
+
     local tmpdir
     tmpdir=$(mktemp -d)
-    _yellow "下载 Xray: ${url}"
-    _wget "$url" -O "$tmpdir/xray.zip" || { rm -rf "$tmpdir"; err "下载失败"; }
+    _yellow "下载 Xray: ${proxied_url}"
+    _wget "$proxied_url" -O "$tmpdir/xray.zip" || { rm -rf "$tmpdir"; err "下载失败"; }
 
     unzip -qo "$tmpdir/xray.zip" -d "$tmpdir" || { rm -rf "$tmpdir"; err "解压失败"; }
 
@@ -222,8 +247,8 @@ update_script() {
 
     local tmp_script="/tmp/proxym-easy.tmp"
 
-    # 下载新脚本
-    if ! _wget "$SCRIPT_URL" -O "$tmp_script"; then
+    # 下载新脚本（支持代理）
+    if ! _wget "$(add_proxy "$SCRIPT_URL")" -O "$tmp_script"; then
         _red "下载新脚本失败"
         rm -f "$tmp_script"
         return 1
@@ -278,7 +303,7 @@ uninstall_menu() {
                     if [[ $confirm == [yY] ]]; then
                         _yellow "正在卸载 Xray..."
                         systemctl stop xray 2>/dev/null
-                        systemctl disable xray 2>/dev/null
+                        systemctl disable xray 2>/dev/null || true
                         rm -rf /etc/systemd/system/xray.service
                         systemctl daemon-reload
                         rm -rf "$is_core_dir"
@@ -293,7 +318,7 @@ uninstall_menu() {
                 if [[ $confirm == [yY] ]]; then
                     _yellow "正在卸载 Xray..."
                     systemctl stop xray 2>/dev/null
-                    systemctl disable xray 2>/dev/null
+                    systemctl disable xray 2>/dev/null || true
                     rm -rf /etc/systemd/system/xray.service
                     systemctl daemon-reload
                     rm -rf "$is_core_dir"
@@ -542,17 +567,17 @@ inbound_menu() {
         case $inbound_choice in
             1)
                 _yellow "正在获取 SS2022 安装脚本..."
-                bash <(curl -sL "${SCRIPT_BASE_URL}/ss2022.sh") || _red "脚本执行失败"
+                bash <(curl -sL "$(add_proxy "${SCRIPT_BASE_URL}/ss2022.sh")") || _red "脚本执行失败"
                 read -r -p "按回车键继续..."
                 ;;
             2)
                 _yellow "正在获取 Vless-Reality 安装脚本..."
-                bash <(curl -sL "${SCRIPT_BASE_URL}/vless_reality.sh") || _red "脚本执行失败"
+                bash <(curl -sL "$(add_proxy "${SCRIPT_BASE_URL}/vless_reality.sh")") || _red "脚本执行失败"
                 read -r -p "按回车键继续..."
                 ;;
             3)
                 _yellow "正在获取 Vless-ENC 安装脚本..."
-                bash <(curl -sL "${SCRIPT_BASE_URL}/vless_encryption.sh") || _red "脚本执行失败"
+                bash <(curl -sL "$(add_proxy "${SCRIPT_BASE_URL}/vless_encryption.sh")") || _red "脚本执行失败"
                 read -r -p "按回车键继续..."
                 ;;
             4)
@@ -566,28 +591,91 @@ inbound_menu() {
     done
 }
 
+# ========== GitHub 镜像加速 子菜单 ==========
+git_proxy_menu() {
+    while true; do
+        clear
+        echo "========== GitHub 镜像加速 =========="
+        echo "[1] 添加或修改镜像前缀"
+        echo "[2] 删除镜像前缀"
+        echo "[3] 返回主菜单"
+        echo "===================================="
+        echo
+        read -r -p "请选择 [1-3]: " gp_choice
+        case $gp_choice in
+            1)
+                set_github_proxy
+                read -r -p "按回车键继续..."
+                ;;
+            2)
+                delete_github_proxy
+                read -r -p "按回车键继续..."
+                ;;
+            3)
+                break
+                ;;
+            *)
+                _red "无效选择"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ========== GitHub 加速前缀设置 ==========
+set_github_proxy() {
+    echo
+    echo "当前加速前缀: ${GITHUB_PROXY:-未设置}"
+    read -r -p "请输入新的加速前缀 (例如 https://ghfast.top/ ，留空则取消并清除已保存): " new_proxy
+
+    if [[ -z "$new_proxy" ]]; then
+        GITHUB_PROXY=""
+        if [[ -f "$GITHUB_PROXY_FILE" ]]; then
+            rm -f "$GITHUB_PROXY_FILE"
+        fi
+        _green "已取消并清除 GitHub 加速前缀"
+    else
+        # 确保目录存在并保存
+        mkdir -p "$(dirname "$GITHUB_PROXY_FILE")"
+        echo -n "$new_proxy" > "$GITHUB_PROXY_FILE"
+        GITHUB_PROXY="$new_proxy"
+        _green "已设置 GitHub 加速前缀: $GITHUB_PROXY"
+    fi
+}
+
+delete_github_proxy() {
+    if [[ -f "$GITHUB_PROXY_FILE" ]]; then
+        rm -f "$GITHUB_PROXY_FILE"
+        GITHUB_PROXY=""
+        _green "已删除 GitHub 加速前缀"
+    else
+        _yellow "未设置任何 GitHub 加速前缀"
+    fi
+}
+
 # ========== 主菜单 ==========
 show_menu() {
     clear
     echo "========== Xray 极简管理菜单 =========="
     show_status
-    echo "[1] 安装 Xray"
-    echo "[2] 更新 Xray"
-    echo "[3] 卸载 Xray"
-    echo "[4] 修改 DNS 配置"
-    echo "[5] 入站管理"
-    echo "[6] 启动 Xray"
-    echo "[7] 停止 Xray"
-    echo "[8] 重启 Xray"
-    echo "[9] 查看最近 50 条日志"
-    echo "[10] 查看 systemctl status"
-    echo "[11] 更新本脚本"
-    echo "[12] 开启 Xray 开机自启"
-    echo "[13] 关闭 Xray 开机自启"
-    echo "[14] 设置 定时重启 Xray (每天/每周/每月/自定义)"
-    echo "[15] 查看 定时重启 任务"
-    echo "[16] 删除 定时重启 任务"
-    echo "[17] 退出"
+    echo "[1] GitHub 镜像加速"
+    echo "[2] 安装 Xray"
+    echo "[3] 更新 Xray"
+    echo "[4] 卸载 Xray"
+    echo "[5] 修改 DNS 配置"
+    echo "[6] 入站管理"
+    echo "[7] 启动 Xray"
+    echo "[8] 停止 Xray"
+    echo "[9] 重启 Xray"
+    echo "[10] 查看最近 50 条日志"
+    echo "[11] 查看 systemctl status"
+    echo "[12] 更新本脚本"
+    echo "[13] 开启 Xray 开机自启"
+    echo "[14] 关闭 Xray 开机自启"
+    echo "[15] 设置 定时重启 Xray (每天/每周/每月/自定义)"
+    echo "[16] 查看 定时重启 任务"
+    echo "[17] 删除 定时重启 任务"
+    echo "[18] 退出"
     echo "========================================"
     echo
 }
@@ -595,49 +683,78 @@ show_menu() {
 # ========== 主程序 ==========
 main() {
     check_root
+    load_github_proxy
 
     while true; do
         show_menu
         local choice
-        read -r -p "请选择 [1-17]: " choice
+        read -r -p "请选择 [1-18]: " choice
         case $choice in
-            1) 
+            1)
+                git_proxy_menu
+                ;;
+            2)
                 local ver
                 read -r -p "请输入版本号 (直接回车安装最新版): " ver
                 [[ -n $ver ]] && ver="v${ver#v}"
                 install_xray "$ver"
                 read -r -p "按回车键继续..."
                 ;;
-            2) 
+            3)
                 update_xray
                 read -r -p "按回车键继续..."
                 ;;
-            3) 
+            4)
                 uninstall_menu
                 ;;
-            4) 
+            5)
                 modify_dns
                 read -r -p "按回车键继续..."
                 ;;
-            5) inbound_menu ;;
-            6) control_service start; read -r -p "按回车键继续..." ;;
-            7) control_service stop; read -r -p "按回车键继续..." ;;
-            8) control_service restart; read -r -p "按回车键继续..." ;;
-            9) view_logs; read -r -p "按回车键继续..." ;;
-            10) view_status; read -r -p "按回车键继续..." ;;
-            11) 
+            6)
+                inbound_menu
+                ;;
+            7)
+                control_service start; read -r -p "按回车键继续..."
+                ;;
+            8)
+                control_service stop; read -r -p "按回车键继续..."
+                ;;
+            9)
+                control_service restart; read -r -p "按回车键继续..."
+                ;;
+            10)
+                view_logs; read -r -p "按回车键继续..."
+                ;;
+            11)
+                view_status; read -r -p "按回车键继续..."
+                ;;
+            12)
                 update_script
                 ;;
-            12) enable_autostart; read -r -p "按回车键继续..." ;;
-            13) disable_autostart; read -r -p "按回车键继续..." ;;
-            14) set_timed_restart; read -r -p "按回车键继续..." ;;
-            15) view_cron_restart; read -r -p "按回车键继续..." ;;
-            16) delete_cron_restart; read -r -p "按回车键继续..." ;;
-            17) 
+            13)
+                enable_autostart; read -r -p "按回车键继续..."
+                ;;
+            14)
+                disable_autostart; read -r -p "按回车键继续..."
+                ;;
+            15)
+                set_timed_restart; read -r -p "按回车键继续..."
+                ;;
+            16)
+                view_cron_restart; read -r -p "按回车键继续..."
+                ;;
+            17)
+                delete_cron_restart; read -r -p "按回车键继续..."
+                ;;
+            18)
                 _green "退出，下次使用请输入: proxym-easy"
                 exit 0
                 ;;
-            *) _red "无效选择"; sleep 1 ;;
+            *)
+                _red "无效选择"
+                sleep 1
+                ;;
         esac
     done
 }
