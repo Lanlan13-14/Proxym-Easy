@@ -544,13 +544,19 @@ show_status() {
     if [[ -f $is_core_bin ]]; then
         _green "● 安装状态: 已安装"
 
-        # 运行状态
-        _green "● 运行状态: $(systemctl is-active xray)"
+        # 运行状态（active 绿色，inactive 黄色）
+        local run_status
+        run_status=$(systemctl is-active xray 2>/dev/null)
+        if [[ $run_status == "active" ]]; then
+            _green "● 运行状态: active"
+        else
+            _yellow "● 运行状态: $run_status"
+        fi
 
-        # 开机自启状态（改为更清晰的判断方式）
-        local status
-        status=$(systemctl is-enabled xray 2>/dev/null)
-        if [[ $status == "enabled" ]]; then
+        # 开机自启状态（enabled 绿色，否则黄色）
+        local boot_status
+        boot_status=$(systemctl is-enabled xray 2>/dev/null)
+        if [[ $boot_status == "enabled" ]]; then
             _green "● 开机自启: 已开启"
         else
             _yellow "● 开机自启: 未开启"
