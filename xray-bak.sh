@@ -24,6 +24,9 @@ SCRIPT_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads
 # GitHub 脚本基础 URL
 SCRIPT_BASE_URL="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/script"
 
+# 标记 crontab 条目的标识字符串，便于查找/删除
+CRON_TAG="proxym-easy xray-restart"
+
 # ========== 工具函数 ==========
 err() { _red "\n错误: $*\n" && exit 1; }
 _wget() { wget --no-check-certificate -q --show-progress "$@"; }
@@ -42,11 +45,11 @@ install_deps() {
     local cmd
     cmd=$(type -P apt-get || type -P yum)
     [[ ! $cmd ]] && err "仅支持 apt-get 或 yum 包管理器"
-    
+
     local pkgs="wget unzip curl"
     local to_install=""
     local pkg
-    
+
     for pkg in $pkgs; do
         if [[ ! $(type -P "$pkg") ]]; then
             to_install="$to_install $pkg"
@@ -80,14 +83,14 @@ download_xray() {
     arch=$(get_arch)
     local url="https://github.com/${is_core_repo}/releases/latest/download/${is_core}-linux-${arch}.zip"
     [[ -n $version ]] && url="https://github.com/${is_core_repo}/releases/download/${version}/${is_core}-linux-${arch}.zip"
-    
+
     local tmpdir
     tmpdir=$(mktemp -d)
     _yellow "下载 Xray: ${url}"
     _wget "$url" -O "$tmpdir/xray.zip" || { rm -rf "$tmpdir"; err "下载失败"; }
-    
+
     unzip -qo "$tmpdir/xray.zip" -d "$tmpdir" || { rm -rf "$tmpdir"; err "解压失败"; }
-    
+
     mkdir -p "$is_core_dir/bin"
     cp -rf "$tmpdir"/* "$is_core_dir/bin/" 2>/dev/null
     chmod +x "$is_core_bin"
@@ -98,7 +101,7 @@ download_xray() {
 # ========== 生成基础配置 ==========
 gen_base_config() {
     mkdir -p "$is_conf_dir"
-    
+
     # 01-dns.json
     cat > "$is_conf_dir/01-dns.json" <<EOF
 {
@@ -111,7 +114,7 @@ gen_base_config() {
   }
 }
 EOF
-    
+
     # 02-base.json
     cat > "$is_conf_dir/02-base.json" <<EOF
 {
@@ -179,7 +182,7 @@ EOF
 # ========== 安装主函数 ==========
 install_xray() {
     [[ -f $is_core_bin ]] && _yellow "Xray 已安装，正在重新安装..." && systemctl stop xray
-    
+
     _green "开始安装 Xray..."
     install_deps
     install_jq
@@ -198,16 +201,16 @@ update_xray() {
     [[ ! -f $is_core_bin ]] && err "Xray 未安装"
     _yellow "正在更新 Xray..."
     systemctl stop xray
-    
+
     local old_version
     old_version=$($is_core_bin version | head -n1)
-    
+
     # 安全删除
     rm -rf "${is_core_dir:?}/bin/"*
-    
+
     download_xray
     systemctl start xray
-    
+
     local new_version
     new_version=$($is_core_bin version | head -n1)
     _green "更新完成: $old_version -> $new_version"
@@ -216,16 +219,16 @@ update_xray() {
 # ========== 更新脚本自身 ==========
 update_script() {
     _yellow "正在检查脚本更新..."
-    
+
     local tmp_script="/tmp/proxym-easy.tmp"
-    
+
     # 下载新脚本
     if ! _wget "$SCRIPT_URL" -O "$tmp_script"; then
         _red "下载新脚本失败"
         rm -f "$tmp_script"
         return 1
     fi
-    
+
     # 验证语法
     _yellow "验证脚本语法..."
     if ! bash -n "$tmp_script"; then
@@ -233,21 +236,17 @@ update_script() {
         rm -f "$tmp_script"
         return 1
     fi
-    
-    # 备份当前脚本
-    local backup_script="/tmp/proxym-easy.backup.$(date +%Y%m%d%H%M%S)"
-    cp "$is_sh_bin" "$backup_script"
-    _yellow "已备份当前脚本到: $backup_script"
-    
-    # 替换脚本
+
+    # 语法正确，直接替换
+    _green "语法验证通过，正在更新..."
     cp "$tmp_script" "$is_sh_bin"
     chmod +x "$is_sh_bin"
     rm -f "$tmp_script"
-    
+
     _green "脚本更新成功！"
     _green "将在3秒后重新启动新版本..."
     sleep 3
-    exec "$is_sh_bin"  # 用新脚本替换当前进程
+    exec "$is_sh_bin"
 }
 
 # ========== 卸载菜单 ==========
@@ -262,7 +261,7 @@ uninstall_menu() {
         echo "================================"
         echo
         read -r -p "请选择 [1-4]: " uninstall_choice
-        
+
         case $uninstall_choice in
             1)
                 _yellow "正在删除本脚本..."
@@ -300,7 +299,7 @@ uninstall_menu() {
                     rm -rf "$is_core_dir"
                     rm -rf "$is_log_dir"
                     _green "Xray 卸载完成"
-                    
+
                     _yellow "正在删除本脚本..."
                     rm -f "$is_sh_bin"
                     _green "脚本已删除"
@@ -323,16 +322,16 @@ uninstall_menu() {
 # ========== 修改 DNS 配置 ==========
 modify_dns() {
     [[ ! -f $is_conf_dir/01-dns.json ]] && err "DNS 配置文件不存在，请先安装 Xray"
-    
+
     _blue "当前 DNS 配置:"
     cat "$is_conf_dir/01-dns.json" | jq '.'
     echo
-    
+
     local dns1 dns2 strategy
-    
+
     read -r -p "请输入首选 DNS (默认: 1.1.1.1): " dns1
     read -r -p "请输入备选 DNS (默认: 8.8.8.8): " dns2
-    
+
     echo
     echo "请选择 DNS 查询策略:"
     echo "[1] UseIPv4 - 强制只返回 IPv4 地址"
@@ -341,17 +340,17 @@ modify_dns() {
     echo "[4] IPIfNonMatch - 优先匹配，找不到再用其他类型"
     echo
     read -r -p "请选择 [1-4] (默认: 1): " strategy
-    
+
     dns1=${dns1:-1.1.1.1}
     dns2=${dns2:-8.8.8.8}
-    
+
     case $strategy in
         2) strategy="UseIPv6" ;;
         3) strategy="UseIP" ;;
         4) strategy="IPIfNonMatch" ;;
         *) strategy="UseIPv4" ;;
     esac
-    
+
     cat > "$is_conf_dir/01-dns.json" <<EOF
 {
   "dns": {
@@ -379,16 +378,117 @@ control_service() {
         restart) action_cn="重启" ;;
         *) return ;;
     esac
-    
+
     if [[ ! -f $is_core_bin ]]; then
         _red "Xray 未安装，无法执行此操作"
         return
     fi
-    
+
     _yellow "正在${action_cn} Xray 服务..."
     systemctl $action xray
     sleep 2
     _green "当前状态: $(systemctl is-active xray)"
+}
+
+# ========== 开机自启管理 ==========
+enable_autostart() {
+    if [[ ! -f $is_core_bin ]]; then
+        _red "Xray 未安装，无法设置开机自启"
+        return
+    fi
+    systemctl enable xray &>/dev/null
+    _green "Xray 开机自启已开启"
+}
+
+disable_autostart() {
+    if [[ ! -f $is_core_bin ]]; then
+        _red "Xray 未安装，无法设置开机自启"
+        return
+    fi
+    systemctl disable xray &>/dev/null
+    _green "Xray 开机自启已关闭"
+}
+
+# ========== Cron 定时重启管理 ==========
+# 支持: 每天指定时间、每周指定星期和时间、每月指定日期和时间、自定义 cron 表达式
+set_timed_restart() {
+    if [[ ! -f $is_core_bin ]]; then
+        _red "Xray 未安装，无法设置定时重启"
+        return
+    fi
+
+    echo
+    echo "请选择定时重启类型:"
+    echo "[1] 每天 指定 时间（例如每天 03:30）"
+    echo "[2] 每周 指定 星期和时间（例如周一 03:30）"
+    echo "[3] 每月 指定 日期和时间（例如每月 1 03:30）"
+    echo "[4] 自定义 cron 表达式（高级用户）"
+    echo "[5] 取消"
+    echo
+    read -r -p "请选择 [1-5]: " tchoice
+
+    local cron_expr hour minute weekday day
+
+    case $tchoice in
+        1)
+            read -r -p "请输入小时 (0-23, 默认 3): " hour
+            read -r -p "请输入分钟 (0-59, 默认 0): " minute
+            hour=${hour:-3}
+            minute=${minute:-0}
+            cron_expr="$minute $hour * * *"
+            ;;
+        2)
+            echo "星期数字: 0 或 7=周日, 1=周一 ... 6=周六"
+            read -r -p "请输入星期 (0-7, 默认 1): " weekday
+            read -r -p "请输入小时 (0-23, 默认 3): " hour
+            read -r -p "请输入分钟 (0-59, 默认 0): " minute
+            weekday=${weekday:-1}
+            hour=${hour:-3}
+            minute=${minute:-0}
+            cron_expr="$minute $hour * * $weekday"
+            ;;
+        3)
+            read -r -p "请输入每月日期 (1-31, 默认 1): " day
+            read -r -p "请输入小时 (0-23, 默认 3): " hour
+            read -r -p "请输入分钟 (0-59, 默认 0): " minute
+            day=${day:-1}
+            hour=${hour:-3}
+            minute=${minute:-0}
+            cron_expr="$minute $hour $day * *"
+            ;;
+        4)
+            echo "请输入完整的 cron 表达式（5 个字段，空格分隔），例如: 30 3 * * 1-5"
+            read -r -p "cron 表达式: " cron_expr
+            # 简单校验：至少包含 5 个字段
+            if [[ $(echo "$cron_expr" | awk '{print NF}') -lt 5 ]]; then
+                _red "无效的 cron 表达式"
+                return
+            fi
+            ;;
+        *)
+            _yellow "已取消"
+            return
+            ;;
+    esac
+
+    # 将新的定时任务写入 crontab，先移除旧的同标识任务
+    (crontab -l 2>/dev/null | grep -v -F "$CRON_TAG") | crontab -
+    # 添加新任务
+    (crontab -l 2>/dev/null; echo "$cron_expr systemctl restart xray >/dev/null 2>&1 # $CRON_TAG") | crontab -
+    _green "已设置定时重启: $cron_expr (标识: $CRON_TAG)"
+    _green "你可以使用 查看定时重启任务 来确认"
+}
+
+view_cron_restart() {
+    echo
+    _cyan "当前与 Xray 重启相关的 Cron 任务:"
+    crontab -l 2>/dev/null | grep -F "$CRON_TAG" || _yellow "未设置定时重启任务"
+    echo
+}
+
+delete_cron_restart() {
+    (crontab -l 2>/dev/null | grep -v -F "$CRON_TAG") | crontab -
+    _green "已删除所有带标识的 Xray 定时重启任务"
 }
 
 # ========== 查看日志 ==========
@@ -397,7 +497,7 @@ view_logs() {
         _red "Xray 未安装，无法查看日志"
         return
     fi
-    
+
     echo -e "\n${cyan}══════ Xray 最新 50 条日志 ══════${none}"
     journalctl -u xray -n 50 --no-pager -q
     echo -e "${cyan}══════════════════════════════════${none}\n"
@@ -438,7 +538,7 @@ inbound_menu() {
         echo "================================"
         echo
         read -r -p "请选择 [1-4]: " inbound_choice  
-        
+
         case $inbound_choice in
             1)
                 _yellow "正在获取 SS2022 安装脚本..."
@@ -482,7 +582,12 @@ show_menu() {
     echo "[9] 查看最近 50 条日志"
     echo "[10] 查看 systemctl status"
     echo "[11] 更新本脚本"
-    echo "[12] 退出"
+    echo "[12] 开启 Xray 开机自启"
+    echo "[13] 关闭 Xray 开机自启"
+    echo "[14] 设置 定时重启 Xray (每天/每周/每月/自定义)"
+    echo "[15] 查看 定时重启 任务"
+    echo "[16] 删除 定时重启 任务"
+    echo "[17] 退出"
     echo "========================================"
     echo
 }
@@ -490,11 +595,11 @@ show_menu() {
 # ========== 主程序 ==========
 main() {
     check_root
-    
+
     while true; do
         show_menu
         local choice
-        read -r -p "请选择 [1-12]: " choice
+        read -r -p "请选择 [1-17]: " choice
         case $choice in
             1) 
                 local ver
@@ -523,7 +628,12 @@ main() {
             11) 
                 update_script
                 ;;
-            12) 
+            12) enable_autostart; read -r -p "按回车键继续..." ;;
+            13) disable_autostart; read -r -p "按回车键继续..." ;;
+            14) set_timed_restart; read -r -p "按回车键继续..." ;;
+            15) view_cron_restart; read -r -p "按回车键继续..." ;;
+            16) delete_cron_restart; read -r -p "按回车键继续..." ;;
+            17) 
                 _green "退出，下次使用请输入: proxym-easy"
                 exit 0
                 ;;
