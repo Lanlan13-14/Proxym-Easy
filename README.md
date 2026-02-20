@@ -179,7 +179,7 @@ sudo proxym-easy
 
 # 📁 文件路径说明
 
-### URI 保存位置
+### URI 保存位置（仅旧版）
 ```
 /etc/proxym/vless.json
 ```
@@ -191,7 +191,7 @@ sudo proxym-easy
 
 ---
 
-# 🔧 重置 UUID / 密码
+# 🔧 重置 UUID / 密码（仅旧版）
 
 ```
 sudo proxym-easy reset
