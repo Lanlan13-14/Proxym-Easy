@@ -616,7 +616,7 @@ update_shell() {
     check_network
     local shell_file="/usr/bin/mihomo"
     local tmp_file="$(mktemp /tmp/mihomo.XXXXXX)"
-    local sh_ver_url="https://raw.githubusercontent.com/Abcd789JK/Tools/refs/heads/main/Script/mihomo/mihomo.sh"
+    local sh_ver_url="https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/script/mihomo.sh"
     trap 'rm -f "$tmp_file"' RETURN
     
     echo -e "${green}开始检查脚本是否有更新${reset}"
