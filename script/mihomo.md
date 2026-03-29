@@ -1,3 +1,4 @@
+本脚本[基于](https://github.com/Abcd789JK/Tools)修改，感谢原作者付出
 安装mihomo
 ```bash
 wget -O install.sh https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/refs/heads/main/script/install_mihomo.sh && chmod +x install.sh && ./install.sh
