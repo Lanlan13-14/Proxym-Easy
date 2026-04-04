@@ -1,5 +1,5 @@
 #!/bin/bash
-# Xray 极简管理脚本 (最终版)
+# Xray 极简管理脚本
 # 版本: 3.0
 
 # ========== 颜色定义 ==========
@@ -580,10 +580,10 @@ inbound_menu() {
         echo "[2] Vless-Reality"
         echo "[3] Vless-ENC"
         echo "[4] Socks5"
-        echo "[5] 返回主菜单"
+        echo "[0] 返回主菜单"
         echo "================================"
         echo
-        read -r -p "请选择 [1-5]: " inbound_choice  
+        read -r -p "请选择 [0-4]: " inbound_choice  
 
         case $inbound_choice in
             1)
@@ -606,7 +606,7 @@ inbound_menu() {
                 bash <(curl -sL "$(add_proxy "${SCRIPT_BASE_URL}/socks5.sh")") || _red "脚本执行失败"
                 read -r -p "按回车键继续..."
                 ;;
-            5)
+            0)
                 break
                 ;;
             *)
@@ -695,13 +695,13 @@ show_menu() {
     echo "[9] 重启 Xray"
     echo "[10] 查看最近 50 条日志"
     echo "[11] 查看 systemctl status"
-    echo "[12] 更新本脚本"
-    echo "[13] 开启 Xray 开机自启"
-    echo "[14] 关闭 Xray 开机自启"
-    echo "[15] 设置 定时重启 Xray (每天/每周/每月/自定义)"
-    echo "[16] 查看 定时重启 任务"
-    echo "[17] 删除 定时重启 任务"
-    echo "[18] 退出"
+    echo "[12] 开启 Xray 开机自启"
+    echo "[13] 关闭 Xray 开机自启"
+    echo "[14] 设置 定时重启 Xray (每天/每周/每月/自定义)"
+    echo "[15] 查看 定时重启 任务"
+    echo "[16] 删除 定时重启 任务"
+    echo "[99] 更新本脚本"
+    echo "[0] 退出"
     echo "========================================"
     echo
 }
@@ -714,7 +714,7 @@ main() {
     while true; do
         show_menu
         local choice
-        read -r -p "请选择 [1-18]: " choice
+        read -r -p "请选择 [0-99]: " choice
         case $choice in
             1)
                 git_proxy_menu
@@ -756,24 +756,24 @@ main() {
                 view_status; read -r -p "按回车键继续..."
                 ;;
             12)
-                update_script
-                ;;
-            13)
                 enable_autostart; read -r -p "按回车键继续..."
                 ;;
-            14)
+            13)
                 disable_autostart; read -r -p "按回车键继续..."
                 ;;
-            15)
+            14)
                 set_timed_restart; read -r -p "按回车键继续..."
                 ;;
-            16)
+            15)
                 view_cron_restart; read -r -p "按回车键继续..."
                 ;;
-            17)
+            16)
                 delete_cron_restart; read -r -p "按回车键继续..."
                 ;;
-            18)
+            99)
+                update_script
+                ;;
+            0)
                 _green "退出，下次使用请输入: proxym-easy"
                 exit 0
                 ;;
