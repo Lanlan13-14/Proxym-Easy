@@ -54,7 +54,7 @@ print_uri() {
     fi
 
     if [[ -n "$ipv4" ]]; then
-        echo "socks://$auth_part$ipv4:$port#$remark"
+        echo "socks5://$auth_part$ipv4:$port#$remark"
     elif [[ -n "$ipv6" ]]; then
         echo "socks://$auth_part[$ipv6]:$port#$remark"
     else
