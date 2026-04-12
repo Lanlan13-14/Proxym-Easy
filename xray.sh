@@ -154,7 +154,7 @@ EOF
     }
   ],
   "routing": {
-    "domainStrategy": "AsIs",
+    "domainStrategy": "UseIPv4v6",
     "rules": [
       {
         "type": "field",
