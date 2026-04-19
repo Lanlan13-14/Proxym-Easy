@@ -146,7 +146,8 @@ EOF
   "outbounds": [
     {
       "tag": "direct",
-      "protocol": "freedom"
+      "protocol": "freedom",
+      "settings": {"domainStrategy": "UseIPv4v6"}
     },
     {
       "tag": "block",
