@@ -21,7 +21,7 @@ get_next_number() {
     exit 1
 }
 
-# ===== 端口检测 =====
+# ===== 检查端口 =====
 check_port() {
     ss -tuln | grep -q ":$1 " && return 1 || return 0
 }
@@ -30,15 +30,19 @@ check_port() {
 get_ipv4() { curl -s -4 --max-time 3 ip.sb; }
 get_ipv6() { curl -s -6 --max-time 3 ip.sb; }
 
-# ===== 生成 Reality 密钥 =====
+# ===== 兼容所有版本的密钥解析（核心修复） =====
 gen_keys() {
     keys=$($XRAY_BIN x25519)
 
-    privateKey=$(echo "$keys" | awk -F': ' '/Private key/ {print $2}')
-    publicKey=$(echo "$keys" | awk -F': ' '/Public key/ {print $2}')
+    # 兼容两种格式：
+    # 1. Private key / Public key
+    # 2. PrivateKey / Password
+
+    privateKey=$(echo "$keys" | grep -iE 'PrivateKey|Private key' | head -n1 | awk '{print $2}')
+    publicKey=$(echo "$keys" | grep -iE 'Public key|Password' | head -n1 | awk '{print $2}')
 
     if [[ -z "$privateKey" || -z "$publicKey" ]]; then
-        echo "❌ 密钥生成失败"
+        echo "❌ Reality 密钥解析失败"
         echo "$keys"
         exit 1
     fi
@@ -52,6 +56,9 @@ print_uri() {
     uuid=$(jq -r '.inbounds[1].settings.clients[0].id' "$file")
     sni=$(jq -r '.inbounds[1].streamSettings.realitySettings.serverNames[0]' "$file")
     shortId=$(jq -r '.inbounds[1].streamSettings.realitySettings.shortIds[0]' "$file")
+
+    # ⚠ 公钥直接从生成时变量拿（保证匹配）
+    pbk="$PUBLIC_KEY"
 
     ipv4=$(get_ipv4)
     ipv6=$(get_ipv6)
@@ -72,14 +79,6 @@ print_uri() {
         *) fp="chrome" ;;
     esac
 
-    # ⚠ 使用同一组公钥（不能重新生成）
-    publicKey=$(jq -r '.inbounds[1].streamSettings.realitySettings.publicKey // empty' "$file")
-    if [[ -z "$publicKey" ]]; then
-        # 如果没存就重新从私钥推导（兜底）
-        privateKey=$(jq -r '.inbounds[1].streamSettings.realitySettings.privateKey' "$file")
-        publicKey=$($XRAY_BIN x25519 -i "$privateKey" 2>/dev/null | awk -F': ' '/Public key/ {print $2}')
-    fi
-
     if [[ -n "$ipv4" ]]; then
         host="$ipv4"
     elif [[ -n "$ipv6" ]]; then
@@ -91,7 +90,7 @@ print_uri() {
 
     echo
     echo "======== Reality URI ========"
-    echo "vless://$uuid@$host:$port?encryption=none&security=reality&sni=$sni&fp=$fp&type=tcp&pbk=$publicKey&sid=$shortId"
+    echo "vless://$uuid@$host:$port?encryption=none&security=reality&sni=$sni&fp=$fp&type=tcp&pbk=$pbk&sid=$shortId"
     echo "============================"
 }
 
@@ -106,7 +105,7 @@ add_inbound() {
         if check_port "$port"; then
             break
         else
-            echo "端口占用"
+            echo "❌ 端口被占用"
         fi
     done
 
@@ -118,7 +117,7 @@ add_inbound() {
         if check_port "$inner_port"; then
             break
         else
-            echo "端口占用"
+            echo "❌ 端口被占用"
         fi
     done
 
@@ -126,7 +125,11 @@ add_inbound() {
     [[ -z "$dest" ]] && dest="speed.cloudflare.com"
 
     uuid=$($XRAY_BIN uuid)
+
     gen_keys
+    PRIVATE_KEY="$privateKey"
+    PUBLIC_KEY="$publicKey"
+
     shortId=$(openssl rand -hex 8)
 
     number=$(get_next_number)
@@ -168,7 +171,7 @@ add_inbound() {
         "realitySettings": {
           "dest": "127.0.0.1:$inner_port",
           "serverNames": ["$dest"],
-          "privateKey": "$privateKey",
+          "privateKey": "$PRIVATE_KEY",
           "shortIds": ["$shortId"]
         }
       },
@@ -200,10 +203,10 @@ add_inbound() {
 EOF
 
     echo
-    echo "✅ 已创建: $file"
+    echo "✅ 创建成功: $file"
     echo "UUID:       $uuid"
-    echo "PrivateKey: $privateKey"
-    echo "PublicKey:  $publicKey"
+    echo "PrivateKey: $PRIVATE_KEY"
+    echo "PublicKey:  $PUBLIC_KEY"
     echo "ShortId:    $shortId"
 
     print_uri "$file"
