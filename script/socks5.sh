@@ -212,15 +212,15 @@ while true; do
     echo "[2] 删除入站"
     echo "[3] 修改入站配置"
     echo "[4] 打印 URI"
-    echo "[5] 退出"
-    read -rp "选择操作 [1-5]: " opt
+    echo "[0] 退出"
+    read -rp "选择操作 [0-4]: " opt
 
     case $opt in
         1) add_inbound ;;
         2) delete_inbound ;;
         3) modify_inbound ;;
         4) print_uris ;;
-        5) exit 0 ;;
+        0) exit 0 ;;
         *) echo "无效选择" ;;
     esac
 done
