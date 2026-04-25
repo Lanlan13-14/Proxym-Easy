@@ -1,6 +1,8 @@
 #!/bin/bash
 CONF_DIR="/etc/xray/conf.d"
 mkdir -p "$CONF_DIR"
+
+# 固定 xray 可执行文件路径
 XRAY_BIN="/etc/xray/bin/xray"
 if [[ ! -x "$XRAY_BIN" ]]; then
     echo "错误：找不到 xray 可执行文件：$XRAY_BIN" >&2
@@ -25,11 +27,34 @@ check_port() {
     ss -tuln 2>/dev/null | grep -q -E "[: ]${port} " && return 1 || return 0
 }
 
+# 在指定范围内随机寻找未被占用的端口（尝试若干次后顺序扫描）
+find_random_free_port_in_range() {
+    local low="$1"
+    local high="$2"
+    local attempts=50
+    local p
+    for _ in $(seq 1 $attempts); do
+        p=$((RANDOM%(high-low+1)+low))
+        if check_port "$p"; then
+            echo "$p"
+            return 0
+        fi
+    done
+    # 如果随机尝试失败，顺序扫描范围内端口
+    for p in $(seq "$low" "$high"); do
+        if check_port "$p"; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # 获取 IPv4 / IPv6
 get_ipv4() { curl -s -4 ip.sb; }
 get_ipv6() { curl -s -6 ip.sb; }
 
-# 从 xray x25519 输出安全解析私钥/公钥（兼容不同标签）
+# 解析 x25519 输出，兼容 PrivateKey/Private Key 和 Password/PublicKey/Hash32 标签
 parse_x25519_keys() {
     local out="$1"
     privateKey=$(echo "$out" | sed -n 's/^[[:space:]]*PrivateKey:[[:space:]]*//Ip' | head -n1)
@@ -43,6 +68,24 @@ parse_x25519_keys() {
     if [[ -z "$publicKey" ]]; then
         publicKey=$(echo "$out" | sed -n 's/^[[:space:]]*Hash32:[[:space:]]*//Ip' | head -n1)
     fi
+}
+
+# 生成至少 5 个 shortIds（4 个随机 + 固定）
+generate_shortids() {
+    local sids=()
+    for i in {1..4}; do
+        sids+=("$(openssl rand -hex 8)")
+    done
+    sids+=("0123456789abcdef")
+    local out=""
+    for sid in "${sids[@]}"; do
+        if [[ -z "$out" ]]; then
+            out="\"$sid\""
+        else
+            out="$out, \"$sid\""
+        fi
+    done
+    printf "%s" "$out"
 }
 
 # 打印 Reality URI（优先 IPv4）
@@ -99,43 +142,50 @@ print_uri() {
     echo "vless://$uuid@$host:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$fp&type=tcp&headerType=none&pbk=$publicKey&sid=$shortId#$remark"
 }
 
-# 查找一个本地未被占用的端口（范围 10000-11000）
-get_free_local_port() {
-    for p in {10000..11000}; do
-        if ss -tuln 2>/dev/null | grep -q -E "[: ]${p} "; then
-            continue
-        else
-            echo "$p"
-            return
-        fi
-    done
-    echo "无法找到空闲本地端口" >&2
-    exit 1
-}
-
-# 添加 Reality 入站（同时生成本地 dokodemo-door 防止流量偷跑）
+# 生成配置（Reality 端口随机从 10000-60000 选一个未被占用；dokodemo 默认监听 443）
 add_inbound() {
-    read -rp "设置端口（默认 443）: " port
-    [[ -z "$port" ]] && port=443
+    # dokodemo 外部监听端口（默认 443）
+    read -rp "外部 dokodemo 监听端口（默认 443）: " dokodemo_listen
+    [[ -z "$dokodemo_listen" ]] && dokodemo_listen=443
 
-    if ! check_port "$port"; then
-        echo "端口 $port 已被占用，请输入其他端口"
-        read -rp "请输入新的端口: " port
-        if ! check_port "$port"; then
+    if ! check_port "$dokodemo_listen"; then
+        echo "端口 $dokodemo_listen 已被占用，请输入其他端口"
+        read -rp "请输入新的 dokodemo 监听端口: " dokodemo_listen
+        if ! check_port "$dokodemo_listen"; then
             echo "端口仍被占用，退出" >&2
             return 1
         fi
     fi
 
-    read -rp "伪装网站 dest（默认 updates.cdn-apple.com）: " dest
-    [[ -z "$dest" ]] && dest="updates.cdn-apple.com"
+    # 自动随机选择内部 reality 监听端口（范围 10000-60000）
+    echo "正在从 10000-60000 随机选择一个未被占用的内部 reality 端口..."
+    reality_port=$(find_random_free_port_in_range 10000 60000)
+    if [[ -z "$reality_port" ]]; then
+        echo "未能在 10000-60000 范围内找到可用端口，退出" >&2
+        return 1
+    fi
+    echo "选定内部 reality 端口: $reality_port"
 
-    read -rp "SNI（默认 updates.cdn-apple.com）: " sni
-    [[ -z "$sni" ]] && sni="updates.cdn-apple.com"
+    # 伪装网站 dest（用于 dokodemo 的目标域名），默认 speed.cloudflare.com
+    read -rp "伪装网站 dest（用于路由，默认 speed.cloudflare.com）: " dest
+    [[ -z "$dest" ]] && dest="speed.cloudflare.com"
 
+    # SNI（serverNames），默认与 dest 相同
+    read -rp "SNI（默认与 dest 相同）: " sni
+    [[ -z "$sni" ]] && sni="$dest"
+
+    # 客户端连接端口（默认与 dokodemo_listen 相同）
+    read -rp "客户端连接端口（默认与 dokodemo 监听端口相同）: " client_port
+    [[ -z "$client_port" ]] && client_port="$dokodemo_listen"
+
+    if ! check_port "$client_port"; then
+        echo "警告: 客户端连接端口 $client_port 可能被占用。"
+    fi
+
+    # 生成 uuid
     uuid=$("$XRAY_BIN" uuid)
 
-    # 生成 Reality 私钥、公钥（Password 字段即 publicKey）
+    # 生成 x25519 密钥对
     keys=$("$XRAY_BIN" x25519 2>/dev/null)
     parse_x25519_keys "$keys"
 
@@ -146,30 +196,24 @@ add_inbound() {
         return 1
     fi
 
-    # 生成 shortId（8 位十六进制）
-    shortId=$(openssl rand -hex 8)
+    # 生成至少 5 个 shortIds
+    shortids_json=$(generate_shortids)
 
     number=$(get_next_number)
-    tag="vless-reality-$port-in"
-    file="$CONF_DIR/$number-inbound-vless_reality_$port.json"
+    file="$CONF_DIR/$number-inbound-vless_reality_${client_port}.json"
+    tag="vless-reality-${client_port}-in"
 
-    # 为 dokodemo-door 找一个本地端口并写入配置，Reality 的 dest 指向本地 dokodemo
-    dokodemo_port=$(get_free_local_port)
-
-    cat > "$file" <<EOF2
+    # 生成配置（不写 log/outbounds，保留主配置）
+    cat > "$file" <<EOF
 {
-  "log": {
-    "loglevel": "warning"
-  },
   "inbounds": [
     {
-      "listen": "127.0.0.1",
       "tag": "dokodemo-in",
-      "port": $dokodemo_port,
+      "port": $dokodemo_listen,
       "protocol": "dokodemo-door",
       "settings": {
-        "address": "$dest",
-        "port": 443,
+        "address": "127.0.0.1",
+        "port": $reality_port,
         "network": "tcp"
       },
       "sniffing": {
@@ -181,10 +225,9 @@ add_inbound() {
       }
     },
     {
-      "listen": "0.0.0.0",
-      "port": $port,
+      "listen": "127.0.0.1",
+      "port": $reality_port,
       "protocol": "vless",
-      "tag": "$tag",
       "settings": {
         "clients": [
           {
@@ -198,13 +241,15 @@ add_inbound() {
         "network": "tcp",
         "security": "reality",
         "realitySettings": {
-          "show": false,
-          "dest": "127.0.0.1:$dokodemo_port",
-          "xver": 0,
-          "serverNames": ["$sni"],
+          "dest": "$dest:443",
+          "serverNames": [
+            "$sni"
+          ],
           "privateKey": "$privateKey",
           "publicKey": "$publicKey",
-          "shortIds": ["$shortId"]
+          "shortIds": [
+            $shortids_json
+          ]
         }
       },
       "sniffing": {
@@ -216,16 +261,6 @@ add_inbound() {
         ],
         "routeOnly": true
       }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    },
-    {
-      "protocol": "blackhole",
-      "tag": "block"
     }
   ],
   "routing": {
@@ -248,17 +283,19 @@ add_inbound() {
     ]
   }
 }
-EOF2
+EOF
 
     echo "生成成功: $file"
     echo "================ Reality 关键信息 ================"
     echo "UUID:       $uuid"
     echo "PrivateKey: $privateKey"
     echo "PublicKey:  $publicKey"
-    echo "ShortId:    $shortId"
+    echo "ShortIds:   (至少5) $shortids_json"
     echo "SNI:        $sni"
     echo "Dest:       $dest:443"
-    echo "dokodemo 本地端口: $dokodemo_port"
+    echo "dokodemo listen: $dokodemo_listen -> points to 127.0.0.1:$reality_port"
+    echo "客户端连接端口: $client_port"
+    echo "文件: $file"
     echo "=================================================="
     print_uri "$file"
 }
@@ -316,6 +353,7 @@ print_uris() {
     print_uri "$file"
 }
 
+# 主菜单
 while true; do
     echo
     echo "==== VLESS Reality 入站管理 ===="
