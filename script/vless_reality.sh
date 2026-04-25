@@ -1,73 +1,74 @@
 #!/bin/bash
-
-XRAY_BIN="/etc/xray/bin/xray"
 CONF_DIR="/etc/xray/conf.d"
-
 mkdir -p "$CONF_DIR"
 
-# ===== 依赖检查 =====
-command -v jq >/dev/null || { echo "请安装 jq"; exit 1; }
-command -v openssl >/dev/null || { echo "请安装 openssl"; exit 1; }
-
-# ===== 获取编号 =====
+# 获取下一个可用编号（60-70）
 get_next_number() {
     for i in {60..70}; do
-        if ! ls "$CONF_DIR" 2>/dev/null | grep -q "^$i-inbound-reality-advanced_"; then
-            echo $i
+        if ! ls -1 "$CONF_DIR" 2>/dev/null | grep -q "^${i}-inbound-vless_reality_"; then
+            echo "$i"
             return
         fi
     done
-    echo "❌ 没有可用编号 (60-70)"
+    echo "No available number (60-70)" >&2
     exit 1
 }
 
-# ===== 检查端口 =====
+# 检查端口是否被占用（任何地址）
 check_port() {
-    ss -tuln | grep -q ":$1 " && return 1 || return 0
+    local port="$1"
+    ss -tuln 2>/dev/null | grep -q -E "[: ]${port} " && return 1 || return 0
 }
 
-# ===== 获取 IP =====
-get_ipv4() { curl -s -4 --max-time 3 ip.sb; }
-get_ipv6() { curl -s -6 --max-time 3 ip.sb; }
+# 获取 IPv4 / IPv6
+get_ipv4() { curl -s -4 ip.sb; }
+get_ipv6() { curl -s -6 ip.sb; }
 
-# ===== 兼容所有版本的密钥解析（核心修复） =====
-gen_keys() {
-    keys=$($XRAY_BIN x25519)
-
-    # 兼容两种格式：
-    # 1. Private key / Public key
-    # 2. PrivateKey / Password
-
-    privateKey=$(echo "$keys" | grep -iE 'PrivateKey|Private key' | head -n1 | awk '{print $2}')
-    publicKey=$(echo "$keys" | grep -iE 'Public key|Password' | head -n1 | awk '{print $2}')
-
-    if [[ -z "$privateKey" || -z "$publicKey" ]]; then
-        echo "❌ Reality 密钥解析失败"
-        echo "$keys"
-        exit 1
+# 从 xray x25519 输出安全解析私钥/公钥（兼容不同标签）
+parse_x25519_keys() {
+    local out="$1"
+    # 兼容 PrivateKey: / Private Key: / Password: / PublicKey:
+    privateKey=$(echo "$out" | sed -n 's/^[[:space:]]*PrivateKey:[[:space:]]*//Ip' | head -n1)
+    if [[ -z "$privateKey" ]]; then
+        privateKey=$(echo "$out" | sed -n 's/^[[:space:]]*Private Key:[[:space:]]*//Ip' | head -n1)
+    fi
+    # publicKey may be labeled Password or PublicKey or Hash32 depending on xray version; prefer Password then PublicKey then Hash32
+    publicKey=$(echo "$out" | sed -n 's/^[[:space:]]*Password:[[:space:]]*//Ip' | head -n1)
+    if [[ -z "$publicKey" ]]; then
+        publicKey=$(echo "$out" | sed -n 's/^[[:space:]]*PublicKey:[[:space:]]*//Ip' | head -n1)
+    fi
+    if [[ -z "$publicKey" ]]; then
+        publicKey=$(echo "$out" | sed -n 's/^[[:space:]]*Hash32:[[:space:]]*//Ip' | head -n1)
     fi
 }
 
-# ===== 打印 URI =====
+# 打印 Reality URI（优先 IPv4）
 print_uri() {
     local file="$1"
 
-    port=$(jq -r '.inbounds[1].port' "$file")
-    uuid=$(jq -r '.inbounds[1].settings.clients[0].id' "$file")
-    sni=$(jq -r '.inbounds[1].streamSettings.realitySettings.serverNames[0]' "$file")
-    shortId=$(jq -r '.inbounds[1].streamSettings.realitySettings.shortIds[0]' "$file")
-
-    # ⚠ 公钥直接从生成时变量拿（保证匹配）
-    pbk="$PUBLIC_KEY"
+    port=$(jq -r '.inbounds[] | select(.protocol=="vless") | .port' "$file" | head -n1)
+    uuid=$(jq -r '.inbounds[] | select(.protocol=="vless") | .settings.clients[0].id' "$file" | head -n1)
+    sni=$(jq -r '.inbounds[] | select(.protocol=="vless") | .streamSettings.realitySettings.serverNames[0]' "$file" | head -n1)
+    publicKey=$(jq -r '.inbounds[] | select(.protocol=="vless") | .streamSettings.realitySettings.publicKey' "$file" | head -n1)
+    shortId=$(jq -r '.inbounds[] | select(.protocol=="vless") | .streamSettings.realitySettings.shortIds[0]' "$file" | head -n1)
 
     ipv4=$(get_ipv4)
     ipv6=$(get_ipv6)
 
-    echo "选择指纹（默认 chrome）"
-    echo "[1] chrome [2] firefox [3] safari [4] ios [5] android [6] edge [7] 360 [8] qq [9] random"
-    read -rp "选择: " fp_sel
+    echo "选择 uTLS 指纹（默认 chrome）"
+    echo "[1] chrome"
+    echo "[2] firefox"
+    echo "[3] safari"
+    echo "[4] ios"
+    echo "[5] android"
+    echo "[6] edge"
+    echo "[7] 360"
+    echo "[8] qq"
+    echo "[9] random"
+    read -rp "选择 [1-9]: " fp_sel
 
     case "$fp_sel" in
+        1|"") fp="chrome" ;;
         2) fp="firefox" ;;
         3) fp="safari" ;;
         4) fp="ios" ;;
@@ -79,70 +80,89 @@ print_uri() {
         *) fp="chrome" ;;
     esac
 
+    remark=$port
+    read -rp "请输入节点备注（默认 $remark）: " user_remark
+    [[ -n "$user_remark" ]] && remark="$user_remark"
+
     if [[ -n "$ipv4" ]]; then
         host="$ipv4"
     elif [[ -n "$ipv6" ]]; then
         host="[$ipv6]"
     else
-        echo "❌ 无法获取 IP"
+        echo "无法获取公网 IP"
         return
     fi
 
-    echo
-    echo "======== Reality URI ========"
-    echo "vless://$uuid@$host:$port?encryption=none&security=reality&sni=$sni&fp=$fp&type=tcp&pbk=$pbk&sid=$shortId"
-    echo "============================"
+    echo "vless://$uuid@$host:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$fp&type=tcp&headerType=none&pbk=$publicKey&sid=$shortId#$remark"
 }
 
-# ===== 添加 =====
+# 查找一个本地未被占用的端口（范围 10000-11000）
+get_free_local_port() {
+    for p in {10000..11000}; do
+        if ss -tuln 2>/dev/null | grep -q -E "[: ]${p} "; then
+            continue
+        else
+            echo "$p"
+            return
+        fi
+    done
+    echo "无法找到空闲本地端口" >&2
+    exit 1
+}
+
+# 添加 Reality 入站（同时生成本地 dokodemo-door 防止流量偷跑）
 add_inbound() {
+    read -rp "设置端口（默认 443）: " port
+    [[ -z "$port" ]] && port=443
 
-    # 主端口
-    while true; do
-        read -rp "Reality端口（默认443）: " port
-        [[ -z "$port" ]] && port=443
-
-        if check_port "$port"; then
-            break
-        else
-            echo "❌ 端口被占用"
+    if ! check_port "$port"; then
+        echo "端口 $port 已被占用，请输入其他端口"
+        read -rp "请输入新的端口: " port
+        if ! check_port "$port"; then
+            echo "端口仍被占用，退出" >&2
+            return 1
         fi
-    done
+    fi
 
-    # 内部端口
-    while true; do
-        read -rp "内部转发端口（默认4431）: " inner_port
-        [[ -z "$inner_port" ]] && inner_port=4431
+    read -rp "伪装网站 dest（默认 updates.cdn-apple.com）: " dest
+    [[ -z "$dest" ]] && dest="updates.cdn-apple.com"
 
-        if check_port "$inner_port"; then
-            break
-        else
-            echo "❌ 端口被占用"
-        fi
-    done
+    read -rp "SNI（默认 updates.cdn-apple.com）: " sni
+    [[ -z "$sni" ]] && sni="updates.cdn-apple.com"
 
-    read -rp "伪装域名（默认 speed.cloudflare.com）: " dest
-    [[ -z "$dest" ]] && dest="speed.cloudflare.com"
+    uuid=$(/etc/xray/bin/xray uuid)
 
-    uuid=$($XRAY_BIN uuid)
+    # 生成 Reality 私钥、公钥（Password 字段即 publicKey）
+    keys=$(/etc/xray/bin/xray x25519 2>/dev/null)
+    parse_x25519_keys "$keys"
 
-    gen_keys
-    PRIVATE_KEY="$privateKey"
-    PUBLIC_KEY="$publicKey"
+    if [[ -z "$privateKey" || -z "$publicKey" ]]; then
+        echo "无法从 xray x25519 获取密钥，请检查 xray 可执行文件输出。" >&2
+        echo "x25519 输出如下：" >&2
+        echo "$keys" >&2
+        return 1
+    fi
 
+    # 生成 shortId（8 位十六进制）
     shortId=$(openssl rand -hex 8)
 
     number=$(get_next_number)
-    file="$CONF_DIR/$number-inbound-reality-advanced_$port.json"
+    tag="vless-reality-$port-in"
+    file="$CONF_DIR/$number-inbound-vless_reality_$port.json"
 
-    cat > "$file" <<EOF
+    # 为 dokodemo-door 找一个本地端口并写入配置，Reality 的 dest 指向本地 dokodemo
+    dokodemo_port=$(get_free_local_port)
+
+    cat > "$file" <<EOF2
 {
-  "log": { "loglevel": "warning" },
+  "log": {
+    "loglevel": "warning"
+  },
   "inbounds": [
     {
       "listen": "127.0.0.1",
       "tag": "dokodemo-in",
-      "port": $inner_port,
+      "port": $dokodemo_port,
       "protocol": "dokodemo-door",
       "settings": {
         "address": "$dest",
@@ -151,7 +171,9 @@ add_inbound() {
       },
       "sniffing": {
         "enabled": true,
-        "destOverride": ["tls"],
+        "destOverride": [
+          "tls"
+        ],
         "routeOnly": true
       }
     },
@@ -159,9 +181,13 @@ add_inbound() {
       "listen": "0.0.0.0",
       "port": $port,
       "protocol": "vless",
+      "tag": "$tag",
       "settings": {
         "clients": [
-          { "id": "$uuid" }
+          {
+            "id": "$uuid",
+            "flow": "xtls-rprx-vision"
+          }
         ],
         "decryption": "none"
       },
@@ -169,61 +195,143 @@ add_inbound() {
         "network": "tcp",
         "security": "reality",
         "realitySettings": {
-          "dest": "127.0.0.1:$inner_port",
-          "serverNames": ["$dest"],
-          "privateKey": "$PRIVATE_KEY",
+          "show": false,
+          "dest": "127.0.0.1:$dokodemo_port",
+          "xver": 0,
+          "serverNames": ["$sni"],
+          "privateKey": "$privateKey",
+          "publicKey": "$publicKey",
           "shortIds": ["$shortId"]
         }
       },
       "sniffing": {
         "enabled": true,
-        "destOverride": ["http","tls","quic"],
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
         "routeOnly": true
       }
     }
   ],
   "outbounds": [
-    { "protocol": "freedom", "tag": "direct" },
-    { "protocol": "blackhole", "tag": "block" }
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "block"
+    }
   ],
   "routing": {
     "rules": [
       {
-        "inboundTag": ["dokodemo-in"],
-        "domain": ["$dest"],
+        "inboundTag": [
+          "dokodemo-in"
+        ],
+        "domain": [
+          "$dest"
+        ],
         "outboundTag": "direct"
       },
       {
-        "inboundTag": ["dokodemo-in"],
+        "inboundTag": [
+          "dokodemo-in"
+        ],
         "outboundTag": "block"
       }
     ]
   }
 }
-EOF
+EOF2
 
-    echo
-    echo "✅ 创建成功: $file"
+    echo "生成成功: $file"
+    echo "================ Reality 关键信息 ================"
     echo "UUID:       $uuid"
-    echo "PrivateKey: $PRIVATE_KEY"
-    echo "PublicKey:  $PUBLIC_KEY"
+    echo "PrivateKey: $privateKey"
+    echo "PublicKey:  $publicKey"
     echo "ShortId:    $shortId"
-
+    echo "SNI:        $sni"
+    echo "Dest:       $dest:443"
+    echo "dokodemo 本地端口: $dokodemo_port"
+    echo "=================================================="
     print_uri "$file"
 }
 
-# ===== 主菜单 =====
+# 统一文件选择器（stderr/stdout 分离）
+select_file_with_exit() {
+    mapfile -t files < <(ls -1 "$CONF_DIR"/*-inbound-vless_reality_*.json 2>/dev/null)
+
+    if [[ ${#files[@]} -eq 0 ]]; then
+        echo "没有 vless reality 配置文件" >&2
+        return 1
+    fi
+
+    echo "请选择文件 (输入 0 退出)：" >&2
+    for i in "${!files[@]}"; do
+        echo "[$((i+1))] ${files[$i]}" >&2
+    done
+
+    while true; do
+        read -rp "选择 [0-${#files[@]}]: " sel
+        if [[ "$sel" =~ ^[0-9]+$ ]]; then
+            if [[ "$sel" -eq 0 ]]; then
+                return 1
+            elif [[ "$sel" -ge 1 && "$sel" -le "${#files[@]}" ]]; then
+                printf "%s" "${files[$((sel-1))]}"
+                return 0
+            fi
+        fi
+        echo "无效选择，请重新输入" >&2
+    done
+}
+
+delete_inbound() {
+    file=$(select_file_with_exit) || return
+    rm -f "$file"
+    echo "已删除 $file"
+}
+
+reset_uuid() {
+    file=$(select_file_with_exit) || return
+    newuuid=$(/etc/xray/bin/xray uuid)
+    # 使用 jq 的 --arg 安全替换
+    tmpfile="$file.tmp"
+    jq --arg new "$newuuid" '(.inbounds[] | select(.protocol=="vless") | .settings.clients[0].id) = $new' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
+    echo "UUID 已重置"
+    print_uri "$file"
+}
+
+modify_inbound() {
+    file=$(select_file_with_exit) || return
+    ${EDITOR:-vim} "$file"
+}
+
+print_uris() {
+    file=$(select_file_with_exit) || return
+    print_uri "$file"
+}
+
 while true; do
     echo
-    echo "==== Reality高级防偷跑管理 ===="
-    echo "[1] 添加"
-    echo "[2] 退出"
-
-    read -rp "选择: " opt
+    echo "==== VLESS Reality 入站管理 ===="
+    echo "[1] 添加入站"
+    echo "[2] 删除入站"
+    echo "[3] 重置 UUID"
+    echo "[4] 修改入站配置"
+    echo "[5] 打印 URI"
+    echo "[6] 退出"
+    read -rp "选择操作 [1-6]: " opt
 
     case $opt in
         1) add_inbound ;;
-        2) exit 0 ;;
-        *) echo "无效输入" ;;
+        2) delete_inbound ;;
+        3) reset_uuid ;;
+        4) modify_inbound ;;
+        5) print_uris ;;
+        6) exit 0 ;;
+        *) echo "无效选择" ;;
     esac
 done
