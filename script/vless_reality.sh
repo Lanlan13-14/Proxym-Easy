@@ -1,4 +1,5 @@
 #!/bin/bash
+# VLESS Reality 入站生成脚本（修复 x25519 新输出格式、dokodemo tag 带端口、URI 使用 dokodemo 外部端口、可选单个或全部 shortId）
 CONF_DIR="/etc/xray/conf.d"
 mkdir -p "$CONF_DIR"
 
@@ -31,7 +32,7 @@ check_port() {
 find_random_free_port_in_range() {
     local low="$1"
     local high="$2"
-    local attempts=50
+    local attempts=80
     local p
     for _ in $(seq 1 $attempts); do
         p=$((RANDOM%(high-low+1)+low))
@@ -40,7 +41,6 @@ find_random_free_port_in_range() {
             return 0
         fi
     done
-    # 如果随机尝试失败，顺序扫描范围内端口
     for p in $(seq "$low" "$high"); do
         if check_port "$p"; then
             echo "$p"
@@ -54,14 +54,18 @@ find_random_free_port_in_range() {
 get_ipv4() { curl -s -4 ip.sb; }
 get_ipv6() { curl -s -6 ip.sb; }
 
-# 解析 x25519 输出，兼容 PrivateKey/Private Key 和 Password/PublicKey/Hash32 标签
+# 解析 x25519 输出，兼容多种标签（包括 "Password (PublicKey): ..."）
 parse_x25519_keys() {
     local out="$1"
     privateKey=$(echo "$out" | sed -n 's/^[[:space:]]*PrivateKey:[[:space:]]*//Ip' | head -n1)
     if [[ -z "$privateKey" ]]; then
         privateKey=$(echo "$out" | sed -n 's/^[[:space:]]*Private Key:[[:space:]]*//Ip' | head -n1)
     fi
-    publicKey=$(echo "$out" | sed -n 's/^[[:space:]]*Password:[[:space:]]*//Ip' | head -n1)
+    # publicKey 可能标注为 Password (PublicKey): 或 Password: 或 PublicKey: 或 Hash32:
+    publicKey=$(echo "$out" | sed -n 's/^[[:space:]]*Password (PublicKey):[[:space:]]*//Ip' | head -n1)
+    if [[ -z "$publicKey" ]]; then
+        publicKey=$(echo "$out" | sed -n 's/^[[:space:]]*Password:[[:space:]]*//Ip' | head -n1)
+    fi
     if [[ -z "$publicKey" ]]; then
         publicKey=$(echo "$out" | sed -n 's/^[[:space:]]*PublicKey:[[:space:]]*//Ip' | head -n1)
     fi
@@ -71,32 +75,43 @@ parse_x25519_keys() {
 }
 
 # 生成至少 5 个 shortIds（4 个随机 + 固定）
-generate_shortids() {
-    local sids=()
+generate_shortids_array() {
+    SHORTIDS_ARRAY=()
     for i in {1..4}; do
-        sids+=("$(openssl rand -hex 8)")
+        SHORTIDS_ARRAY+=("$(openssl rand -hex 8)")
     done
-    sids+=("0123456789abcdef")
+    SHORTIDS_ARRAY+=("0123456789abcdef")
+    # 生成 JSON 数组字符串（不带方括号）
     local out=""
-    for sid in "${sids[@]}"; do
+    for sid in "${SHORTIDS_ARRAY[@]}"; do
         if [[ -z "$out" ]]; then
             out="\"$sid\""
         else
             out="$out, \"$sid\""
         fi
     done
-    printf "%s" "$out"
+    SHORTIDS_JSON="$out"
 }
 
-# 打印 Reality URI（优先 IPv4）
+# 打印 Reality URI（使用 dokodemo 外部端口作为客户端连接端口）
 print_uri() {
     local file="$1"
 
-    port=$(jq -r '.inbounds[] | select(.protocol=="vless") | .port' "$file" | head -n1)
+    # 获取 dokodemo 外部监听端口（客户端连接端口）
+    dokodemo_port=$(jq -r '.inbounds[] | select(.protocol=="dokodemo-door") | .port' "$file" | head -n1)
+    if [[ -z "$dokodemo_port" || "$dokodemo_port" == "null" ]]; then
+        dokodemo_port=$(jq -r '.inbounds[] | select(.protocol=="vless") | .port' "$file" | head -n1)
+    fi
+
     uuid=$(jq -r '.inbounds[] | select(.protocol=="vless") | .settings.clients[0].id' "$file" | head -n1)
     sni=$(jq -r '.inbounds[] | select(.protocol=="vless") | .streamSettings.realitySettings.serverNames[0]' "$file" | head -n1)
     publicKey=$(jq -r '.inbounds[] | select(.protocol=="vless") | .streamSettings.realitySettings.publicKey' "$file" | head -n1)
-    shortId=$(jq -r '.inbounds[] | select(.protocol=="vless") | .streamSettings.realitySettings.shortIds[0]' "$file" | head -n1)
+    mapfile -t shortids_from_file < <(jq -r '.inbounds[] | select(.protocol=="vless") | .streamSettings.realitySettings.shortIds[]' "$file" 2>/dev/null)
+
+    if [[ ${#shortids_from_file[@]} -eq 0 ]]; then
+        echo "配置中未找到 shortIds" >&2
+        return
+    fi
 
     ipv4=$(get_ipv4)
     ipv6=$(get_ipv6)
@@ -126,9 +141,21 @@ print_uri() {
         *) fp="chrome" ;;
     esac
 
-    remark=$port
+    remark="$dokodemo_port"
     read -rp "请输入节点备注（默认 $remark）: " user_remark
     [[ -n "$user_remark" ]] && remark="$user_remark"
+
+    # 选择 shortId 使用方式：单个随机 or 全部
+    echo "shortId 使用方式："
+    echo "[1] 随机使用一个 shortId（URI 中只包含一个）"
+    echo "[2] 使用全部 shortIds（URI 中以逗号分隔）"
+    read -rp "选择 [1-2]（默认 1）: " sid_mode
+    if [[ "$sid_mode" != "2" ]]; then
+        idx=$((RANDOM % ${#shortids_from_file[@]}))
+        sid_for_uri="${shortids_from_file[$idx]}"
+    else
+        sid_for_uri=$(IFS=, ; echo "${shortids_from_file[*]}")
+    fi
 
     if [[ -n "$ipv4" ]]; then
         host="$ipv4"
@@ -139,7 +166,7 @@ print_uri() {
         return
     fi
 
-    echo "vless://$uuid@$host:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$fp&type=tcp&headerType=none&pbk=$publicKey&sid=$shortId#$remark"
+    echo "vless://$uuid@$host:$dokodemo_port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$fp&type=tcp&headerType=none&pbk=$publicKey&sid=$sid_for_uri#$remark"
 }
 
 # 生成配置（Reality 端口随机从 10000-60000 选一个未被占用；dokodemo 默认监听 443）
@@ -196,19 +223,21 @@ add_inbound() {
         return 1
     fi
 
-    # 生成至少 5 个 shortIds
-    shortids_json=$(generate_shortids)
+    # 生成至少 5 个 shortIds（并保存数组与 JSON）
+    generate_shortids_array
+    # SHORTIDS_ARRAY 和 SHORTIDS_JSON 已被设置
 
     number=$(get_next_number)
     file="$CONF_DIR/$number-inbound-vless_reality_${client_port}.json"
-    tag="vless-reality-${client_port}-in"
+    dokodemo_tag="dokodemo-in-${dokodemo_listen}"
+    vless_tag="vless-in-${reality_port}"
 
     # 生成配置（不写 log/outbounds，保留主配置）
     cat > "$file" <<EOF
 {
   "inbounds": [
     {
-      "tag": "dokodemo-in",
+      "tag": "$dokodemo_tag",
       "port": $dokodemo_listen,
       "protocol": "dokodemo-door",
       "settings": {
@@ -226,6 +255,7 @@ add_inbound() {
     },
     {
       "listen": "127.0.0.1",
+      "tag": "$vless_tag",
       "port": $reality_port,
       "protocol": "vless",
       "settings": {
@@ -248,7 +278,7 @@ add_inbound() {
           "privateKey": "$privateKey",
           "publicKey": "$publicKey",
           "shortIds": [
-            $shortids_json
+            $SHORTIDS_JSON
           ]
         }
       },
@@ -267,7 +297,7 @@ add_inbound() {
     "rules": [
       {
         "inboundTag": [
-          "dokodemo-in"
+          "$dokodemo_tag"
         ],
         "domain": [
           "$dest"
@@ -276,7 +306,7 @@ add_inbound() {
       },
       {
         "inboundTag": [
-          "dokodemo-in"
+          "$dokodemo_tag"
         ],
         "outboundTag": "block"
       }
@@ -290,10 +320,12 @@ EOF
     echo "UUID:       $uuid"
     echo "PrivateKey: $privateKey"
     echo "PublicKey:  $publicKey"
-    echo "ShortIds:   (至少5) $shortids_json"
+    echo "ShortIds:   ${SHORTIDS_ARRAY[*]}"
     echo "SNI:        $sni"
     echo "Dest:       $dest:443"
     echo "dokodemo listen: $dokodemo_listen -> points to 127.0.0.1:$reality_port"
+    echo "dokodemo tag: $dokodemo_tag"
+    echo "vless tag: $vless_tag"
     echo "客户端连接端口: $client_port"
     echo "文件: $file"
     echo "=================================================="
