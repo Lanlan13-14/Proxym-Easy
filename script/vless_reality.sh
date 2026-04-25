@@ -2,6 +2,13 @@
 CONF_DIR="/etc/xray/conf.d"
 mkdir -p "$CONF_DIR"
 
+# 强制使用固定的 xray 可执行文件路径
+XRAY_BIN="/etc/xray/bin/xray"
+if [[ ! -x "$XRAY_BIN" ]]; then
+    echo "错误：找不到 xray 可执行文件：$XRAY_BIN" >&2
+    exit 1
+fi
+
 # 获取下一个可用编号（60-70）
 get_next_number() {
     for i in {60..70}; do
@@ -27,12 +34,10 @@ get_ipv6() { curl -s -6 ip.sb; }
 # 从 xray x25519 输出安全解析私钥/公钥（兼容不同标签）
 parse_x25519_keys() {
     local out="$1"
-    # 兼容 PrivateKey: / Private Key: / Password: / PublicKey:
     privateKey=$(echo "$out" | sed -n 's/^[[:space:]]*PrivateKey:[[:space:]]*//Ip' | head -n1)
     if [[ -z "$privateKey" ]]; then
         privateKey=$(echo "$out" | sed -n 's/^[[:space:]]*Private Key:[[:space:]]*//Ip' | head -n1)
     fi
-    # publicKey may be labeled Password or PublicKey or Hash32 depending on xray version; prefer Password then PublicKey then Hash32
     publicKey=$(echo "$out" | sed -n 's/^[[:space:]]*Password:[[:space:]]*//Ip' | head -n1)
     if [[ -z "$publicKey" ]]; then
         publicKey=$(echo "$out" | sed -n 's/^[[:space:]]*PublicKey:[[:space:]]*//Ip' | head -n1)
@@ -130,10 +135,10 @@ add_inbound() {
     read -rp "SNI（默认 updates.cdn-apple.com）: " sni
     [[ -z "$sni" ]] && sni="updates.cdn-apple.com"
 
-    uuid=$(/etc/xray/bin/xray uuid)
+    uuid=$("$XRAY_BIN" uuid)
 
     # 生成 Reality 私钥、公钥（Password 字段即 publicKey）
-    keys=$(/etc/xray/bin/xray x25519 2>/dev/null)
+    keys=$("$XRAY_BIN" x25519 2>/dev/null)
     parse_x25519_keys "$keys"
 
     if [[ -z "$privateKey" || -z "$publicKey" ]]; then
@@ -296,8 +301,7 @@ delete_inbound() {
 
 reset_uuid() {
     file=$(select_file_with_exit) || return
-    newuuid=$(/etc/xray/bin/xray uuid)
-    # 使用 jq 的 --arg 安全替换
+    newuuid=$("$XRAY_BIN" uuid)
     tmpfile="$file.tmp"
     jq --arg new "$newuuid" '(.inbounds[] | select(.protocol=="vless") | .settings.clients[0].id) = $new' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
     echo "UUID 已重置"
