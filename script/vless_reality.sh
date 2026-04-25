@@ -1,8 +1,6 @@
 #!/bin/bash
 CONF_DIR="/etc/xray/conf.d"
 mkdir -p "$CONF_DIR"
-
-# 强制使用固定的 xray 可执行文件路径
 XRAY_BIN="/etc/xray/bin/xray"
 if [[ ! -x "$XRAY_BIN" ]]; then
     echo "错误：找不到 xray 可执行文件：$XRAY_BIN" >&2
