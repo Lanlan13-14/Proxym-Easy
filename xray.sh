@@ -30,7 +30,10 @@ GITHUB_PROXY=""
 
 # 标记 crontab 条目的标识字符串，便于查找/删除
 CRON_TAG="proxym-easy xray-restart"
+MEMORY_CRON_TAG="proxym-easy xray-memory-restart"
 GEO_CRON_TAG="proxym-easy xray-geo-update"
+MEMORY_RESTART_CONF="/etc/xray/memory-restart.conf"
+MEMORY_RESTART_STATE="/tmp/proxym-easy-xray-memory-restart.state"
 
 # Geo 数据库下载地址
 GEOIP_URL="https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
@@ -458,6 +461,7 @@ install_xray() {
     create_service
     systemctl enable xray &>/dev/null
     systemctl start xray
+    ensure_default_memory_restart
     _green "Xray 安装完成！"
     _green "状态: $(systemctl is-active xray)"
 }
@@ -748,7 +752,7 @@ set_timed_restart() {
 
 view_cron_restart() {
     echo
-    _cyan "当前与 Xray 重启相关的 Cron 任务:"
+    _cyan "当前 Xray 定时重启任务:"
     crontab -l 2>/dev/null | grep -F "$CRON_TAG" || _yellow "未设置定时重启任务"
     echo
 }
@@ -756,6 +760,176 @@ view_cron_restart() {
 delete_cron_restart() {
     (crontab -l 2>/dev/null | grep -v -F "$CRON_TAG") | crontab -
     _green "已删除所有带标识的 Xray 定时重启任务"
+}
+
+
+# ========== Xray 内存占用自动重启 ==========
+get_total_memory_mb() {
+    awk '/MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo
+}
+
+write_memory_restart_conf() {
+    local limit_mb="$1"
+    local duration_min="$2"
+    mkdir -p "$(dirname "$MEMORY_RESTART_CONF")"
+    cat > "$MEMORY_RESTART_CONF" <<EOF
+LIMIT_MB=$limit_mb
+DURATION_MIN=$duration_min
+EOF
+}
+
+load_memory_restart_conf() {
+    local total_mb
+    total_mb=$(get_total_memory_mb)
+    LIMIT_MB="$total_mb"
+    DURATION_MIN="5"
+    if [[ -f "$MEMORY_RESTART_CONF" ]]; then
+        # shellcheck disable=SC1090
+        source "$MEMORY_RESTART_CONF" 2>/dev/null || true
+    fi
+    [[ $LIMIT_MB =~ ^[1-9][0-9]*$ ]] || LIMIT_MB="$total_mb"
+    [[ $DURATION_MIN =~ ^[1-9][0-9]*$ ]] || DURATION_MIN="5"
+}
+
+ensure_default_memory_restart() {
+    [[ ! -f $is_core_bin ]] && return 0
+    if ! crontab -l 2>/dev/null | grep -q -F "$MEMORY_CRON_TAG"; then
+        local total_mb
+        total_mb=$(get_total_memory_mb)
+        write_memory_restart_conf "$total_mb" "5"
+        (crontab -l 2>/dev/null | grep -v -F "$MEMORY_CRON_TAG"; echo "* * * * * $is_sh_bin --check-memory >/var/log/proxym-easy-memory-restart.log 2>&1 # $MEMORY_CRON_TAG") | crontab -
+        _green "已默认开启 Xray 内存限制自动重启: 超过本机内存 ${total_mb}MB 并持续 5 分钟自动重启"
+    fi
+}
+
+check_memory_restart() {
+    [[ ! -f $is_core_bin ]] && exit 0
+    load_memory_restart_conf
+
+    local pid rss_kb rss_mb now first_seen
+    pid=$(systemctl show -p MainPID --value xray 2>/dev/null)
+    if [[ -z "$pid" || "$pid" == "0" || ! -r "/proc/$pid/status" ]]; then
+        rm -f "$MEMORY_RESTART_STATE"
+        exit 0
+    fi
+
+    rss_kb=$(awk '/VmRSS:/ {print $2}' "/proc/$pid/status")
+    rss_kb=${rss_kb:-0}
+    rss_mb=$(( (rss_kb + 1023) / 1024 ))
+    now=$(date +%s)
+
+    if (( rss_mb > LIMIT_MB )); then
+        if [[ -f "$MEMORY_RESTART_STATE" ]]; then
+            first_seen=$(cat "$MEMORY_RESTART_STATE" 2>/dev/null)
+        fi
+        if ! [[ ${first_seen:-} =~ ^[0-9]+$ ]]; then
+            first_seen="$now"
+            echo "$first_seen" > "$MEMORY_RESTART_STATE"
+        fi
+        if (( now - first_seen >= DURATION_MIN * 60 )); then
+            echo "$(date '+%F %T') Xray 内存 ${rss_mb}MB > ${LIMIT_MB}MB 持续超过 ${DURATION_MIN} 分钟，自动重启"
+            systemctl restart xray
+            rm -f "$MEMORY_RESTART_STATE"
+        else
+            echo "$(date '+%F %T') Xray 内存 ${rss_mb}MB > ${LIMIT_MB}MB，等待持续 ${DURATION_MIN} 分钟"
+        fi
+    else
+        rm -f "$MEMORY_RESTART_STATE"
+    fi
+}
+
+set_memory_restart() {
+    [[ ! -f $is_core_bin ]] && err "Xray 未安装"
+    local total_mb limit_mb duration_min
+    total_mb=$(get_total_memory_mb)
+    load_memory_restart_conf
+
+    echo
+    echo "当前本机内存: ${total_mb}MB"
+    echo "当前阈值: ${LIMIT_MB}MB，持续时间: ${DURATION_MIN}分钟"
+    read -r -p "内存阈值 MB（默认本机内存 ${total_mb}MB）: " limit_mb
+    read -r -p "持续超限分钟数（默认 5）: " duration_min
+    limit_mb=${limit_mb:-$total_mb}
+    duration_min=${duration_min:-5}
+
+    if ! [[ $limit_mb =~ ^[1-9][0-9]*$ && $duration_min =~ ^[1-9][0-9]*$ ]]; then
+        _red "内存阈值和持续分钟数必须是正整数"
+        return 1
+    fi
+
+    write_memory_restart_conf "$limit_mb" "$duration_min"
+    (crontab -l 2>/dev/null | grep -v -F "$MEMORY_CRON_TAG"; echo "* * * * * $is_sh_bin --check-memory >/var/log/proxym-easy-memory-restart.log 2>&1 # $MEMORY_CRON_TAG") | crontab -
+    rm -f "$MEMORY_RESTART_STATE"
+    _green "已开启 Xray 内存限制自动重启: 超过 ${limit_mb}MB 并持续 ${duration_min} 分钟自动重启"
+    _green "检查频率: 每分钟；日志: /var/log/proxym-easy-memory-restart.log"
+}
+
+view_memory_restart() {
+    echo
+    _cyan "当前 Xray 内存限制自动重启配置:"
+    load_memory_restart_conf
+    if crontab -l 2>/dev/null | grep -F "$MEMORY_CRON_TAG"; then
+        _green "阈值: ${LIMIT_MB}MB，持续时间: ${DURATION_MIN}分钟"
+        _green "配置文件: $MEMORY_RESTART_CONF"
+        _green "日志文件: /var/log/proxym-easy-memory-restart.log"
+    else
+        _yellow "未开启 Xray 内存限制自动重启"
+    fi
+    echo
+}
+
+delete_memory_restart() {
+    (crontab -l 2>/dev/null | grep -v -F "$MEMORY_CRON_TAG") | crontab -
+    rm -f "$MEMORY_RESTART_STATE"
+    _green "已关闭 Xray 内存限制自动重启"
+}
+
+# ========== 自动重启设置菜单 ==========
+auto_restart_menu() {
+    while true; do
+        clear
+        echo "========== Xray 自动重启设置 =========="
+        echo "[1] 设置定时重启 Xray（每天/每周/每月/自定义）"
+        echo "[2] 设置内存限制自动重启"
+        echo "[3] 查看自动重启任务"
+        echo "[4] 删除定时重启任务"
+        echo "[5] 关闭内存限制自动重启"
+        echo "[0] 返回主菜单"
+        echo "======================================"
+        echo
+        read -r -p "请选择 [0-5]: " restart_choice
+
+        case $restart_choice in
+            1)
+                set_timed_restart
+                read -r -p "按回车键继续..."
+                ;;
+            2)
+                set_memory_restart
+                read -r -p "按回车键继续..."
+                ;;
+            3)
+                view_cron_restart
+                view_memory_restart
+                read -r -p "按回车键继续..."
+                ;;
+            4)
+                delete_cron_restart
+                read -r -p "按回车键继续..."
+                ;;
+            5)
+                delete_memory_restart
+                read -r -p "按回车键继续..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                _red "无效选择"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 # ========== 查看日志 ==========
@@ -1018,8 +1192,8 @@ show_menu() {
     echo "[11] 查看 systemctl status"
     echo "[12] 开启 Xray 开机自启"
     echo "[13] 关闭 Xray 开机自启"
-    echo "[14] 设置 定时重启 Xray (每天/每周/每月/自定义)"
-    echo "[15] 查看 定时重启 任务"
+    echo "[14] 自动重启设置（定时/内存限制）"
+    echo "[15] 查看 自动重启 任务"
     echo "[16] 删除 定时重启 任务"
     echo "[17] Geo 数据库管理"
     echo "[18] 重置 Base 配置为默认值"
@@ -1033,6 +1207,11 @@ show_menu() {
 main() {
     check_root
     load_github_proxy
+
+    if [[ ${1:-} == "--check-memory" ]]; then
+        check_memory_restart
+        exit $?
+    fi
 
     if [[ ${1:-} == "--update-geo" ]]; then
         install_deps
@@ -1091,10 +1270,10 @@ main() {
                 disable_autostart; read -r -p "按回车键继续..."
                 ;;
             14)
-                set_timed_restart; read -r -p "按回车键继续..."
+                auto_restart_menu
                 ;;
             15)
-                view_cron_restart; read -r -p "按回车键继续..."
+                view_cron_restart; view_memory_restart; read -r -p "按回车键继续..."
                 ;;
             16)
                 delete_cron_restart; read -r -p "按回车键继续..."
