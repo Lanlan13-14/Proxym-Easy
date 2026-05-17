@@ -134,7 +134,21 @@ auto_generate_warp_profile() {
 
     if [[ ! -f "$WGCF_ACCOUNT" ]]; then
         _yellow "正在注册 Cloudflare WARP 账户..."
-        "$WGCF_BIN" register --accept-tos || { cd "$oldpwd"; _red "wgcf register 失败"; return 1; }
+        local reg_log reg_ret
+        reg_log=$(mktemp)
+        "$WGCF_BIN" register --accept-tos >"$reg_log" 2>&1
+        reg_ret=$?
+        cat "$reg_log"
+        if [[ $reg_ret -ne 0 && ! -f "$WGCF_ACCOUNT" ]]; then
+            rm -f "$reg_log"
+            cd "$oldpwd"
+            _red "wgcf register 失败"
+            return 1
+        fi
+        if [[ $reg_ret -ne 0 && -f "$WGCF_ACCOUNT" ]]; then
+            _yellow "wgcf register 返回非 0，但账户文件已生成，继续生成配置"
+        fi
+        rm -f "$reg_log"
     else
         _yellow "检测到已有 WARP 账户，复用: $WGCF_ACCOUNT"
     fi
