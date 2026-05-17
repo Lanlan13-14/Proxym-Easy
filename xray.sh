@@ -1043,10 +1043,11 @@ inbound_menu() {
         echo "[2] Vless-Reality"
         echo "[3] Vless-ENC"
         echo "[4] Socks5"
+        echo "[5] WARP 出站管理"
         echo "[0] 返回主菜单"
         echo "================================"
         echo
-        read -r -p "请选择 [0-4]: " inbound_choice  
+        read -r -p "请选择 [0-5]: " inbound_choice
 
         case $inbound_choice in
             1)
@@ -1067,6 +1068,11 @@ inbound_menu() {
             4)
                 _yellow "正在获取 Socks5 安装脚本..."
                 bash <(curl -sL "$(add_proxy "${SCRIPT_BASE_URL}/socks5.sh")") || _red "脚本执行失败"
+                read -r -p "按回车键继续..."
+                ;;
+            5)
+                _yellow "正在获取 WARP 出站管理脚本..."
+                bash <(curl -sL "$(add_proxy "${SCRIPT_BASE_URL}/warp.sh")") || _red "脚本执行失败"
                 read -r -p "按回车键继续..."
                 ;;
             0)
