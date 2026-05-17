@@ -43,7 +43,13 @@ GEOSITE_SHA256_URL="https://github.com/v2fly/domain-list-community/releases/late
 
 # ========== 工具函数 ==========
 err() { _red "\n错误: $*\n" && exit 1; }
-_wget() { wget --no-check-certificate -q --show-progress "$@"; }
+_wget() {
+    if wget --help 2>&1 | grep -q -- '--show-progress'; then
+        wget --no-check-certificate -q --show-progress "$@"
+    else
+        wget -q "$@"
+    fi
+}
 check_root() { [[ $EUID != 0 ]] && err "请使用 root 用户执行"; }
 
 # 读取持久化的 GitHub 加速前缀（如果存在）
@@ -72,25 +78,53 @@ get_arch() {
 }
 
 # ========== 安装依赖 ==========
+detect_pkg_manager() {
+    if command -v apt-get >/dev/null 2>&1; then echo apt;
+    elif command -v dnf >/dev/null 2>&1; then echo dnf;
+    elif command -v yum >/dev/null 2>&1; then echo yum;
+    elif command -v pacman >/dev/null 2>&1; then echo pacman;
+    elif command -v apk >/dev/null 2>&1; then echo apk;
+    elif command -v zypper >/dev/null 2>&1; then echo zypper;
+    else echo unknown; fi
+}
+
+pkg_for_cmd() {
+    local mgr="$1" cmd="$2"
+    case "$cmd" in
+        crontab)
+            case "$mgr" in apt) echo cron ;; yum|dnf|pacman|apk|zypper) echo cronie ;; *) echo cronie ;; esac ;;
+        *) echo "$cmd" ;;
+    esac
+}
+
+install_packages() {
+    local mgr="$1"; shift
+    case "$mgr" in
+        apt) apt-get update -y >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" >/dev/null 2>&1 ;;
+        yum) yum install -y "$@" >/dev/null 2>&1 ;;
+        dnf) dnf install -y "$@" >/dev/null 2>&1 ;;
+        pacman) pacman -Sy --noconfirm "$@" >/dev/null 2>&1 ;;
+        apk) apk add --no-cache "$@" >/dev/null 2>&1 ;;
+        zypper) zypper --non-interactive install -y "$@" >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
 install_deps() {
-    local cmd
-    cmd=$(type -P apt-get || type -P yum)
-    [[ ! $cmd ]] && err "仅支持 apt-get 或 yum 包管理器"
+    local mgr cmd pkg to_install=""
+    mgr=$(detect_pkg_manager)
+    [[ $mgr == unknown ]] && err "未检测到受支持的包管理器，请手动安装依赖: wget unzip curl openssl crontab"
 
-    local pkgs="wget unzip curl openssl"
-    local to_install=""
-    local pkg
-
-    for pkg in $pkgs; do
-        if [[ ! $(type -P "$pkg") ]]; then
-            to_install="$to_install $pkg"
+    for cmd in wget unzip curl openssl crontab; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            pkg=$(pkg_for_cmd "$mgr" "$cmd")
+            case " $to_install " in *" $pkg "*) ;; *) to_install="$to_install $pkg" ;; esac
         fi
     done
 
     if [[ -n $to_install ]]; then
-        _yellow "安装依赖: $to_install"
-        $cmd update -y &>/dev/null
-        $cmd install -y $to_install &>/dev/null || err "依赖安装失败"
+        _yellow "安装依赖:$to_install"
+        install_packages "$mgr" $to_install || err "依赖安装失败，请手动安装:$to_install"
     fi
 }
 

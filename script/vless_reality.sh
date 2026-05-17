@@ -3,6 +3,58 @@
 CONF_DIR="/etc/xray/conf.d"
 mkdir -p "$CONF_DIR"
 
+# ========== 依赖检测与跨发行版自动安装 ==========
+detect_pkg_manager() {
+    if command -v apt-get >/dev/null 2>&1; then echo apt;
+    elif command -v dnf >/dev/null 2>&1; then echo dnf;
+    elif command -v yum >/dev/null 2>&1; then echo yum;
+    elif command -v pacman >/dev/null 2>&1; then echo pacman;
+    elif command -v apk >/dev/null 2>&1; then echo apk;
+    elif command -v zypper >/dev/null 2>&1; then echo zypper;
+    else echo unknown; fi
+}
+
+pkg_for_cmd() {
+    local mgr="$1" cmd="$2"
+    case "$cmd" in
+        ss) case "$mgr" in apt) echo iproute2 ;; yum|dnf|pacman|apk|zypper) echo iproute2 ;; *) echo iproute2 ;; esac ;;
+        vim) case "$mgr" in apk) echo vim ;; *) echo vim ;; esac ;;
+        *) echo "$cmd" ;;
+    esac
+}
+
+install_packages() {
+    local mgr="$1"; shift
+    case "$mgr" in
+        apt) apt-get update -y >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" >/dev/null 2>&1 ;;
+        yum) yum install -y "$@" >/dev/null 2>&1 ;;
+        dnf) dnf install -y "$@" >/dev/null 2>&1 ;;
+        pacman) pacman -Sy --noconfirm "$@" >/dev/null 2>&1 ;;
+        apk) apk add --no-cache "$@" >/dev/null 2>&1 ;;
+        zypper) zypper --non-interactive install -y "$@" >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
+ensure_deps() {
+    local mgr cmd pkg to_install=""
+    mgr=$(detect_pkg_manager)
+    [[ "$mgr" == unknown ]] && { echo "无法检测包管理器，请手动安装依赖: $*" >&2; return 1; }
+    for cmd in "$@"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            pkg=$(pkg_for_cmd "$mgr" "$cmd")
+            case " $to_install " in *" $pkg "*) ;; *) to_install="$to_install $pkg" ;; esac
+        fi
+    done
+    if [[ -n "$to_install" ]]; then
+        echo "检测到缺少依赖，正在安装:$to_install"
+        install_packages "$mgr" $to_install || { echo "依赖安装失败，请手动安装:$to_install" >&2; return 1; }
+    fi
+}
+
+ensure_deps jq curl openssl vim ss || exit 1
+
+
 # URL 编码函数：按 Xray VLESS 分享链接标准使用 encodeURIComponent 规则
 url_encode() {
     if command -v python3 >/dev/null 2>&1; then

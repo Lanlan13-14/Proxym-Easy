@@ -20,8 +20,31 @@ _cyan() { echo -e "${cyan}$*${none}"; }
 
 check_root() { [[ $EUID != 0 ]] && { _red "请使用 root 用户执行"; exit 1; }; }
 
+detect_pkg_manager() {
+    if command -v apt-get >/dev/null 2>&1; then echo apt;
+    elif command -v dnf >/dev/null 2>&1; then echo dnf;
+    elif command -v yum >/dev/null 2>&1; then echo yum;
+    elif command -v pacman >/dev/null 2>&1; then echo pacman;
+    elif command -v apk >/dev/null 2>&1; then echo apk;
+    elif command -v zypper >/dev/null 2>&1; then echo zypper;
+    else echo unknown; fi
+}
+
+install_packages() {
+    local mgr="$1"; shift
+    case "$mgr" in
+        apt) apt-get update -y >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" >/dev/null 2>&1 ;;
+        yum) yum install -y "$@" >/dev/null 2>&1 ;;
+        dnf) dnf install -y "$@" >/dev/null 2>&1 ;;
+        pacman) pacman -Sy --noconfirm "$@" >/dev/null 2>&1 ;;
+        apk) apk add --no-cache "$@" >/dev/null 2>&1 ;;
+        zypper) zypper --non-interactive install -y "$@" >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
 ensure_deps() {
-    local missing=""
+    local missing="" mgr
     for c in jq curl; do
         command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
     done
@@ -29,12 +52,10 @@ ensure_deps() {
         missing="$missing openssl"
     fi
     if [[ -n "$missing" ]]; then
-        local mgr
-        mgr=$(type -P apt-get || type -P yum)
-        [[ -z "$mgr" ]] && { _red "缺少依赖:$missing，请先手动安装"; return 1; }
+        mgr=$(detect_pkg_manager)
+        [[ "$mgr" == unknown ]] && { _red "缺少依赖:$missing，请先手动安装"; return 1; }
         _yellow "安装依赖:$missing"
-        $mgr update -y >/dev/null 2>&1 || true
-        $mgr install -y $missing >/dev/null 2>&1 || { _red "依赖安装失败"; return 1; }
+        install_packages "$mgr" $missing || { _red "依赖安装失败，请手动安装:$missing"; return 1; }
     fi
 }
 

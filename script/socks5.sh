@@ -339,7 +339,7 @@ delete_inbound() {
 # =========================
 modify_inbound() {
     file=$(select_file_with_exit) || return
-    vim "$file"
+    ${EDITOR:-vim} "$file"
 }
 
 # =========================
