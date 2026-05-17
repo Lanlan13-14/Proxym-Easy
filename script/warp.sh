@@ -134,7 +134,7 @@ auto_generate_warp_profile() {
 
     if [[ ! -f "$WGCF_ACCOUNT" ]]; then
         _yellow "正在注册 Cloudflare WARP 账户..."
-        yes | "$WGCF_BIN" register || { cd "$oldpwd"; _red "wgcf register 失败"; return 1; }
+        "$WGCF_BIN" register --accept-tos || { cd "$oldpwd"; _red "wgcf register 失败"; return 1; }
     else
         _yellow "检测到已有 WARP 账户，复用: $WGCF_ACCOUNT"
     fi
@@ -152,7 +152,15 @@ parse_wgcf_profile_json() {
       /^\[Interface\]/ { section="interface"; next }
       /^\[Peer\]/ { section="peer"; next }
       /^[[:space:]]*PrivateKey[[:space:]]*=/ && section=="interface" { sub(/^[^=]*=[[:space:]]*/, ""); private=$0; next }
-      /^[[:space:]]*Address[[:space:]]*=/ && section=="interface" { sub(/^[^=]*=[[:space:]]*/, ""); addr[++n]=$0; next }
+      /^[[:space:]]*Address[[:space:]]*=/ && section=="interface" {
+        sub(/^[^=]*=[[:space:]]*/, "");
+        split($0, parts, ",");
+        for (j in parts) {
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", parts[j]);
+          if (parts[j] != "") addr[++n]=parts[j];
+        }
+        next
+      }
       /^[[:space:]]*PublicKey[[:space:]]*=/ && section=="peer" { sub(/^[^=]*=[[:space:]]*/, ""); public=$0; next }
       /^[[:space:]]*Endpoint[[:space:]]*=/ && section=="peer" { sub(/^[^=]*=[[:space:]]*/, ""); endpoint=$0; next }
       END {
