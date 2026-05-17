@@ -308,11 +308,9 @@ delete_geo_auto_update() {
     _green "已删除 Geo 数据库自动更新任务"
 }
 
-# ========== 生成基础配置 ==========
-gen_base_config() {
+# ========== 写入默认 DNS 配置 ==========
+write_default_dns_config() {
     mkdir -p "$is_conf_dir"
-
-    # 01-dns.json
     cat > "$is_conf_dir/01-dns.json" <<EOF
 {
   "dns": {
@@ -324,8 +322,11 @@ gen_base_config() {
   }
 }
 EOF
+}
 
-    # 02-base.json
+# ========== 写入默认 Base 配置 ==========
+write_default_base_config() {
+    mkdir -p "$is_conf_dir"
     cat > "$is_conf_dir/02-base.json" <<EOF
 {
   "outbounds": [
@@ -351,8 +352,11 @@ EOF
   }
 }
 EOF
+}
 
-    # 生成主配置
+# ========== 写入默认主配置 ==========
+write_default_main_config() {
+    mkdir -p "$(dirname "$is_config_json")"
     cat > "$is_config_json" <<EOF
 {
   "log": {
@@ -366,7 +370,44 @@ EOF
   "routing": null
 }
 EOF
+}
+
+# ========== 生成基础配置 ==========
+gen_base_config() {
+    write_default_dns_config
+    write_default_base_config
+    write_default_main_config
     _green "基础配置文件已生成"
+}
+
+# ========== 重置 Base 配置 ==========
+reset_base_config() {
+    [[ ! -f $is_core_bin ]] && err "Xray 未安装"
+    mkdir -p "$is_conf_dir"
+
+    local backup_file=""
+    if [[ -f "$is_conf_dir/02-base.json" ]]; then
+        backup_file="$is_conf_dir/02-base.json.bak.$(date +%Y%m%d%H%M%S)"
+        cp -a "$is_conf_dir/02-base.json" "$backup_file"
+        _yellow "已备份旧 Base 配置: $backup_file"
+    fi
+
+    write_default_base_config
+    _green "已重置 02-base.json 为默认配置"
+
+    _yellow "验证 Xray 配置..."
+    if "$is_core_bin" run -test -confdir "$is_conf_dir" >/tmp/proxym-easy-reset-base-check.log 2>&1; then
+        _green "配置验证通过"
+        if systemctl is-active --quiet xray 2>/dev/null; then
+            systemctl restart xray
+            _green "Xray 已重启"
+        fi
+    else
+        _red "配置验证仍未通过，详情如下:"
+        cat /tmp/proxym-easy-reset-base-check.log
+        _yellow "02-base.json 已保持为默认值；如仍无法启动，请继续检查其他入站/DNS 配置文件。"
+        return 1
+    fi
 }
 
 # ========== 创建 systemd 服务 ==========
@@ -968,6 +1009,7 @@ show_menu() {
     echo "[15] 查看 定时重启 任务"
     echo "[16] 删除 定时重启 任务"
     echo "[17] Geo 数据库管理"
+    echo "[18] 重置 Base 配置为默认值"
     echo "[99] 更新本脚本"
     echo "[0] 退出"
     echo "========================================"
@@ -1046,6 +1088,9 @@ main() {
                 ;;
             17)
                 geo_menu
+                ;;
+            18)
+                reset_base_config; read -r -p "按回车键继续..."
                 ;;
             99)
                 update_script
