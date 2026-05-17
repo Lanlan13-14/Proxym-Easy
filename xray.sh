@@ -768,6 +768,12 @@ get_total_memory_mb() {
     awk '/MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo
 }
 
+get_default_memory_limit_mb() {
+    local total_mb
+    total_mb=$(get_total_memory_mb)
+    echo $(( total_mb * 80 / 100 ))
+}
+
 write_memory_restart_conf() {
     local limit_mb="$1"
     local duration_min="$2"
@@ -779,26 +785,27 @@ EOF
 }
 
 load_memory_restart_conf() {
-    local total_mb
-    total_mb=$(get_total_memory_mb)
-    LIMIT_MB="$total_mb"
+    local default_limit_mb
+    default_limit_mb=$(get_default_memory_limit_mb)
+    LIMIT_MB="$default_limit_mb"
     DURATION_MIN="5"
     if [[ -f "$MEMORY_RESTART_CONF" ]]; then
         # shellcheck disable=SC1090
         source "$MEMORY_RESTART_CONF" 2>/dev/null || true
     fi
-    [[ $LIMIT_MB =~ ^[1-9][0-9]*$ ]] || LIMIT_MB="$total_mb"
+    [[ $LIMIT_MB =~ ^[1-9][0-9]*$ ]] || LIMIT_MB="$default_limit_mb"
     [[ $DURATION_MIN =~ ^[1-9][0-9]*$ ]] || DURATION_MIN="5"
 }
 
 ensure_default_memory_restart() {
     [[ ! -f $is_core_bin ]] && return 0
     if ! crontab -l 2>/dev/null | grep -q -F "$MEMORY_CRON_TAG"; then
-        local total_mb
+        local total_mb default_limit_mb
         total_mb=$(get_total_memory_mb)
-        write_memory_restart_conf "$total_mb" "5"
+        default_limit_mb=$(get_default_memory_limit_mb)
+        write_memory_restart_conf "$default_limit_mb" "5"
         (crontab -l 2>/dev/null | grep -v -F "$MEMORY_CRON_TAG"; echo "* * * * * $is_sh_bin --check-memory >/var/log/proxym-easy-memory-restart.log 2>&1 # $MEMORY_CRON_TAG") | crontab -
-        _green "已默认开启 Xray 内存限制自动重启: 超过本机内存 ${total_mb}MB 并持续 5 分钟自动重启"
+        _green "已默认开启 Xray 内存限制自动重启: 超过系统内存 80%（${default_limit_mb}MB / ${total_mb}MB）并持续 5 分钟自动重启"
     fi
 }
 
@@ -840,16 +847,18 @@ check_memory_restart() {
 
 set_memory_restart() {
     [[ ! -f $is_core_bin ]] && err "Xray 未安装"
-    local total_mb limit_mb duration_min
+    local total_mb default_limit_mb limit_mb duration_min
     total_mb=$(get_total_memory_mb)
+    default_limit_mb=$(get_default_memory_limit_mb)
     load_memory_restart_conf
 
     echo
     echo "当前本机内存: ${total_mb}MB"
+    echo "默认阈值: 系统内存 80%（${default_limit_mb}MB）"
     echo "当前阈值: ${LIMIT_MB}MB，持续时间: ${DURATION_MIN}分钟"
-    read -r -p "内存阈值 MB（默认本机内存 ${total_mb}MB）: " limit_mb
+    read -r -p "内存阈值 MB（默认系统内存 80%: ${default_limit_mb}MB）: " limit_mb
     read -r -p "持续超限分钟数（默认 5）: " duration_min
-    limit_mb=${limit_mb:-$total_mb}
+    limit_mb=${limit_mb:-$default_limit_mb}
     duration_min=${duration_min:-5}
 
     if ! [[ $limit_mb =~ ^[1-9][0-9]*$ && $duration_min =~ ^[1-9][0-9]*$ ]]; then
@@ -870,6 +879,7 @@ view_memory_restart() {
     load_memory_restart_conf
     if crontab -l 2>/dev/null | grep -F "$MEMORY_CRON_TAG"; then
         _green "阈值: ${LIMIT_MB}MB，持续时间: ${DURATION_MIN}分钟"
+        _green "默认值: 系统内存 80%（$(get_default_memory_limit_mb)MB）持续 5 分钟"
         _green "配置文件: $MEMORY_RESTART_CONF"
         _green "日志文件: /var/log/proxym-easy-memory-restart.log"
     else
