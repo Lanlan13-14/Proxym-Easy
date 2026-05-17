@@ -242,9 +242,12 @@ update_geo_databases() {
     _green "geoip.dat: $is_core_dir/bin/geoip.dat"
     _green "geosite.dat: $is_core_dir/bin/geosite.dat"
     if [[ -n $(ls -A "$backup_dir" 2>/dev/null) ]]; then
+        cleanup_old_geo_backups "$backup_dir"
         _green "旧文件备份: $backup_dir"
+        _green "已清理更早的 Geo 数据库备份，仅保留本次更新前一版"
     else
         rmdir "$backup_dir" 2>/dev/null || true
+        cleanup_old_geo_backups ""
     fi
 
     if systemctl is-active --quiet xray 2>/dev/null; then
@@ -306,6 +309,16 @@ view_geo_auto_update() {
 delete_geo_auto_update() {
     (crontab -l 2>/dev/null | grep -v -F "$GEO_CRON_TAG") | crontab -
     _green "已删除 Geo 数据库自动更新任务"
+}
+
+cleanup_old_geo_backups() {
+    local keep_dir="$1"
+    local old_backup
+    for old_backup in "$is_core_dir"/bin/geo-backup-*; do
+        [[ -d "$old_backup" ]] || continue
+        [[ -n "$keep_dir" && "$old_backup" == "$keep_dir" ]] && continue
+        rm -rf "$old_backup"
+    done
 }
 
 # ========== 写入默认 DNS 配置 ==========
