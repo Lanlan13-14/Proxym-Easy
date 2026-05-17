@@ -30,6 +30,13 @@ GITHUB_PROXY=""
 
 # 标记 crontab 条目的标识字符串，便于查找/删除
 CRON_TAG="proxym-easy xray-restart"
+GEO_CRON_TAG="proxym-easy xray-geo-update"
+
+# Geo 数据库下载地址
+GEOIP_URL="https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+GEOIP_SHA256_URL="https://github.com/v2fly/geoip/releases/latest/download/geoip.dat.sha256sum"
+GEOSITE_URL="https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+GEOSITE_SHA256_URL="https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat.sha256sum"
 
 # ========== 工具函数 ==========
 err() { _red "\n错误: $*\n" && exit 1; }
@@ -67,7 +74,7 @@ install_deps() {
     cmd=$(type -P apt-get || type -P yum)
     [[ ! $cmd ]] && err "仅支持 apt-get 或 yum 包管理器"
 
-    local pkgs="wget unzip curl"
+    local pkgs="wget unzip curl openssl"
     local to_install=""
     local pkg
 
@@ -121,6 +128,184 @@ download_xray() {
     chmod +x "$is_core_bin"
     rm -rf "$tmpdir"
     _green "Xray 核心安装成功"
+}
+
+# ========== Geo 数据库更新与校验 ==========
+_verify_geo_database() {
+    local geoip_file="$1"
+    local geosite_file="$2"
+    local tmpconf
+    tmpconf=$(mktemp -d)
+
+    cat > "$tmpconf/00-geo-check.json" <<EOF
+{
+  "log": {"loglevel": "warning"},
+  "inbounds": [],
+  "outbounds": [
+    {"tag": "direct", "protocol": "freedom"},
+    {"tag": "block", "protocol": "blackhole"}
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {"type": "field", "ip": ["geoip:private", "geoip:cn"], "outboundTag": "direct"},
+      {"type": "field", "domain": ["geosite:cn", "geosite:geolocation-!cn"], "outboundTag": "direct"}
+    ]
+  }
+}
+EOF
+
+    cp "$geoip_file" "$tmpconf/geoip.dat" || { rm -rf "$tmpconf"; return 1; }
+    cp "$geosite_file" "$tmpconf/geosite.dat" || { rm -rf "$tmpconf"; return 1; }
+
+    XRAY_LOCATION_ASSET="$tmpconf" "$is_core_bin" run -test -confdir "$tmpconf" >/tmp/proxym-easy-geo-check.log 2>&1
+    local ret=$?
+    if [[ $ret -ne 0 ]]; then
+        _red "Geo 数据库合法性校验失败，详情如下:"
+        cat /tmp/proxym-easy-geo-check.log
+    fi
+    rm -rf "$tmpconf"
+    return $ret
+}
+
+_download_geo_file() {
+    local name="$1"
+    local url="$2"
+    local sha_url="$3"
+    local output="$4"
+    local tmpdir="$5"
+    local data_file="$tmpdir/$name"
+    local sha_file="$tmpdir/$name.sha256sum"
+
+    _yellow "下载 $name ..."
+    _wget "$(add_proxy "$url")" -O "$data_file" || return 1
+    [[ -s "$data_file" ]] || return 1
+
+    _yellow "下载 $name SHA256 校验文件 ..."
+    _wget "$(add_proxy "$sha_url")" -O "$sha_file" || return 1
+
+    local expected actual
+    expected=$(awk '{print $1}' "$sha_file" | head -n1)
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$data_file" | awk '{print $1}')
+    else
+        actual=$(openssl dgst -sha256 "$data_file" | awk '{print $NF}')
+    fi
+    if [[ -z "$expected" || "$expected" != "$actual" ]]; then
+        _red "$name SHA256 校验失败"
+        _red "期望: ${expected:-空}"
+        _red "实际: $actual"
+        return 1
+    fi
+
+    cp "$data_file" "$output"
+}
+
+update_geo_databases() {
+    [[ ! -f $is_core_bin ]] && err "Xray 未安装，无法校验 Geo 数据库"
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    local new_geoip="$tmpdir/geoip.dat.new"
+    local new_geosite="$tmpdir/geosite.dat.new"
+
+    _yellow "开始更新 Geo 数据库..."
+    if ! _download_geo_file "geoip.dat" "$GEOIP_URL" "$GEOIP_SHA256_URL" "$new_geoip" "$tmpdir"; then
+        rm -rf "$tmpdir"
+        _red "geoip.dat 下载或 SHA256 校验失败，已取消更新"
+        return 1
+    fi
+    if ! _download_geo_file "geosite.dat" "$GEOSITE_URL" "$GEOSITE_SHA256_URL" "$new_geosite" "$tmpdir"; then
+        rm -rf "$tmpdir"
+        _red "geosite.dat 下载或 SHA256 校验失败，已取消更新"
+        return 1
+    fi
+
+    _yellow "使用 Xray 测试加载 Geo 数据库，验证数据库是否合法..."
+    if ! _verify_geo_database "$new_geoip" "$new_geosite"; then
+        rm -rf "$tmpdir"
+        _red "新 Geo 数据库未通过 Xray 加载校验，已取消替换现有文件"
+        return 1
+    fi
+
+    mkdir -p "$is_core_dir/bin"
+    local backup_dir="$is_core_dir/bin/geo-backup-$(date +%Y%m%d%H%M%S)"
+    mkdir -p "$backup_dir"
+    [[ -f "$is_core_dir/bin/geoip.dat" ]] && cp -a "$is_core_dir/bin/geoip.dat" "$backup_dir/geoip.dat"
+    [[ -f "$is_core_dir/bin/geosite.dat" ]] && cp -a "$is_core_dir/bin/geosite.dat" "$backup_dir/geosite.dat"
+
+    install -m 0644 "$new_geoip" "$is_core_dir/bin/geoip.dat"
+    install -m 0644 "$new_geosite" "$is_core_dir/bin/geosite.dat"
+    rm -rf "$tmpdir"
+
+    _green "Geo 数据库更新并校验通过"
+    _green "geoip.dat: $is_core_dir/bin/geoip.dat"
+    _green "geosite.dat: $is_core_dir/bin/geosite.dat"
+    if [[ -n $(ls -A "$backup_dir" 2>/dev/null) ]]; then
+        _green "旧文件备份: $backup_dir"
+    else
+        rmdir "$backup_dir" 2>/dev/null || true
+    fi
+
+    if systemctl is-active --quiet xray 2>/dev/null; then
+        systemctl restart xray
+        _green "Xray 已重启以加载新 Geo 数据库"
+    fi
+}
+
+set_geo_auto_update() {
+    [[ ! -f $is_core_bin ]] && err "Xray 未安装"
+    local day hour minute cron_expr
+    echo "请选择 Geo 数据库自动更新时间:"
+    echo "[1] 每周日 04:30（默认）"
+    echo "[2] 每天指定时间"
+    echo "[3] 自定义 cron 表达式（高级用户）"
+    echo "[0] 取消"
+    read -r -p "请选择 [0-3]: " choice
+    case $choice in
+        2)
+            read -r -p "小时 (0-23，默认 4): " hour
+            read -r -p "分钟 (0-59，默认 30): " minute
+            hour=${hour:-4}
+            minute=${minute:-30}
+            if ! [[ $hour =~ ^([0-9]|1[0-9]|2[0-3])$ && $minute =~ ^([0-9]|[1-5][0-9])$ ]]; then
+                _red "时间无效"
+                return 1
+            fi
+            cron_expr="$minute $hour * * *"
+            ;;
+        3)
+            read -r -p "cron 表达式: " cron_expr
+            if [[ $(echo "$cron_expr" | awk '{print NF}') -lt 5 ]]; then
+                _red "无效的 cron 表达式"
+                return 1
+            fi
+            ;;
+        0)
+            _yellow "已取消"
+            return 0
+            ;;
+        *)
+            cron_expr="30 4 * * 0"
+            ;;
+    esac
+
+    (crontab -l 2>/dev/null | grep -v -F "$GEO_CRON_TAG") | crontab -
+    (crontab -l 2>/dev/null; echo "$cron_expr $is_sh_bin --update-geo >/var/log/proxym-easy-geo-update.log 2>&1 # $GEO_CRON_TAG") | crontab -
+    _green "已设置 Geo 数据库自动更新: $cron_expr"
+    _green "日志文件: /var/log/proxym-easy-geo-update.log"
+}
+
+view_geo_auto_update() {
+    echo
+    _cyan "当前 Geo 数据库自动更新任务:"
+    crontab -l 2>/dev/null | grep -F "$GEO_CRON_TAG" || _yellow "未设置 Geo 数据库自动更新任务"
+    echo
+}
+
+delete_geo_auto_update() {
+    (crontab -l 2>/dev/null | grep -v -F "$GEO_CRON_TAG") | crontab -
+    _green "已删除 Geo 数据库自动更新任务"
 }
 
 # ========== 生成基础配置 ==========
@@ -213,6 +398,7 @@ install_xray() {
     install_deps
     install_jq
     download_xray "$1"
+    update_geo_databases
     mkdir -p "$is_log_dir" "$is_conf_dir"
     gen_base_config
     create_service
@@ -235,6 +421,7 @@ update_xray() {
     rm -rf "${is_core_dir:?}/bin/"*
 
     download_xray
+    update_geo_databases
     systemctl start xray
 
     local new_version
@@ -655,6 +842,48 @@ inbound_menu() {
     done
 }
 
+# ========== Geo 数据库管理菜单 ==========
+geo_menu() {
+    while true; do
+        clear
+        echo "========== Geo 数据库管理 =========="
+        echo "[1] 立即更新 Geo 数据库（下载 + SHA256 + Xray 加载校验）"
+        echo "[2] 设置自动更新 Geo 数据库"
+        echo "[3] 查看自动更新任务"
+        echo "[4] 删除自动更新任务"
+        echo "[0] 返回主菜单"
+        echo "===================================="
+        echo
+        read -r -p "请选择 [0-4]: " geo_choice
+
+        case $geo_choice in
+            1)
+                update_geo_databases
+                read -r -p "按回车键继续..."
+                ;;
+            2)
+                set_geo_auto_update
+                read -r -p "按回车键继续..."
+                ;;
+            3)
+                view_geo_auto_update
+                read -r -p "按回车键继续..."
+                ;;
+            4)
+                delete_geo_auto_update
+                read -r -p "按回车键继续..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                _red "无效选择"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
 # ========== GitHub 镜像加速 子菜单 ==========
 git_proxy_menu() {
     while true; do
@@ -738,6 +967,7 @@ show_menu() {
     echo "[14] 设置 定时重启 Xray (每天/每周/每月/自定义)"
     echo "[15] 查看 定时重启 任务"
     echo "[16] 删除 定时重启 任务"
+    echo "[17] Geo 数据库管理"
     echo "[99] 更新本脚本"
     echo "[0] 退出"
     echo "========================================"
@@ -748,6 +978,12 @@ show_menu() {
 main() {
     check_root
     load_github_proxy
+
+    if [[ ${1:-} == "--update-geo" ]]; then
+        install_deps
+        update_geo_databases
+        exit $?
+    fi
 
     while true; do
         show_menu
@@ -807,6 +1043,9 @@ main() {
                 ;;
             16)
                 delete_cron_restart; read -r -p "按回车键继续..."
+                ;;
+            17)
+                geo_menu
                 ;;
             99)
                 update_script
