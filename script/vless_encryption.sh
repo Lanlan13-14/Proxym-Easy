@@ -67,7 +67,15 @@ getnextnumber() {
 }
 
 check_port() {
-    local port="$1"
+    local listen_addr="$1"
+    local port="$2"
+    if [[ -z "$port" ]]; then
+        port="$listen_addr"
+        listen_addr=""
+    fi
+    if [[ -n "$listen_addr" && "$listen_addr" != "0.0.0.0" && "$listen_addr" != "::" ]]; then
+        ss -tuln | awk -v ip="$listen_addr" -v p=":$port" '$0 ~ p"[[:space:]]" && $0 ~ ip {found=1} END{exit found?0:1}' && return 1 || return 0
+    fi
     ss -tuln | grep -q ":$port " && return 1 || return 0
 }
 
@@ -216,9 +224,13 @@ selectfilewith_exit() {
 }
 
 add_inbound() {
+    local listen
+    read -rp "监听地址（默认 0.0.0.0）: " listen
+    listen=${listen:-0.0.0.0}
+
     while :; do
         port=$((RANDOM % 50000 + 10000))
-        check_port "$port" && break
+        check_port "$listen" "$port" && break
     done
 
     echo "选择密钥交换算法："
@@ -282,7 +294,6 @@ add_inbound() {
     number=$(getnextnumber)
     file="$CONF_DIR/$number-inbound-vlessenc_$port.json"
     tag="vless-enc-$port-in"
-    listen="0.0.0.0"
 
     if [[ -n "$domain" ]]; then
         cert_path="/etc/ssl/acme/$domain/fullchain.pem"
