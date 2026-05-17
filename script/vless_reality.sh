@@ -3,6 +3,22 @@
 CONF_DIR="/etc/xray/conf.d"
 mkdir -p "$CONF_DIR"
 
+# URL 编码函数：按 Xray VLESS 分享链接标准使用 encodeURIComponent 规则
+url_encode() {
+    if command -v python3 >/dev/null 2>&1; then
+        URI_VALUE="$1" python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ.get("URI_VALUE", ""), safe="-_.!~*()" + chr(39)), end="")'
+    elif command -v jq >/dev/null 2>&1; then
+        jq -nr --arg v "$1" '$v|@uri'
+    else
+        printf '%s' "$1"
+    fi
+}
+
+uri_kv() {
+    printf '%s=%s' "$1" "$(url_encode "$2")"
+}
+
+
 # 固定 xray 可执行文件路径
 XRAY_BIN="/etc/xray/bin/xray"
 if [[ ! -x "$XRAY_BIN" ]]; then
@@ -166,7 +182,9 @@ print_uri() {
         return
     fi
 
-    echo "vless://$uuid@$host:$dokodemo_port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$fp&type=tcp&headerType=none&pbk=$publicKey&sid=$sid_for_uri#$remark"
+    uri_params="$(uri_kv encryption none)&$(uri_kv flow xtls-rprx-vision)&$(uri_kv security reality)&$(uri_kv sni "$sni")&$(uri_kv fp "$fp")&$(uri_kv type tcp)&$(uri_kv headerType none)&$(uri_kv pbk "$publicKey")&$(uri_kv sid "$sid_for_uri")"
+    encoded_remark=$(url_encode "$remark")
+    echo "vless://$uuid@$host:$dokodemo_port?${uri_params}#${encoded_remark}"
 }
 
 # 生成配置（Reality 端口随机从 10000-60000 选一个未被占用；dokodemo 默认监听 443）

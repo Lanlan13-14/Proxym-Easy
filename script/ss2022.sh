@@ -31,6 +31,17 @@ get_ip() {
     fi
 }
 
+urlencode() {
+    if command -v jq >/dev/null 2>&1; then
+        jq -nr --arg v "$1" '$v|@uri'
+    elif command -v python3 >/dev/null 2>&1; then
+        URI_VALUE="$1" python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ.get("URI_VALUE", ""), safe="-_.!~*()" + chr(39)), end="")'
+    else
+        printf '%s' "$1"
+    fi
+}
+
+
 print_uri() {
     local file="$1"
     port=$(jq -r '.inbounds[0].port' "$file")
@@ -44,10 +55,16 @@ print_uri() {
     read -rp "请输入节点备注（默认 $remark）: " user_remark
     [[ -n "$user_remark" ]] && remark="$user_remark"
 
+    # SIP002/SIP022: AEAD-2022 userinfo MUST NOT use Base64URL;
+    # method 与 password 分别 percent-encode，中间的冒号作为 userinfo 分隔符保留。
+    enc_method=$(urlencode "$method")
+    enc_password=$(urlencode "$password")
+    enc_remark=$(urlencode "$remark")
+
     if [[ -n "$ipv4" ]]; then
-        echo "ss://$method:$password@$ipv4:$port#$remark"
+        echo "ss://${enc_method}:${enc_password}@$ipv4:$port#${enc_remark}"
     elif [[ -n "$ipv6" ]]; then
-        echo "ss://$method:$password@[$ipv6]:$port#$remark"
+        echo "ss://${enc_method}:${enc_password}@[$ipv6]:$port#${enc_remark}"
     else
         echo "No IP found"
     fi

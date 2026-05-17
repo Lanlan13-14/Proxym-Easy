@@ -22,6 +22,22 @@ check_port() {
 get_ipv4() { curl -s -4 ip.sb; }
 get_ipv6() { curl -s -6 ip.sb; }
 
+# URL 编码函数：按 Xray VLESS 分享链接标准使用 encodeURIComponent 规则
+url_encode() {
+    if command -v python3 >/dev/null 2>&1; then
+        URI_VALUE="$1" python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ.get("URI_VALUE", ""), safe="-_.!~*()" + chr(39)), end="")'
+    elif command -v jq >/dev/null 2>&1; then
+        jq -nr --arg v "$1" '$v|@uri'
+    else
+        printf '%s' "$1"
+    fi
+}
+
+uri_kv() {
+    printf '%s=%s' "$1" "$(url_encode "$2")"
+}
+
+
 generatemlkemparams() {
     local rtt_mode="$1"
     local appearance="$2"
@@ -104,21 +120,22 @@ print_uri() {
     ipv6=$(get_ipv6)
     [[ -n "$ipv4" ]] && hostip="$ipv4" || hostip="[$ipv6]"
 
-    uri_params="type=${network}&encryption=${encryption}"
-    [[ -n "$host" ]] && uri_params="${uri_params}&host=${host}"
-    [[ -n "$path" ]] && uri_params="${uri_params}&path=${path}"
+    uri_params="$(uri_kv type "$network")&$(uri_kv encryption "$encryption")"
+    [[ -n "$host" ]] && uri_params="${uri_params}&$(uri_kv host "$host")"
+    [[ -n "$path" ]] && uri_params="${uri_params}&$(uri_kv path "$path")"
 
     if [[ "$security" == "tls" ]]; then
-        uri_params="${uri_params}&security=tls&sni=${domain}&fp=${fingerprint}"
+        uri_params="${uri_params}&$(uri_kv security tls)&$(uri_kv sni "$domain")&$(uri_kv fp "$fingerprint")"
     else
-        uri_params="${uri_params}&security=none"
+        uri_params="${uri_params}&$(uri_kv security none)"
     fi
 
     # ⭐ 打印 URI 时临时输入节点名，不保存
     read -rp "节点名称（默认 $port）: " nodename
     [[ -z "$nodename" ]] && nodename="$port"
+    encoded_nodename=$(url_encode "$nodename")
 
-    echo "vless://$uuid@$hostip:$port?${uri_params}#${nodename}"
+    echo "vless://$uuid@$hostip:$port?${uri_params}#${encoded_nodename}"
 }
 
 selectfilewith_exit() {
