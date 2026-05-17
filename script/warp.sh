@@ -7,6 +7,10 @@ BASE_JSON="$CONF_DIR/02-base.json"
 WARP_JSON="$CONF_DIR/03-outbound-warp.json"
 WARP_TAG="warp"
 TMP_TEST_LOG="/tmp/proxym-easy-warp-check.log"
+WGCF_BIN="/usr/local/bin/wgcf"
+WGCF_DIR="/etc/xray/warp"
+WGCF_PROFILE="$WGCF_DIR/wgcf-profile.conf"
+WGCF_ACCOUNT="$WGCF_DIR/wgcf-account.toml"
 
 red='\e[31m'; yellow='\e[33m'; green='\e[92m'; cyan='\e[96m'; none='\e[0m'
 _red() { echo -e "${red}$*${none}"; }
@@ -21,6 +25,9 @@ ensure_deps() {
     for c in jq curl; do
         command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
     done
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v openssl >/dev/null 2>&1; then
+        missing="$missing openssl"
+    fi
     if [[ -n "$missing" ]]; then
         local mgr
         mgr=$(type -P apt-get || type -P yum)
@@ -38,7 +45,21 @@ check_xray() {
 
 backup_file() {
     local file="$1"
-    [[ -f "$file" ]] && cp -a "$file" "$file.bak.$(date +%Y%m%d%H%M%S)"
+    [[ -f "$file" ]] || return 0
+    local backup="$file.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a "$file" "$backup"
+    cleanup_backups "$file" "$backup"
+}
+
+cleanup_backups() {
+    local file="$1"
+    local keep="$2"
+    local old
+    for old in "$file".bak.*; do
+        [[ -f "$old" ]] || continue
+        [[ -n "$keep" && "$old" == "$keep" ]] && continue
+        rm -f "$old"
+    done
 }
 
 validate_xray_config() {
@@ -57,6 +78,91 @@ reload_xray_if_running() {
     fi
 }
 
+
+get_arch() {
+    case $(uname -m) in
+        x86_64|amd64) echo "amd64" ;;
+        aarch64|arm64|armv8*) echo "arm64" ;;
+        armv7*|armv7l) echo "armv7" ;;
+        armv6*|armv6l) echo "armv6" ;;
+        armv5*|armv5l) echo "armv5" ;;
+        i386|i686) echo "386" ;;
+        *) _red "wgcf 暂不支持当前架构: $(uname -m)"; return 1 ;;
+    esac
+}
+
+install_wgcf() {
+    if [[ -x "$WGCF_BIN" ]]; then
+        return 0
+    fi
+    ensure_deps || return 1
+    local arch version api_url url tmpdir checksum expected actual
+    arch=$(get_arch) || return 1
+    api_url="https://api.github.com/repos/ViRb3/wgcf/releases/latest"
+    _yellow "正在获取 wgcf 最新版本..."
+    version=$(curl -fsSL "$api_url" | jq -r '.tag_name') || return 1
+    [[ -n "$version" && "$version" != "null" ]] || { _red "获取 wgcf 版本失败"; return 1; }
+    url="https://github.com/ViRb3/wgcf/releases/download/${version}/wgcf_${version#v}_linux_${arch}"
+    tmpdir=$(mktemp -d)
+    _yellow "下载 wgcf: $url"
+    curl -fL --retry 3 -o "$tmpdir/wgcf" "$url" || { rm -rf "$tmpdir"; _red "wgcf 下载失败"; return 1; }
+    curl -fsSL -o "$tmpdir/checksums.txt" "https://github.com/ViRb3/wgcf/releases/download/${version}/checksums.txt" || { rm -rf "$tmpdir"; _red "wgcf 校验文件下载失败"; return 1; }
+    checksum="wgcf_${version#v}_linux_${arch}"
+    expected=$(awk -v f="$checksum" '$0 ~ f {print $1; exit}' "$tmpdir/checksums.txt")
+    if [[ -n "$expected" ]]; then
+        if command -v sha256sum >/dev/null 2>&1; then
+            actual=$(sha256sum "$tmpdir/wgcf" | awk '{print $1}')
+        else
+            actual=$(openssl dgst -sha256 "$tmpdir/wgcf" | awk '{print $NF}')
+        fi
+        [[ "$expected" == "$actual" ]] || { rm -rf "$tmpdir"; _red "wgcf SHA256 校验失败"; return 1; }
+    else
+        _yellow "未在 checksums.txt 找到匹配项，跳过 SHA256 校验"
+    fi
+    install -m 0755 "$tmpdir/wgcf" "$WGCF_BIN" || { rm -rf "$tmpdir"; _red "安装 wgcf 失败"; return 1; }
+    rm -rf "$tmpdir"
+    _green "wgcf 安装完成: $WGCF_BIN"
+}
+
+auto_generate_warp_profile() {
+    install_wgcf || return 1
+    mkdir -p "$WGCF_DIR"
+    chmod 700 "$WGCF_DIR"
+    local oldpwd
+    oldpwd=$(pwd)
+    cd "$WGCF_DIR" || return 1
+
+    if [[ ! -f "$WGCF_ACCOUNT" ]]; then
+        _yellow "正在注册 Cloudflare WARP 账户..."
+        yes | "$WGCF_BIN" register || { cd "$oldpwd"; _red "wgcf register 失败"; return 1; }
+    else
+        _yellow "检测到已有 WARP 账户，复用: $WGCF_ACCOUNT"
+    fi
+
+    _yellow "正在生成 WireGuard Profile..."
+    "$WGCF_BIN" generate || { cd "$oldpwd"; _red "wgcf generate 失败"; return 1; }
+    cd "$oldpwd" || return 1
+    [[ -f "$WGCF_PROFILE" ]] || { _red "未生成 $WGCF_PROFILE"; return 1; }
+}
+
+parse_wgcf_profile_json() {
+    local profile="$1"
+    awk '
+      BEGIN { section="" }
+      /^\[Interface\]/ { section="interface"; next }
+      /^\[Peer\]/ { section="peer"; next }
+      /^[[:space:]]*PrivateKey[[:space:]]*=/ && section=="interface" { sub(/^[^=]*=[[:space:]]*/, ""); private=$0; next }
+      /^[[:space:]]*Address[[:space:]]*=/ && section=="interface" { sub(/^[^=]*=[[:space:]]*/, ""); addr[++n]=$0; next }
+      /^[[:space:]]*PublicKey[[:space:]]*=/ && section=="peer" { sub(/^[^=]*=[[:space:]]*/, ""); public=$0; next }
+      /^[[:space:]]*Endpoint[[:space:]]*=/ && section=="peer" { sub(/^[^=]*=[[:space:]]*/, ""); endpoint=$0; next }
+      END {
+        printf "{\"private\":\"%s\",\"public\":\"%s\",\"endpoint\":\"%s\",\"addresses\":[", private, public, endpoint;
+        for (i=1; i<=n; i++) { gsub(/\"/, "\\\"", addr[i]); printf "%s\"%s\"", (i>1 ? "," : ""), addr[i]; }
+        print "]}"
+      }
+    ' "$profile"
+}
+
 normalize_endpoint() {
     local endpoint="$1"
     endpoint=${endpoint#"\""}; endpoint=${endpoint%"\""}
@@ -68,20 +174,6 @@ normalize_endpoint() {
         echo "[$endpoint]:2408"
     else
         echo "${endpoint}:2408"
-    fi
-}
-
-parse_reserved_json() {
-    local raw="$1"
-    raw=${raw// /}
-    [[ -z "$raw" ]] && { echo '[0,0,0]'; return; }
-    if [[ "$raw" =~ ^\[[0-9]+,[0-9]+,[0-9]+\]$ ]]; then
-        echo "$raw"
-    elif [[ "$raw" =~ ^[0-9]+,[0-9]+,[0-9]+$ ]]; then
-        echo "[$raw]"
-    else
-        _red "reserved 格式无效，应为 0,0,0 或 [0,0,0]"
-        return 1
     fi
 }
 
@@ -107,27 +199,25 @@ add_warp_outbound() {
     ensure_deps || return 1
 
     echo
-    _cyan "添加 WARP 出站（参考 Xray 官方 WARP 文档）"
-    echo "说明：本功能只添加 wireguard 出站，不会默认改路由；如需使用，请在菜单中单独配置路由。"
-    echo "你需要先通过 wgcf / wgcf-cli / warp-reg 获取 WARP 账户参数。"
+    _cyan "添加 WARP 出站（自动生成 Cloudflare WARP WireGuard 配置）"
+    echo "说明：本功能会使用 wgcf 自动注册/生成 WARP 配置并写入 Xray wireguard 出站。"
+    echo "默认不会改路由；添加完成后可按提示选择是否让中国大陆流量走 WARP。"
     echo
-    read -r -p "PrivateKey / secretKey: " secret_key
-    read -r -p "IPv4 地址（如 172.16.0.2/32，可留空）: " addr4
-    read -r -p "IPv6 地址（如 2606:4700:110:.../128，可留空）: " addr6
-    read -r -p "Peer PublicKey（默认 Cloudflare WARP 公钥）: " public_key
-    read -r -p "Endpoint（默认 engage.cloudflareclient.com:2408）: " endpoint
-    read -r -p "reserved（三个数字，默认 0,0,0；如 35,74,190）: " reserved_raw
 
-    [[ -z "$secret_key" ]] && { _red "secretKey 不能为空"; return 1; }
-    public_key=${public_key:-"bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="}
-    endpoint=$(normalize_endpoint "${endpoint:-engage.cloudflareclient.com:2408}")
-    local reserved_json
-    reserved_json=$(parse_reserved_json "${reserved_raw:-0,0,0}") || return 1
+    auto_generate_warp_profile || return 1
 
-    local address_json
-    address_json=$(jq -n --arg a4 "$addr4" --arg a6 "$addr6" '[ $a4, $a6 | select(length > 0) ]')
+    local info secret_key public_key endpoint address_json reserved_json
+    info=$(parse_wgcf_profile_json "$WGCF_PROFILE") || return 1
+    secret_key=$(echo "$info" | jq -r '.private')
+    public_key=$(echo "$info" | jq -r '.public')
+    endpoint=$(normalize_endpoint "$(echo "$info" | jq -r '.endpoint')")
+    address_json=$(echo "$info" | jq -c '.addresses')
+    reserved_json='[0,0,0]'
+
+    [[ -z "$secret_key" || "$secret_key" == "null" ]] && { _red "解析 PrivateKey 失败"; return 1; }
+    [[ -z "$public_key" || "$public_key" == "null" ]] && { _red "解析 Peer PublicKey 失败"; return 1; }
     if [[ $(echo "$address_json" | jq 'length') -eq 0 ]]; then
-        _red "至少需要填写一个 WARP address"
+        _red "解析 WARP address 失败"
         return 1
     fi
 
@@ -136,6 +226,7 @@ add_warp_outbound() {
 
     if validate_xray_config; then
         _green "WARP 出站已添加: $WARP_JSON"
+        _green "WARP 账户与 Profile 保存在: $WGCF_DIR"
         reload_xray_if_running
         read -r -p "是否现在配置中国大陆流量通过 WARP 出站？[y/N]: " yn
         [[ "$yn" =~ ^[Yy]$ ]] && route_cn_to_warp
