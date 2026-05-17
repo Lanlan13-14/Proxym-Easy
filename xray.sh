@@ -524,9 +524,46 @@ view_logs() {
         return
     fi
 
-    echo -e "\n${cyan}══════ Xray 最新 50 条日志 ══════${none}"
-    journalctl -u xray -n 50 --no-pager -q
-    echo -e "${cyan}══════════════════════════════════${none}\n"
+    while true; do
+        clear
+        echo "========== Xray 日志查看 =========="
+        echo "[1] 查看最近日志（默认 50 条，可自定义）"
+        echo "[2] 实时跟随日志 (-f)"
+        echo "[0] 返回主菜单"
+        echo "=================================="
+        echo
+        read -r -p "请选择 [0-2]: " log_choice
+
+        case $log_choice in
+            1)
+                local lines
+                read -r -p "请输入查看条数（默认 50）: " lines
+                lines=${lines:-50}
+                if ! [[ $lines =~ ^[1-9][0-9]*$ ]]; then
+                    _red "无效条数，请输入正整数"
+                    read -r -p "按回车键继续..."
+                    continue
+                fi
+                echo -e "\n${cyan}══════ Xray 最新 ${lines} 条日志 ══════${none}"
+                journalctl -u xray -n "$lines" --no-pager -q
+                echo -e "${cyan}══════════════════════════════════${none}\n"
+                read -r -p "按回车键继续..."
+                ;;
+            2)
+                echo -e "\n${cyan}══════ Xray 实时日志（Ctrl+C 停止跟随）══════${none}"
+                journalctl -u xray -f -q
+                echo
+                read -r -p "按回车键继续..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                _red "无效选择"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 # ========== 查看状态详情 ==========
@@ -694,7 +731,7 @@ show_menu() {
     echo "[7] 启动 Xray"
     echo "[8] 停止 Xray"
     echo "[9] 重启 Xray"
-    echo "[10] 查看最近 50 条日志"
+    echo "[10] 查看 Xray 日志"
     echo "[11] 查看 systemctl status"
     echo "[12] 开启 Xray 开机自启"
     echo "[13] 关闭 Xray 开机自启"
@@ -751,7 +788,7 @@ main() {
                 control_service restart; read -r -p "按回车键继续..."
                 ;;
             10)
-                view_logs; read -r -p "按回车键继续..."
+                view_logs
                 ;;
             11)
                 view_status; read -r -p "按回车键继续..."
