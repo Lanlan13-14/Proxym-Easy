@@ -365,7 +365,7 @@ select_padding_pair() {
 select_network() {
     local sel
     echo "选择传输协议：" >&2
-    echo "[1] tcp（默认；本脚本不支持 XHTTP）" >&2
+    echo "[1] tcp" >&2
     echo "[2] ws" >&2
     read -rp "选择 [1-2]（默认 tcp）: " sel
     [[ "$sel" == "2" ]] && echo "ws" || echo "tcp"
