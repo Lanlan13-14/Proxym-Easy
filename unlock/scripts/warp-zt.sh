@@ -90,6 +90,10 @@ wait_registration() {
       fi
       settings="$(warp-cli --accept-tos settings list 2>&1 || warp-cli --accept-tos settings 2>&1 || true)"
       printf '%s\n' "$settings" > "$RUNTIME_DIR/warp-settings.log"
+      if printf '%s\n' "$settings" | grep -Eqi 'Include mode, with hosts/ips|Split Tunnels[^:]*:[[:space:]]*Include'; then
+        printf '%s\n' "$settings" >&2
+        fail "Zero Trust device profile uses Split Tunnel Include mode; switch this Service Token profile to Exclude mode so Internet/streaming traffic enters WARP"
+      fi
       # Registration and MDM settings are asynchronous. Wait until BOTH the
       # organization and Traffic-only mode are visible instead of failing on
       # the first partially-loaded registration response.
