@@ -11,6 +11,10 @@ for f in scripts/*.sh tests/*.sh; do
 done
 
 echo "== gen-domains =="
+# CI runs inside unlock/ without UNLOCK_ROOT; the script must find checkout files.
+env -u UNLOCK_ROOT sh scripts/gen-domains.sh
+test -s domains/all.txt || fail=1
+# Image mode still supports its explicit /opt/unlock root.
 UNLOCK_ROOT="$ROOT" sh scripts/gen-domains.sh
 test -s domains/all.txt || fail=1
 count="$(wc -l < domains/all.txt | tr -d ' ')"

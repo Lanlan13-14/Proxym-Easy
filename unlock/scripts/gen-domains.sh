@@ -2,7 +2,10 @@
 # Generate domain list from StreamConfig.yaml (no yq required).
 set -eu
 
-ROOT="${UNLOCK_ROOT:-/opt/unlock}"
+# In the image UNLOCK_ROOT is /opt/unlock. In CI/local checkout, derive it
+# from this script so callers do not need to export a container-only path.
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+ROOT="${UNLOCK_ROOT:-$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)}"
 STREAM_CONFIG="${STREAM_CONFIG:-$ROOT/StreamConfig.yaml}"
 OUT_DIR="${DOMAINS_DIR:-$ROOT/domains}"
 OUT_FILE="${OUT_DIR}/all.txt"

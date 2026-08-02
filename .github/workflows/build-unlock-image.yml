@@ -1,23 +1,15 @@
-# Proxym-Easy monorepo entry — builds ONLY unlock/ context.
-# Source of truth for unlock image lives under unlock/.
+# Manual, versioned GHCR release for Proxym-Easy DNS Unlock.
+# The Docker build context is deliberately ONLY ./unlock.
 
-name: build-unlock-image
+name: publish-unlock-image
 
 on:
-  push:
-    branches: [main, master]
-    paths:
-      - "unlock/**"
-      - ".github/workflows/build-unlock-image.yml"
-  pull_request:
-    paths:
-      - "unlock/**"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Image tag override"
-        required: false
-        default: ""
+      version:
+        description: "Image version, e.g. v1.0.0 or 1.0.0"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -27,7 +19,27 @@ env:
   IMAGE_NAME: proxym-easy-unlock
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Validate version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ inputs.version }}'
+          # OCI tag-safe SemVer-like versions; accepts v1.2.3 and 1.2.3-rc.1.
+          if [[ ! "$version" =~ ^v?[0-9]+(\.[0-9]+){0,2}(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Invalid version: $version" >&2
+            echo "Use a version such as v1.0.0, 1.2.3, or v1.2.0-rc.1." >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
   test:
+    needs: prepare
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -37,20 +49,21 @@ jobs:
       - name: Shell syntax
         run: |
           set -e
-          for f in scripts/*.sh; do
+          for f in scripts/*.sh tests/*.sh; do
             echo "check $f"
             sh -n "$f"
           done
-      - name: Generate domains
+      - name: Generate domains from checkout path
         run: |
-          sh scripts/gen-domains.sh
+          # No UNLOCK_ROOT: this verifies CI/local path auto-detection.
+          env -u UNLOCK_ROOT sh scripts/gen-domains.sh
           test -s domains/all.txt
           wc -l domains/all.txt
       - name: Unit tests
         run: sh tests/run.sh
 
-  build:
-    needs: test
+  publish:
+    needs: [prepare, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,29 +72,27 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to GHCR
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Docker meta
+      - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
-            type=ref,event=branch
-      - name: Build and push
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest
+      - name: Build and publish multi-architecture image
         uses: docker/build-push-action@v6
         with:
+          # CRITICAL: never broaden this to repository root.
           context: ./unlock
           file: ./unlock/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

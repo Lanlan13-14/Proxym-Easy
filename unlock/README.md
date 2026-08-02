@@ -260,7 +260,18 @@ TLS_KEY=/etc/unlock/tls/privkey.pem
 
 ## GitHub Actions / 镜像边界
 
-根工作流：`.github/workflows/build-unlock-image.yml`
+根工作流：`.github/workflows/build-unlock-image.yml`。
+
+[KNOWN] 它**只允许手动触发**，不会在 push / PR 时自动构建或推送镜像。Actions → `publish-unlock-image` → **Run workflow**，输入必填版本号，例如 `v1.0.0`、`1.2.3` 或 `v1.2.0-rc.1`。
+
+一次手动发布会推送两个 GHCR tag：
+
+```text
+ghcr.io/lanlan13-14/proxym-easy-unlock:<你输入的版本>
+ghcr.io/lanlan13-14/proxym-easy-unlock:latest
+```
+
+工作流先在 GitHub runner 中做路径自适应测试，再构建多架构镜像：
 
 ```yaml
 context: ./unlock

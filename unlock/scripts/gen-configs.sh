@@ -2,7 +2,10 @@
 # Render runtime configs from env + domain list.
 set -eu
 
-ROOT="${UNLOCK_ROOT:-/opt/unlock}"
+# In the image UNLOCK_ROOT is /opt/unlock. In CI/local checkout, derive it
+# from this script so callers do not need to export a container-only path.
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+ROOT="${UNLOCK_ROOT:-$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)}"
 CONF_DIR="${CONF_DIR:-/etc/unlock}"
 RUNTIME_DIR="${RUNTIME_DIR:-/run/unlock}"
 DOMAINS_FILE="${DOMAINS_FILE:-$ROOT/domains/all.txt}"
