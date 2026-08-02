@@ -149,18 +149,34 @@ fix_return_routes() {
 }
 
 trace_request() {
-  # Pin the validation hostname to Cloudflare IPs so the fail-closed check does
-  # not depend on warp-svc changing /etc/resolv.conf inside Docker.
-  curl -4fsS --max-time 20 \
-    --resolve www.cloudflare.com:443:104.16.123.96 \
-    --resolve www.cloudflare.com:443:104.16.124.96 \
-    https://www.cloudflare.com/cdn-cgi/trace
+  # This is the canonical WARP check used by mature warp-svc containers.
+  # Fall back to the literal 1.1.1.1 endpoint if container DNS is temporarily
+  # unavailable while WARP applies Traffic-only settings.
+  curl -4fsS --max-time 20 https://cloudflare.com/cdn-cgi/trace \
+    || curl -4fsS --max-time 20 https://1.1.1.1/cdn-cgi/trace
+}
+
+dump_diagnostics() {
+  echo "--- warp registration ---" >&2
+  warp-cli --accept-tos registration show >&2 2>&1 || true
+  echo "--- warp settings ---" >&2
+  warp-cli --accept-tos settings list >&2 2>&1 || warp-cli --accept-tos settings >&2 2>&1 || true
+  echo "--- warp status ---" >&2
+  warp-cli --accept-tos status >&2 2>&1 || true
+  echo "--- trace ---" >&2
+  cat "$RUNTIME_DIR/warp-trace.log" >&2 2>/dev/null || true
+  echo "--- IPv4 routes/rules ---" >&2
+  ip -4 route show table all >&2 2>&1 || true
+  ip -4 rule show >&2 2>&1 || true
+  echo "--- warp-svc tail ---" >&2
+  tail -n 100 "$RUNTIME_DIR/warp-svc.log" >&2 2>/dev/null || true
 }
 
 verify_path() {
-  trace="$(trace_request)" || fail "WARP egress trace failed"
+  trace="$(trace_request)" || { dump_diagnostics; fail "WARP egress trace failed"; }
   printf '%s\n' "$trace" > "$RUNTIME_DIR/warp-trace.log"
-  printf '%s\n' "$trace" | grep -q '^warp=on$' || fail "traffic is not exiting through WARP"
+  printf '%s\n' "$trace" | grep -Eq '^warp=(on|plus)$' \
+    || { dump_diagnostics; fail "traffic is not exiting through WARP (trace warp is off)"; }
   touch "$RUNTIME_DIR/warp-ready"
   log "Zero Trust WARP ready (tunnelonly, organization=$ORG)"
 }
@@ -178,7 +194,7 @@ case "${1:-}" in
     [ -f "$RUNTIME_DIR/warp-ready" ] \
       && pgrep -x warp-svc >/dev/null 2>&1 \
       && warp-cli --accept-tos status 2>/dev/null | grep -qi Connected \
-      && trace_request | grep -q '^warp=on$'
+      && trace_request | grep -Eq '^warp=(on|plus)$'
     ;;
   supervise)
     secs=$((RESTART_HOURS * 3600)); [ "$secs" -ge 300 ] || secs=300
