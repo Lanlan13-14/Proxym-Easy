@@ -145,7 +145,7 @@ DOT_TLS_MODE=letsencrypt
 LE_EMAIL=admin@example.com
 CF_DNS_API_TOKEN=Cloudflare_DNS_API_Token
 
-WARP_ORGANIZATION=brightandy
+WARP_ORGANIZATION=example
 WARP_CLIENT_ID=xxxxxxxxxxxxxxxx.access
 WARP_CLIENT_SECRET=xxxxxxxxxxxxxxxx
 ZT_RESTART_HOURS=12
