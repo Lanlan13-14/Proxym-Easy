@@ -1,0 +1,22 @@
+# Generated at runtime by scripts/gen-configs.sh — do not edit in container.
+# This is a valid SmartDNS DoT TLS directive model.
+
+server-name dot.example.com
+bind 0.0.0.0:53
+bind-tcp 0.0.0.0:53
+# DOT_PORT is configurable. Use a real certificate for dot.example.com.
+bind-tls 0.0.0.0:853
+bind-cert-file /etc/unlock/letsencrypt/certificates/dot.example.com.crt
+bind-cert-key-file /etc/unlock/letsencrypt/certificates/dot.example.com.key
+
+cache-size 32768
+prefetch-domain yes
+# Default on IPv4-only unlock hosts: avoid IPv6 direct-connect bypass.
+force-aaaa-soa yes
+dualstack-ip-selection yes
+speed-check-mode ping,tcp:80,tcp:443
+log-level info
+log-console yes
+server 1.1.1.1
+server 1.0.0.1
+# address /netflix.com/<UNLOCK_IP>

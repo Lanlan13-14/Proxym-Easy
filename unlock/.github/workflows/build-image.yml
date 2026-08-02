@@ -1,0 +1,110 @@
+# Build & publish unlock image — context is ONLY this directory when
+# the workflow is used from unlock/ as a subproject, or from monorepo
+# with context: unlock.
+
+name: build-unlock-image
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "unlock/**"
+      - ".github/workflows/build-unlock-image.yml"
+  pull_request:
+    paths:
+      - "unlock/**"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag override"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: proxym-easy-unlock
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: unlock
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          set -e
+          for f in scripts/*.sh; do
+            echo "check $f"
+            sh -n "$f"
+          done
+      - name: Generate domains
+        run: |
+          sh scripts/gen-domains.sh
+          test -s domains/all.txt
+          wc -l domains/all.txt
+      - name: Unit tests
+        run: sh tests/run.sh
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
+            type=ref,event=branch
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          # CRITICAL: only unlock/ directory is the build context
+          context: ./unlock
+          file: ./unlock/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Optional: standalone mode when this workflow is copied into unlock/.github
+  # and the repo root IS unlock. Detected by absence of parent unlock path.
+  build-standalone:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: proxym-easy-unlock:test

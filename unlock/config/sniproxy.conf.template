@@ -1,0 +1,27 @@
+# Generated at runtime by scripts/gen-configs.sh — do not edit in container.
+# Reference template only.
+
+user nobody
+pidfile /run/unlock/sniproxy.pid
+
+error_log {
+    syslog daemon
+    priority notice
+}
+
+# Must stay on 80/443: DNS unlock clients do not redirect their destination port.
+listen 80 {
+    proto http
+    table https_hosts
+    fallback 127.0.0.1:9
+}
+
+listen 443 {
+    proto tls
+    table https_hosts
+    fallback 127.0.0.1:9
+}
+
+table https_hosts {
+    # .*example\.com$ *
+}

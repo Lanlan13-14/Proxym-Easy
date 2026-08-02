@@ -1,0 +1,63 @@
+# DNS Unlock stack (build context = this directory only)
+# Usage:
+#   cp .env.example .env   # edit ALLOWED_IPS / UNLOCK_IP / CF_TUNNEL_TOKEN
+#   docker compose up -d --build
+
+services:
+  unlock:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: proxym-easy-unlock:latest
+    container_name: proxym-unlock
+    restart: unless-stopped
+    # Default production secrets file is .env. ENV_FILE lets CI/config checks
+    # render safely with .env.example without creating a real secret file.
+    env_file:
+      - ${ENV_FILE:-.env}
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      UNLOCK_IP: ${UNLOCK_IP:-}
+      ALLOWED_IPS: ${ALLOWED_IPS:-}
+      ENABLE_ACL: ${ENABLE_ACL:-1}
+      DNS_UDP_PORT: ${DNS_UDP_PORT:-53}
+      DOT_PORT: ${DOT_PORT:-853}
+      # cert-manager.sh validates these at runtime. Keeping Compose interpolation
+      # permissive also allows DOT_TLS_MODE=custom/selfsigned test deployments.
+      DOT_DOMAIN: ${DOT_DOMAIN:-}
+      DOT_TLS_MODE: ${DOT_TLS_MODE:-letsencrypt}
+      LE_EMAIL: ${LE_EMAIL:-}
+      CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:-}
+      RENEW_CHECK_HOURS: ${RENEW_CHECK_HOURS:-12}
+      RENEW_BEFORE_DAYS: ${RENEW_BEFORE_DAYS:-30}
+      UPSTREAM_DNS: ${UPSTREAM_DNS:-1.1.1.1,1.0.0.1,8.8.8.8}
+      FORCE_AAAA_SOA: ${FORCE_AAAA_SOA:-yes}
+      PLATFORMS: ${PLATFORMS:-all}
+      REGIONS: ${REGIONS:-}
+      CF_TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:-}
+      ENABLE_ZT: ${ENABLE_ZT:-auto}
+      ZT_RESTART_HOURS: ${ZT_RESTART_HOURS:-12}
+    # DNS and DoT port mappings are dynamic. Transparent SNI unlock must retain
+    # public 80/443 because normal streaming clients always use those ports.
+    ports:
+      - "${DNS_UDP_PORT:-53}:${DNS_UDP_PORT:-53}/udp"
+      - "${DNS_UDP_PORT:-53}:${DNS_UDP_PORT:-53}/tcp"
+      - "${DOT_PORT:-853}:${DOT_PORT:-853}/tcp"
+      - "80:80/tcp"
+      - "443:443/tcp"
+    volumes:
+      # Persist DoT certs / generated configs if desired
+      - unlock-data:/etc/unlock
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ip_forward=0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  unlock-data:

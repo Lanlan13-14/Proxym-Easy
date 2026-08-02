@@ -1,0 +1,14 @@
+# Keep image context = unlock/ only, exclude junk
+.git
+.github
+**/.git
+**/__pycache__
+**/*.md
+!README.md
+.env
+.env.*
+!.env.example
+tests
+*.log
+tmp
+.DS_Store
