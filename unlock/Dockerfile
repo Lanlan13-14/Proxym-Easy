@@ -71,5 +71,6 @@ RUN chmod +x /opt/unlock/scripts/*.sh \
 HEALTHCHECK --interval=30s --timeout=15s --start-period=180s --retries=3 \
   CMD ["/opt/unlock/scripts/healthcheck.sh"]
 
-EXPOSE 53/udp 53/tcp 853/tcp 80/tcp 443/tcp
+# Plain DNS/53 remains internal. Public service ports: DoT + transparent SNI.
+EXPOSE 853/tcp 80/tcp 443/tcp
 ENTRYPOINT ["/opt/unlock/scripts/entrypoint.sh"]

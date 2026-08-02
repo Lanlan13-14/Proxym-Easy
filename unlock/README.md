@@ -2,7 +2,7 @@
 
 单镜像流媒体 DNS 解锁，**流媒体出站必须经过 Cloudflare Zero Trust WARP**：
 
-- SmartDNS：DNS UDP/TCP + 可自定义端口的 DoT
+- SmartDNS：容器内明文 DNS + 公网可自定义端口的 DoT（默认不发布 53）
 - sniproxy：透明接收客户端对流媒体域名的 HTTP/80、TLS SNI/443
 - 官方 Cloudflare One Client：Service Token 加入 Zero Trust，`tunnelonly` Traffic-only 模式
 - Fail closed：Zero Trust 注册/连接/`warp=on` 任一步失败，SmartDNS/sniproxy 不启动或容器退出
@@ -162,7 +162,8 @@ docker compose logs -f unlock
 
 - Linux 主机具备 `/dev/net/tun` 和 nftables。
 - Compose 已提供 NET_ADMIN、NET_RAW、MKNOD、AUDIT_WRITE、SYS_PTRACE。
-- 80/443 必须空闲；透明 DNS 解锁客户端固定连接这些端口。
+- 公网只发布 DoT 端口和 sniproxy 的 80/443；明文 DNS/53 默认不发布。
+- 80/443 必须空闲；它们不是 ACME/DNS 验证端口，而是流媒体客户端解析到解锁机后实际连接 sniproxy 的端口，不能删除或改成非标准端口。
 - `ALLOWED_IPS` 不可为空。它既是访问白名单，也是 WARP 全隧道下的回程排除列表。
 
 ### 已发布镜像
@@ -197,7 +198,10 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 DoT/DNS：
 
 ```bash
-dig @203.0.113.10 netflix.com A +short
+# 明文 DNS 只在容器内部做健康检查，不发布宿主机 53。
+docker compose exec unlock dig @127.0.0.1 netflix.com A +short
+
+# 公网客户端使用 DoT。
 openssl s_client -connect 203.0.113.10:9853 \
   -servername dot.example.com -verify_hostname dot.example.com </dev/null
 kdig @203.0.113.10 -p 9853 +tls-ca +tls-host=dot.example.com netflix.com A
@@ -235,7 +239,7 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 |---|---:|---|
 | `UNLOCK_IP` | 自动探测 | 流媒体域名返回的解锁机 IP，生产建议显式设置 |
 | `ALLOWED_IPS` | 空，拒绝启动 | 访问白名单及 WARP 回程排除 CIDR |
-| `DNS_UDP_PORT` | `53` | DNS UDP/TCP 端口 |
+| `DNS_UDP_PORT` | `53` | 容器内部 SmartDNS 明文端口，默认不映射到宿主机 |
 | `DOT_PORT` | `853` | 可自定义 DoT 端口 |
 | `DOT_DOMAIN` | 无 | DoT TLS 名称/SNI |
 | `CF_DNS_API_TOKEN` | 无 | Let’s Encrypt Cloudflare DNS-01 token |

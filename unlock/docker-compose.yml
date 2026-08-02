@@ -35,8 +35,7 @@ services:
       WARP_CONNECT_TIMEOUT: ${WARP_CONNECT_TIMEOUT:-120}
       ZT_RESTART_HOURS: ${ZT_RESTART_HOURS:-12}
     ports:
-      - "${DNS_UDP_PORT:-53}:${DNS_UDP_PORT:-53}/udp"
-      - "${DNS_UDP_PORT:-53}:${DNS_UDP_PORT:-53}/tcp"
+      # Public clients use DoT only; plaintext DNS/53 stays container-internal.
       - "${DOT_PORT:-853}:${DOT_PORT:-853}/tcp"
       - "80:80/tcp"
       - "443:443/tcp"

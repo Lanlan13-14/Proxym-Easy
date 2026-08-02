@@ -77,6 +77,10 @@ fi
 echo "== compose dynamic port + ACME wiring =="
 grep -q 'DOT_TLS_MODE' docker-compose.yml || { echo "compose does not pass TLS mode"; fail=1; }
 grep -q '\${DOT_PORT:-853}:\${DOT_PORT:-853}/tcp' docker-compose.yml || { echo "DoT port mapping is not dynamic"; fail=1; }
+if grep -qE '53:53|DNS_UDP_PORT[^\n]*:/tcp|DNS_UDP_PORT[^\n]*:/udp' docker-compose.yml; then
+  echo "plaintext DNS/53 must not be published"
+  fail=1
+fi
 grep -q 'CF_DNS_API_TOKEN' .env.example || { echo "missing Cloudflare DNS token config"; fail=1; }
 grep -q 'cert-manager.sh' scripts/entrypoint.sh || { echo "certificate manager not started"; fail=1; }
 grep -q 'CLOUDFLARE_DNS_API_TOKEN' scripts/cert-manager.sh || { echo "lego Cloudflare DNS token missing"; fail=1; }
