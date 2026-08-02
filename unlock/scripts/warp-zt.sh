@@ -122,9 +122,18 @@ wait_connected() {
   fail "WARP did not reach Connected state"
 }
 
+ensure_nft_accept() {
+  # WARP installs a late drop in inet cloudflare-warp. `nft add` appends after
+  # that drop and never matches. Always insert at the head of the chain.
+  family="$1"; chain="$2"; expr="$3"
+  if ! nft list chain inet cloudflare-warp "$chain" 2>/dev/null | grep -Fq "$expr"; then
+    nft insert rule inet cloudflare-warp "$chain" $expr
+  fi
+}
+
 fix_return_routes() {
-  # Besides external clients, preserve the container's attached Docker subnet;
-  # otherwise WARP's policy routing can break host->published-port replies.
+  # Preserve replies to external clients and the Docker subnet so published
+  # DoT/SNI ports are not swallowed by WARP's firewall/policy routing.
   routes="$ALLOWED_IPS"
   docker_cidr="$(ip -4 route show dev eth0 proto kernel 2>/dev/null | awk 'NR==1{print $1}')"
   [ -z "$docker_cidr" ] || routes="$routes,$docker_cidr"
@@ -136,20 +145,21 @@ fix_return_routes() {
       *:*)
         ip -6 rule list | grep -Fq "to $cidr lookup main" || ip -6 rule add to "$cidr" lookup main priority 10
         if nft list table inet cloudflare-warp >/dev/null 2>&1; then
-          nft list table inet cloudflare-warp | grep -Fq "ip6 saddr $cidr accept" || nft add rule inet cloudflare-warp input ip6 saddr "$cidr" accept
-          nft list table inet cloudflare-warp | grep -Fq "ip6 daddr $cidr accept" || nft add rule inet cloudflare-warp output ip6 daddr "$cidr" accept
+          ensure_nft_accept inet input "ip6 saddr $cidr accept"
+          ensure_nft_accept inet output "ip6 daddr $cidr accept"
         fi
         ;;
       *)
         ip rule list | grep -Fq "to $cidr lookup main" || ip rule add to "$cidr" lookup main priority 10
         if nft list table inet cloudflare-warp >/dev/null 2>&1; then
-          nft list table inet cloudflare-warp | grep -Fq "ip saddr $cidr accept" || nft add rule inet cloudflare-warp input ip saddr "$cidr" accept
-          nft list table inet cloudflare-warp | grep -Fq "ip daddr $cidr accept" || nft add rule inet cloudflare-warp output ip daddr "$cidr" accept
+          ensure_nft_accept inet input "ip saddr $cidr accept"
+          ensure_nft_accept inet output "ip daddr $cidr accept"
         fi
         ;;
     esac
   done
   IFS="$oldifs"
+  log "preserved inbound client return path for ALLOWED_IPS and Docker subnet"
 }
 
 trace_request() {

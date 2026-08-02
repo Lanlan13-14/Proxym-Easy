@@ -23,6 +23,11 @@ grep -q 'https://1.1.1.1/cdn-cgi/trace' "$SCRIPT"
 grep -q 'dump_diagnostics' "$SCRIPT"
 grep -q 'ip rule add to.*lookup main priority 10' "$SCRIPT"
 grep -q 'ip -4 route show dev eth0 proto kernel' "$SCRIPT"
+grep -q 'nft insert rule inet cloudflare-warp' "$SCRIPT"
+if grep -Eq 'nft add rule inet cloudflare-warp' "$SCRIPT"; then
+  echo "WARP client allow rules must insert at chain head, not append" >&2
+  exit 1
+fi
 grep -q 'warp-restart-required' "$SCRIPT"
 grep -q 'scheduled Zero Trust restart; stopping sniproxy and exiting' "$ROOT/scripts/entrypoint.sh"
 

@@ -49,7 +49,11 @@ grep -q "bind-tls .*:9853" "$CONF_DIR/smartdns.conf" || { echo "missing custom b
 grep -q "bind-cert-file $TLS_CERT" "$CONF_DIR/smartdns.conf" || { echo "missing TLS certificate path"; fail=1; }
 grep -q "bind-cert-key-file $TLS_KEY" "$CONF_DIR/smartdns.conf" || { echo "missing TLS key path"; fail=1; }
 grep -q "address /netflix.com/203.0.113.10" "$CONF_DIR/smartdns.conf" || { echo "missing netflix address"; fail=1; }
-grep -q "force-aaaa-soa yes" "$CONF_DIR/smartdns.conf" || { echo "missing IPv6 bypass protection"; fail=1; }
+grep -q "bind-tls .*:9853 -force-aaaa-soa" "$CONF_DIR/smartdns.conf" || { echo "missing IPv6 bypass protection on DoT"; fail=1; }
+if grep -q '^force-aaaa-soa ' "$CONF_DIR/smartdns.conf"; then
+  echo "invalid global force-aaaa-soa directive"
+  fail=1
+fi
 grep -q "listen 80" "$CONF_DIR/sniproxy.conf" || { echo "missing transparent HTTP/80"; fail=1; }
 grep -q "listen 443" "$CONF_DIR/sniproxy.conf" || { echo "missing transparent HTTPS/443"; fail=1; }
 grep -q "table https_hosts" "$CONF_DIR/sniproxy.conf" || { echo "missing sniproxy table"; fail=1; }

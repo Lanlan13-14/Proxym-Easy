@@ -150,12 +150,20 @@ EOF
 } > "$CONF_DIR/sniproxy.conf"
 
 # --- smartdns.conf ---
+# force-aaaa-soa is a bind option (not a global `yes/no` directive).
+# It prevents IPv4-only DNS unlock hosts from leaking traffic through AAAA.
+bind_flags=""
+case "$FORCE_AAAA_SOA" in
+  yes|true|1) bind_flags=" -force-aaaa-soa" ;;
+  no|false|0|'') ;;
+  *) echo "ERROR: FORCE_AAAA_SOA must be yes or no" >&2; exit 1 ;;
+esac
 {
   cat <<EOF
 server-name $DOT_SERVER_NAME
-bind ${BIND_HOST}:${DNS_UDP_PORT}
-bind-tcp ${BIND_HOST}:${DNS_UDP_PORT}
-bind-tls ${BIND_HOST}:${DOT_PORT}
+bind ${BIND_HOST}:${DNS_UDP_PORT}${bind_flags}
+bind-tcp ${BIND_HOST}:${DNS_UDP_PORT}${bind_flags}
+bind-tls ${BIND_HOST}:${DOT_PORT}${bind_flags}
 bind-cert-file $TLS_CERT
 bind-cert-key-file $TLS_KEY
 cache-size $CACHE_SIZE
@@ -167,7 +175,6 @@ dualstack-ip-selection yes
 speed-check-mode $SPEED_CHECK_MODE
 log-level info
 log-console yes
-force-aaaa-soa $FORCE_AAAA_SOA
 force-qtype-SOA 65
 EOF
 
