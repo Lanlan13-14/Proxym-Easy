@@ -7,91 +7,98 @@ RUNTIME_DIR="${RUNTIME_DIR:-/run/unlock}"
 export UNLOCK_ROOT CONF_DIR RUNTIME_DIR
 
 mkdir -p "$CONF_DIR" "$RUNTIME_DIR" /var/log/unlock
-
 log() { echo " >> [entrypoint] $*"; }
 
-# DoT is TLS. Obtain/verify a real certificate before SmartDNS binds the DoT port.
-# DNS-01 works without exposing HTTP-01 and supports a custom DoT port.
+# DoT certificate first: DNS-01 does not depend on WARP or inbound 80/443.
 "$ROOT/scripts/cert-manager.sh" ensure
-
-# Generate domain list + configs after certificate paths are known.
 "$ROOT/scripts/gen-domains.sh"
+# Resolve public upstream names before WARP enters Traffic-only mode. SmartDNS
+# then uses numeric endpoints and never depends on WARP changing /etc/resolv.conf.
+UPSTREAM_DNS="${UPSTREAM_DNS:-1.1.1.1,1.0.0.1,8.8.8.8}"
+resolved_upstreams=""
+oldifs="$IFS"; IFS=','
+for upstream in $UPSTREAM_DNS; do
+  upstream="$(printf '%s' "$upstream" | tr -d ' ')"; [ -n "$upstream" ] || continue
+  host="$upstream"
+  case "$upstream" in
+    tls://*|https://*|quic://*)
+      host="$(printf '%s' "$upstream" | sed -E 's@^[a-z]+://([^/:]+).*@\1@')"
+      ;;
+  esac
+  case "$host" in
+    *[!0-9.:]*)
+      ip="$(getent ahostsv4 "$host" | awk 'NR==1{print $1}')"
+      [ -n "$ip" ] || { log "cannot resolve upstream $host"; exit 1; }
+      upstream="$ip"
+      ;;
+  esac
+  [ -z "$resolved_upstreams" ] && resolved_upstreams="$upstream" || resolved_upstreams="$resolved_upstreams,$upstream"
+done
+IFS="$oldifs"
+UPSTREAM_DNS="$resolved_upstreams"; export UPSTREAM_DNS
 "$ROOT/scripts/gen-configs.sh"
 
-# Optional host ACL (needs NET_ADMIN / privileged when used)
+# White-list firewall is mandatory by default.
 if [ "${ENABLE_ACL:-1}" = "1" ] || [ "${ENABLE_ACL:-true}" = "true" ]; then
   "$ROOT/scripts/apply-acl.sh"
 else
-  log "WARNING: ACL disabled explicitly (ENABLE_ACL=$ENABLE_ACL)"
+  log "WARNING: ACL disabled explicitly (ENABLE_ACL=${ENABLE_ACL:-0})"
 fi
 
-# Start sniproxy
-if command -v sniproxy >/dev/null 2>&1; then
-  log "starting sniproxy"
-  sniproxy -c "$CONF_DIR/sniproxy.conf" -f >"$RUNTIME_DIR/sniproxy.log" 2>&1 &
-  echo $! >"$RUNTIME_DIR/sniproxy.pid"
-else
-  log "ERROR: sniproxy not found"
+# Mandatory egress: official Cloudflare One Client, Service Token enrollment,
+# Traffic-only mode. If this fails, no DNS/sniproxy service is started.
+log "starting mandatory Cloudflare Zero Trust WARP egress"
+"$ROOT/scripts/warp-zt.sh" start
+
+# Start SmartDNS only after Zero Trust has been proven ready.
+log "starting smartdns"
+smartdns -R -c "$CONF_DIR/smartdns.conf" -f >"$RUNTIME_DIR/smartdns.log" 2>&1 &
+echo $! >"$RUNTIME_DIR/smartdns.pid"
+sleep 1
+if ! kill -0 "$(cat "$RUNTIME_DIR/smartdns.pid")" 2>/dev/null; then
+  tail -n 80 "$RUNTIME_DIR/smartdns.log" >&2 || true
   exit 1
 fi
 
-# Start smartdns
-if command -v smartdns >/dev/null 2>&1; then
-  log "starting smartdns"
-  # -R creates SmartDNS's monitor process. That process handles SIGHUP by
-  # restarting its child, so a renewed certificate is loaded without downtime
-  # beyond the restart. -f keeps the monitor attached to container logging.
-  smartdns -R -c "$CONF_DIR/smartdns.conf" -f >"$RUNTIME_DIR/smartdns.log" 2>&1 &
-  echo $! >"$RUNTIME_DIR/smartdns.pid"
-  sleep 1
-  if ! kill -0 "$(cat "$RUNTIME_DIR/smartdns.pid")" 2>/dev/null; then
-    log "SmartDNS startup failed"
-    tail -n 80 "$RUNTIME_DIR/smartdns.log" >&2 || true
-    exit 1
-  fi
-else
-  log "ERROR: smartdns not found"
+# Start sniproxy last. All destination connections now follow the WARP tunnel.
+log "starting sniproxy behind Zero Trust WARP"
+sniproxy -c "$CONF_DIR/sniproxy.conf" -f >"$RUNTIME_DIR/sniproxy.log" 2>&1 &
+echo $! >"$RUNTIME_DIR/sniproxy.pid"
+sleep 1
+if ! kill -0 "$(cat "$RUNTIME_DIR/sniproxy.pid")" 2>/dev/null; then
+  tail -n 80 "$RUNTIME_DIR/sniproxy.log" >&2 || true
   exit 1
 fi
 
-# Automatic Let's Encrypt renewal; certificate changes cause SmartDNS SIGHUP reload.
 "$ROOT/scripts/cert-manager.sh" renew-loop >"$RUNTIME_DIR/cert-manager.log" 2>&1 &
 echo $! >"$RUNTIME_DIR/cert-manager.pid"
+"$ROOT/scripts/warp-zt.sh" supervise >"$RUNTIME_DIR/warp-supervisor.log" 2>&1 &
+echo $! >"$RUNTIME_DIR/warp-supervisor.pid"
 
-# Zero Trust tunnel supervisor (optional)
-if [ -f "$CONF_DIR/cloudflared-env" ] || [ "${ENABLE_ZT:-auto}" = "true" ] || [ "${ENABLE_ZT:-}" = "1" ]; then
-  log "starting Zero Trust supervisor"
-  "$ROOT/scripts/restart-zt.sh" >"$RUNTIME_DIR/restart-zt.log" 2>&1 &
-  echo $! >"$RUNTIME_DIR/restart-zt.pid"
-else
-  log "Zero Trust tunnel not configured (set CF_TUNNEL_TOKEN to enable)"
-fi
+log "ready: DoT/DNS -> sniproxy -> Cloudflare Zero Trust WARP"
+log "  organization=${WARP_ORGANIZATION}"
+log "  DNS UDP/TCP=${DNS_UDP_PORT:-53} DoT=${DOT_PORT:-853}"
+log "  HTTP=80 HTTPS=443 ALLOWED_IPS=${ALLOWED_IPS}"
 
-log "ready"
-log "  DNS UDP : ${DNS_UDP_PORT:-53}"
-log "  DoT     : ${DOT_PORT:-853}"
-log "  HTTP    : 80 (fixed for transparent SNI unlock)"
-log "  HTTPS   : 443 (fixed for transparent SNI unlock)"
-log "  UNLOCK_IP=${UNLOCK_IP:-auto}"
-log "  ALLOWED_IPS=${ALLOWED_IPS:-<open>}"
-
-# Supervise children; exit if core services die
+# Fail closed: if WARP is no longer healthy, stop sniproxy immediately. The
+# container restarts and does not silently fall back to direct VPS egress.
 while true; do
-  if [ -f "$RUNTIME_DIR/sniproxy.pid" ]; then
-    spid="$(cat "$RUNTIME_DIR/sniproxy.pid")"
-    if ! kill -0 "$spid" 2>/dev/null; then
-      log "sniproxy died; restarting"
-      sniproxy -c "$CONF_DIR/sniproxy.conf" -f >"$RUNTIME_DIR/sniproxy.log" 2>&1 &
-      echo $! >"$RUNTIME_DIR/sniproxy.pid"
-    fi
+  if [ -f "$RUNTIME_DIR/warp-restart-required" ]; then
+    log "scheduled Zero Trust restart; stopping sniproxy and exiting"
+    kill "$(cat "$RUNTIME_DIR/sniproxy.pid")" 2>/dev/null || true
+    exit 1
   fi
-  if [ -f "$RUNTIME_DIR/smartdns.pid" ]; then
-    dpid="$(cat "$RUNTIME_DIR/smartdns.pid")"
-    if ! kill -0 "$dpid" 2>/dev/null; then
-      log "smartdns died; restarting"
-      smartdns -R -c "$CONF_DIR/smartdns.conf" -f >"$RUNTIME_DIR/smartdns.log" 2>&1 &
-      echo $! >"$RUNTIME_DIR/smartdns.pid"
-    fi
-  fi
-  sleep 5
+  "$ROOT/scripts/warp-zt.sh" status || {
+    log "Zero Trust WARP unhealthy; stopping sniproxy and exiting"
+    [ ! -f "$RUNTIME_DIR/sniproxy.pid" ] || kill "$(cat "$RUNTIME_DIR/sniproxy.pid")" 2>/dev/null || true
+    exit 1
+  }
+  for name in smartdns sniproxy; do
+    pidfile="$RUNTIME_DIR/$name.pid"
+    [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null || {
+      log "$name died; exiting for clean container restart"
+      exit 1
+    }
+  done
+  sleep 10
 done

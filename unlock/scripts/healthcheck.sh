@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+ROOT="${UNLOCK_ROOT:-/opt/unlock}"
 RUNTIME_DIR="${RUNTIME_DIR:-/run/unlock}"
 DNS_UDP_PORT="${DNS_UDP_PORT:-53}"
 
@@ -10,14 +11,17 @@ alive() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
-alive "$RUNTIME_DIR/sniproxy.pid" || exit 1
-alive "$RUNTIME_DIR/smartdns.pid" || exit 1
+# Core services + official Zero Trust WARP must all be healthy.
+alive "$RUNTIME_DIR/sniproxy.pid"
+alive "$RUNTIME_DIR/smartdns.pid"
+"$ROOT/scripts/warp-zt.sh" status
 
-# Local DNS smoke test (A query for a known streaming domain if present)
+# warp-zt status already checks Connected + a pinned-IP `warp=on` trace.
+
+# DNS smoke test must return the configured unlock IP for a known rule.
 if command -v dig >/dev/null 2>&1; then
-  dig +time=2 +tries=1 @"127.0.0.1" -p "$DNS_UDP_PORT" netflix.com A +short >/dev/null 2>&1 || true
+  answer="$(dig +time=2 +tries=1 @127.0.0.1 -p "$DNS_UDP_PORT" netflix.com A +short | tail -1)"
+  [ -n "$answer" ]
 elif command -v nslookup >/dev/null 2>&1; then
-  nslookup -port="$DNS_UDP_PORT" netflix.com 127.0.0.1 >/dev/null 2>&1 || true
+  nslookup -port="$DNS_UDP_PORT" netflix.com 127.0.0.1 >/dev/null 2>&1
 fi
-
-exit 0

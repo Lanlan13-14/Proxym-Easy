@@ -1,96 +1,75 @@
-# Proxym-Easy DNS Unlock — self-contained, single runtime image.
-# IMPORTANT: build context is unlock/ ONLY:
-#   cd unlock && docker build -t proxym-easy-unlock:latest .
-#
-# Runtime stack:
-# - SmartDNS: DNS + DoT
-# - sniproxy: SNI HTTP/HTTPS unlock proxy
-# - lego: Let's Encrypt DNS-01 certificate/renewal via Cloudflare API token
-# - cloudflared: optional Zero Trust Tunnel, periodically restarted
-# - nftables/iptables: source IP/CIDR ACL
-
 FROM debian:bookworm-slim
+
+LABEL org.opencontainers.image.title="Proxym-Easy DNS Unlock"
+LABEL org.opencontainers.image.description="SmartDNS DoT + sniproxy with mandatory Cloudflare Zero Trust WARP egress"
+LABEL org.opencontainers.image.source="https://github.com/Lanlan13-14/Proxym-Easy/tree/main/unlock"
 
 ARG SMARTDNS_RELEASE=Release48.3
 ARG SMARTDNS_VERSION=1.2026.07.28-0446
 ARG LEGO_VERSION=v5.3.1
-ARG CLOUDFLARED_VERSION=2026.7.3
+ARG WARP_VERSION=2026.6.880.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai \
     UNLOCK_ROOT=/opt/unlock \
     CONF_DIR=/etc/unlock \
-    RUNTIME_DIR=/run/unlock \
-    TZ=Asia/Shanghai
+    RUNTIME_DIR=/run/unlock
 
-# Keep package layer small: all protocol servers are downloaded static binaries.
+# Headless-only dependencies. Do not install the WARP GUI/WebKit package.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget openssl procps iproute2 iptables nftables \
-      sniproxy python3 \
+      dbus libdbus-1-3 libnss3 libnspr4 libpcap0.8 libtss2-esys-3.0.2-0 \
+      libtss2-tctildr0 libgcc-s1 sniproxy dnsutils \
     && rm -rf /var/lib/apt/lists/*
 
-# Official SmartDNS release — actual x86_64 and aarch64 asset names.
+# SmartDNS official self-contained runtime, amd64 + arm64.
 RUN set -eu; \
     case "$(dpkg --print-architecture)" in \
-      amd64) sd_arch=x86_64 ;; \
-      arm64) sd_arch=aarch64 ;; \
-      *) echo "Unsupported SmartDNS architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+      amd64) sd_arch="x86_64" ;; \
+      arm64) sd_arch="aarch64" ;; \
+      *) echo "unsupported SmartDNS architecture" >&2; exit 1 ;; \
     esac; \
-    url="https://github.com/pymumu/smartdns/releases/download/${SMARTDNS_RELEASE}/smartdns.${SMARTDNS_VERSION}.${sd_arch}-linux-all.tar.gz"; \
     mkdir -p /tmp/smartdns && cd /tmp/smartdns; \
-    wget -q -O smartdns.tgz "$url"; \
-    tar zxf smartdns.tgz; \
-    # Release layout: /usr/sbin/smartdns is a runner; it needs its sibling
-    # bundled loader/libs under /usr/local/lib/smartdns. Copy the full runtime.
+    url="https://github.com/pymumu/smartdns/releases/download/${SMARTDNS_RELEASE}/smartdns.${SMARTDNS_VERSION}.${sd_arch}-linux-all.tar.gz"; \
+    wget -q -O smartdns.tgz "$url"; tar zxf smartdns.tgz; \
     runtime="$(find . -type d -path '*/usr/local/lib/smartdns' | head -n1)"; \
-    test -n "$runtime" && test -x "$runtime/run-smartdns" && test -x "$runtime/smartdns"; \
-    mkdir -p /usr/local/lib/smartdns; \
-    cp -a "$runtime"/. /usr/local/lib/smartdns/; \
-    # Keep the runner beside smartdns + bundled musl loader/libs. A copied
-    # wrapper would resolve its own directory as /usr/local/sbin and fail.
+    test -x "$runtime/run-smartdns" && test -x "$runtime/smartdns"; \
+    mkdir -p /usr/local/lib/smartdns; cp -a "$runtime"/. /usr/local/lib/smartdns/; \
     ln -sf /usr/local/lib/smartdns/run-smartdns /usr/local/sbin/smartdns; \
-    /usr/local/sbin/smartdns -v; \
-    rm -rf /tmp/smartdns
+    smartdns -v; rm -rf /tmp/smartdns
 
-# lego is a small static ACME DNS-01 client. It avoids Certbot's Python runtime.
+# lego: lightweight Let's Encrypt DNS-01 client for Cloudflare DNS.
 RUN set -eu; \
-    case "$(dpkg --print-architecture)" in \
-      amd64) lego_arch=amd64 ;; \
-      arm64) lego_arch=arm64 ;; \
-      *) echo "Unsupported lego architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
-    esac; \
-    url="https://github.com/go-acme/lego/releases/download/${LEGO_VERSION}/lego_${LEGO_VERSION}_linux_${lego_arch}.tar.gz"; \
+    case "$(dpkg --print-architecture)" in amd64) a=amd64 ;; arm64) a=arm64 ;; esac; \
     mkdir -p /tmp/lego && cd /tmp/lego; \
-    wget -q -O lego.tgz "$url"; \
-    tar zxf lego.tgz; \
-    install -m 0755 lego /usr/local/bin/lego; \
-    lego --version; \
-    rm -rf /tmp/lego
+    wget -q -O lego.tgz "https://github.com/go-acme/lego/releases/download/${LEGO_VERSION}/lego_${LEGO_VERSION}_linux_${a}.tar.gz"; \
+    tar zxf lego.tgz; install -m 0755 lego /usr/local/bin/lego; lego --version; rm -rf /tmp/lego
 
-# cloudflared is optional at runtime but present for Zero Trust tunnel support.
+# Official Cloudflare One Client core only. Extract warp-svc + warp-cli from the
+# vendor package and omit the ~50MB GUI/taskbar assets. Both amd64/arm64 exist.
 RUN set -eu; \
-    case "$(dpkg --print-architecture)" in \
-      amd64) cf_arch=amd64 ;; \
-      arm64) cf_arch=arm64 ;; \
-      *) echo "Unsupported cloudflared architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
-    esac; \
-    url="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-${cf_arch}"; \
-    wget -q -O /usr/local/bin/cloudflared "$url"; \
-    chmod 0755 /usr/local/bin/cloudflared; \
-    cloudflared --version
+    arch="$(dpkg --print-architecture)"; \
+    url="https://pkg.cloudflareclient.com/pool/bookworm/main/c/cloudflare-warp/cloudflare-warp_${WARP_VERSION}_${arch}.deb"; \
+    wget -q -O /tmp/cloudflare-warp.deb "$url"; \
+    dpkg-deb --fsys-tarfile /tmp/cloudflare-warp.deb \
+      | tar -xOf - ./bin/warp-svc > /usr/local/bin/warp-svc; \
+    dpkg-deb --fsys-tarfile /tmp/cloudflare-warp.deb \
+      | tar -xOf - ./bin/warp-cli > /usr/local/bin/warp-cli; \
+    chmod 0755 /usr/local/bin/warp-svc /usr/local/bin/warp-cli; \
+    rm -f /tmp/cloudflare-warp.deb; \
+    /usr/local/bin/warp-cli --version
 
-# App copy intentionally receives ONLY the unlock/ build context.
 WORKDIR /opt/unlock
 COPY . /opt/unlock/
 
+# tests/ is intentionally excluded by .dockerignore; only runtime scripts are
+# made executable inside the image.
 RUN chmod +x /opt/unlock/scripts/*.sh \
-    && mkdir -p /etc/unlock /run/unlock /var/log/unlock \
-    && /opt/unlock/scripts/gen-domains.sh \
-    && test -s /opt/unlock/domains/all.txt
+    && mkdir -p /etc/unlock /run/unlock /var/log/unlock /var/lib/cloudflare-warp /dev/net
+# /dev/net/tun is created at runtime after Docker grants MKNOD + cgroup access.
 
-# Defaults only. Actual ports are configurable at runtime.
-EXPOSE 53/udp 53/tcp 853/tcp 80/tcp 443/tcp
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=15s --start-period=180s --retries=3 \
   CMD ["/opt/unlock/scripts/healthcheck.sh"]
 
+EXPOSE 53/udp 53/tcp 853/tcp 80/tcp 443/tcp
 ENTRYPOINT ["/opt/unlock/scripts/entrypoint.sh"]

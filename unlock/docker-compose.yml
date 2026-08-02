@@ -1,8 +1,5 @@
-# DNS Unlock stack (build context = this directory only)
-# Usage:
-#   cp .env.example .env   # edit ALLOWED_IPS / UNLOCK_IP / CF_TUNNEL_TOKEN
-#   docker compose up -d --build
-
+# DNS unlock with mandatory Cloudflare Zero Trust WARP egress.
+# Build context is this unlock/ directory only.
 services:
   unlock:
     build:
@@ -11,8 +8,6 @@ services:
     image: proxym-easy-unlock:latest
     container_name: proxym-unlock
     restart: unless-stopped
-    # Default production secrets file is .env. ENV_FILE lets CI/config checks
-    # render safely with .env.example without creating a real secret file.
     env_file:
       - ${ENV_FILE:-.env}
     environment:
@@ -22,8 +17,6 @@ services:
       ENABLE_ACL: ${ENABLE_ACL:-1}
       DNS_UDP_PORT: ${DNS_UDP_PORT:-53}
       DOT_PORT: ${DOT_PORT:-853}
-      # cert-manager.sh validates these at runtime. Keeping Compose interpolation
-      # permissive also allows DOT_TLS_MODE=custom/selfsigned test deployments.
       DOT_DOMAIN: ${DOT_DOMAIN:-}
       DOT_TLS_MODE: ${DOT_TLS_MODE:-letsencrypt}
       LE_EMAIL: ${LE_EMAIL:-}
@@ -34,11 +27,13 @@ services:
       FORCE_AAAA_SOA: ${FORCE_AAAA_SOA:-yes}
       PLATFORMS: ${PLATFORMS:-all}
       REGIONS: ${REGIONS:-}
-      CF_TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:-}
-      ENABLE_ZT: ${ENABLE_ZT:-auto}
+      # Mandatory Cloudflare Zero Trust Service Token enrollment.
+      WARP_ORGANIZATION: ${WARP_ORGANIZATION:-}
+      WARP_CLIENT_ID: ${WARP_CLIENT_ID:-}
+      WARP_CLIENT_SECRET: ${WARP_CLIENT_SECRET:-}
+      WARP_REGISTER_TIMEOUT: ${WARP_REGISTER_TIMEOUT:-240}
+      WARP_CONNECT_TIMEOUT: ${WARP_CONNECT_TIMEOUT:-120}
       ZT_RESTART_HOURS: ${ZT_RESTART_HOURS:-12}
-    # DNS and DoT port mappings are dynamic. Transparent SNI unlock must retain
-    # public 80/443 because normal streaming clients always use those ports.
     ports:
       - "${DNS_UDP_PORT:-53}:${DNS_UDP_PORT:-53}/udp"
       - "${DNS_UDP_PORT:-53}:${DNS_UDP_PORT:-53}/tcp"
@@ -46,13 +41,20 @@ services:
       - "80:80/tcp"
       - "443:443/tcp"
     volumes:
-      # Persist DoT certs / generated configs if desired
       - unlock-data:/etc/unlock
+      - warp-data:/var/lib/cloudflare-warp
     cap_add:
       - NET_ADMIN
       - NET_RAW
+      - MKNOD
+      - AUDIT_WRITE
+      - SYS_PTRACE
+    device_cgroup_rules:
+      - "c 10:200 rwm"
     sysctls:
       - net.ipv4.ip_forward=0
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=0
     logging:
       driver: json-file
       options:
@@ -61,3 +63,4 @@ services:
 
 volumes:
   unlock-data:
+  warp-data:

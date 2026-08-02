@@ -187,16 +187,8 @@ EOF
   done
 } > "$CONF_DIR/smartdns.conf"
 
-# --- cloudflared config (optional Zero Trust tunnel) ---
-if [ -n "${CF_TUNNEL_TOKEN:-}" ]; then
-  cat > "$CONF_DIR/cloudflared-env" <<EOF
-TUNNEL_TOKEN=$CF_TUNNEL_TOKEN
-EOF
-  chmod 600 "$CONF_DIR/cloudflared-env"
-  echo " >> gen-configs: cloudflared token configured"
-else
-  rm -f "$CONF_DIR/cloudflared-env"
-fi
+# Zero Trust WARP registration is handled by warp-zt.sh. This generator never
+# writes WARP secrets into SmartDNS/sniproxy configuration files.
 
 # Certificate creation/renewal is intentionally handled by cert-manager.sh BEFORE
 # this config is used. There is no silent self-signed fallback in production.

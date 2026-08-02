@@ -19,7 +19,9 @@ UNLOCK_ROOT="$ROOT" sh scripts/gen-domains.sh
 test -s domains/all.txt || fail=1
 count="$(wc -l < domains/all.txt | tr -d ' ')"
 echo "domains=$count"
-[ "$count" -gt 50 ] || { echo "too few domains"; fail=1; }
+[ "$count" -ge 600 ] || { echo "merged domain list is incomplete (<600)"; fail=1; }
+grep -qx 'claude.com' domains/all.txt || { echo "missing 1-stream supplemental domain claude.com"; fail=1; }
+grep -qx 'spotify.com' domains/all.txt || { echo "missing StreamConfig-only domain spotify.com"; fail=1; }
 
 echo "== gen-configs smoke =="
 tmp="$(mktemp -d)"
@@ -56,12 +58,19 @@ grep -q "netflix" "$CONF_DIR/sniproxy.conf" || { echo "missing netflix in snipro
 echo "== cert-manager DNS-01 / renewal / reload =="
 sh tests/cert-manager.test.sh || fail=1
 
+echo "== mandatory Cloudflare Zero Trust WARP =="
+sh tests/warp-zt.test.sh || fail=1
+
 echo "== dockerfile context isolation =="
 # Ensure Dockerfile only COPY . (relative to unlock/)
 grep -q '^COPY \. /opt/unlock/' Dockerfile || { echo "Dockerfile COPY not isolated"; fail=1; }
 # Ensure no parent path references in Dockerfile
 if grep -nE '\.\./|Proxym-Easy/script|xray\.sh' Dockerfile; then
   echo "Dockerfile leaks outside unlock/"
+  fail=1
+fi
+if grep -q '/opt/unlock/tests' Dockerfile && grep -qx 'tests' .dockerignore; then
+  echo "Dockerfile references tests excluded from build context"
   fail=1
 fi
 
@@ -71,6 +80,11 @@ grep -q '\${DOT_PORT:-853}:\${DOT_PORT:-853}/tcp' docker-compose.yml || { echo "
 grep -q 'CF_DNS_API_TOKEN' .env.example || { echo "missing Cloudflare DNS token config"; fail=1; }
 grep -q 'cert-manager.sh' scripts/entrypoint.sh || { echo "certificate manager not started"; fail=1; }
 grep -q 'CLOUDFLARE_DNS_API_TOKEN' scripts/cert-manager.sh || { echo "lego Cloudflare DNS token missing"; fail=1; }
+grep -q 'WARP_ORGANIZATION' docker-compose.yml || { echo "compose missing Zero Trust organization"; fail=1; }
+grep -q 'WARP_CLIENT_ID' docker-compose.yml || { echo "compose missing Zero Trust Client ID"; fail=1; }
+grep -q 'WARP_CLIENT_SECRET' docker-compose.yml || { echo "compose missing Zero Trust Client Secret"; fail=1; }
+grep -q 'cloudflare-warp_' Dockerfile || { echo "official Cloudflare One Client package missing"; fail=1; }
+grep -q 'warp-svc' Dockerfile || { echo "official warp-svc missing"; fail=1; }
 
 echo "== .dockerignore present =="
 test -f .dockerignore || { echo "missing .dockerignore"; fail=1; }

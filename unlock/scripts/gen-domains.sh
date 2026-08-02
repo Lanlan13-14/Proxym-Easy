@@ -17,10 +17,22 @@ if [ ! -f "$STREAM_CONFIG" ]; then
   exit 1
 fi
 
-# Extract YAML list items that look like domains.
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT INT TERM
+
+# Primary categorized source: Smartdns_sniproxy_installer StreamConfig.yaml.
 grep -E '^\s+-\s+[A-Za-z0-9._-]+' "$STREAM_CONFIG" \
-  | sed -E 's/^\s+-\s+//; s/\s+$//' \
-  | tr 'A-Z' 'a-z' \
+  | sed -E 's/^\s+-\s+//; s/\s+$//' >> "$tmp"
+
+# Supplemental source: normalized FQDN snapshot derived from 1-stream's
+# stream.smartdns.list. Merge rather than replace: each source has unique domains.
+ONE_STREAM_FILE="${ONE_STREAM_FILE:-$OUT_DIR/1stream.txt}"
+if [ -f "$ONE_STREAM_FILE" ]; then
+  cat "$ONE_STREAM_FILE" >> "$tmp"
+fi
+
+tr 'A-Z' 'a-z' < "$tmp" \
+  | sed -E 's/^\s+//; s/\s+$//' \
   | grep -E '\.' \
   | grep -vE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
   | sort -u > "$OUT_FILE"

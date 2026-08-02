@@ -1,0 +1,11 @@
+<!-- Generated at runtime by scripts/warp-zt.sh. Do not put real secrets in Git. -->
+<dict>
+  <key>organization</key><string>brightandy</string>
+  <key>auth_client_id</key><string>YOUR_SERVICE_TOKEN_ID.access</string>
+  <key>auth_client_secret</key><string>YOUR_SERVICE_TOKEN_SECRET</string>
+  <key>service_mode</key><string>tunnelonly</string>
+  <key>warp_tunnel_protocol</key><string>masque</string>
+  <key>onboarding</key><false/>
+  <key>auto_connect</key><integer>0</integer>
+  <key>switch_locked</key><true/>
+</dict>

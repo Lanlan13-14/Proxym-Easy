@@ -101,7 +101,6 @@ bln1.yospace.com
 boltdns.net
 britbox.com
 bucketeer.jp
-byspotify.com
 byteoversea.com
 canalplus.com
 catchplay.com
@@ -258,7 +257,6 @@ geolocation.onetrust.com
 getblueshift.com
 gitv.cn
 gitv.tv
-global.ssl.fastly.net
 glxplay.io
 go-mpulse.net
 google.com
@@ -344,7 +342,6 @@ link.theplatform.com
 lion-nba-msl.akamaized.net
 litix.io
 litv.tv
-litvfreepc.akamaized.net
 live01-stan.akamaized.net
 live02-stan.akamaized.net
 livestream-cdn.9vms.com.au
@@ -455,7 +452,6 @@ primevideo.com
 proactivebackend-pa.googleapis.com
 prod-skyonelive.akamaized.net
 prod.hjholdings.tv
-pscdn.co
 pstatic.net
 pv-cdn.net
 qiyi.cn
@@ -479,7 +475,6 @@ sbsod.com
 sbsvoddai-vh.akamaihd.net
 sbsvodns-vh.akamaihd.net
 scc.ott.hinet.net
-scdn.co
 screens-lab.jp
 scvm1sc0-ssm.anycast.nagra.com
 sdk.iad-03.braze.com
@@ -505,16 +500,6 @@ soku.com
 solocoo.tv
 sooka.my
 sora.com
-spoti.fi
-spotify-everywhere.com
-spotify.com
-spotify.design
-spotifycdn.com
-spotifycdn.net
-spotifycharts.com
-spotifycodes.com
-spotifyforbrands.com
-spotifyjobs.com
 stan.com.au
 stan.video
 starhubgo.com
