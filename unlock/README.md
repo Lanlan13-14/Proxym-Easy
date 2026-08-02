@@ -77,13 +77,13 @@ Zero Trust → **Team & Resources / 团队和资源 → Devices / 设备 → Dev
 若团队域为：
 
 ```text
-brightandy.cloudflareaccess.com
+example.cloudflareaccess.com
 ```
 
 则：
 
 ```env
-WARP_ORGANIZATION=brightandy
+WARP_ORGANIZATION=example
 ```
 
 不要填完整 `.cloudflareaccess.com` 域名，也不需要 WARP Connector token。
