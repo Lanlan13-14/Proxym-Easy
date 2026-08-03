@@ -925,5 +925,9 @@ AI_Platform:
   Claude_2:
     - anthropic.com
     - claude.ai
+  # Meta AI only — not the full MetaCubeX meta.list company geosite.
+  Meta_AI:
+    - meta.ai
+    - llama.com
   Copilot:
     - copilot.microsoft.com

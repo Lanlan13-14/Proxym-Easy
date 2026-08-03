@@ -25,9 +25,6 @@ twitch
 apple-tvplus
 reddit
 
-# --- Meta AI (meta.ai / llama.com / meta.com; full company geosite) ---
-meta
-
 # --- Greater China / Asia SVOD ---
 kktv
 litv

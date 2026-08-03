@@ -27,10 +27,16 @@ grep -qx 'netflix.com' domains/all.txt || { echo "missing Netflix domain netflix
 grep -qx 'disneyplus.com' domains/all.txt || { echo "missing Disney domain disneyplus.com"; fail=1; }
 grep -qx 'starplus.com' domains/all.txt || { echo "missing Disney domain starplus.com"; fail=1; }
 grep -qx 'meta.ai' domains/all.txt || { echo "missing Meta AI domain meta.ai"; fail=1; }
+grep -qx 'llama.com' domains/all.txt || { echo "missing Meta AI domain llama.com"; fail=1; }
+# Full Meta company geosite must not be pulled (instagram spam etc.).
+if grep -qx 'meta' domains/geosite-sources.txt; then
+  echo "geosite-sources must not include full meta company list"
+  fail=1
+fi
 grep -qx 'reddit.com' domains/all.txt || { echo "missing Reddit domain reddit.com"; fail=1; }
 grep -qx 'wavve.com' domains/all.txt || { echo "missing Wavve domain wavve.com"; fail=1; }
 grep -qx 'hbogoasia.com' domains/all.txt || { echo "missing HBO GO Asia domain hbogoasia.com"; fail=1; }
-grep -qE '^(meta|reddit)$' domains/geosite-sources.txt || { echo "geosite-sources missing meta/reddit"; fail=1; }
+grep -qE '^reddit$' domains/geosite-sources.txt || { echo "geosite-sources missing reddit"; fail=1; }
 # Google / YouTube intentionally excluded from unlock domain set.
 if grep -qiE '(^|\.)(google|googleapis|gstatic|youtube|ytimg)(\.|$)' domains/all.txt; then
   echo "google-related domains must not appear in domains/all.txt"
