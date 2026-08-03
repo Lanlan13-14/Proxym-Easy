@@ -92,7 +92,7 @@ WARP_ORGANIZATION=example
 运行时自动生成的 MDM 结构见 `config/warp-mdm.example.xml`，关键参数：
 
 ```xml
-<key>organization</key><string>brightandy</string>
+<key>organization</key><string>example</string>
 <key>auth_client_id</key><string>...</string>
 <key>auth_client_secret</key><string>...</string>
 <key>service_mode</key><string>tunnelonly</string>
