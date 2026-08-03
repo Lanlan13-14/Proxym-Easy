@@ -157,23 +157,32 @@ fix_return_routes() {
   case "${ENABLE_SOCKS5:-0}" in
     1|true|yes) socks_port=", ${SOCKS5_PORT:-1080}" ;;
   esac
-  # Only mark ports that actually listen. Disabled DoT/DoH must not open
-  # return-path holes for unused ports.
-  extra_dns=""
+  # Only mark ports that actually listen. Disabled DNS/DoT/DoH must not open
+  # return-path holes for unused ports. Plain DNS is public only when ENABLE_DNS=1.
+  extra_tcp=""
+  extra_udp=""
+  case "${ENABLE_DNS:-0}" in
+    1|true|yes)
+      extra_tcp="${extra_tcp}, ${DNS_UDP_PORT:-53}"
+      extra_udp="${DNS_UDP_PORT:-53}"
+      ;;
+  esac
   case "${ENABLE_DOT:-1}" in
-    1|true|yes) extra_dns="${extra_dns}, ${DOT_PORT:-853}" ;;
+    1|true|yes) extra_tcp="${extra_tcp}, ${DOT_PORT:-853}" ;;
   esac
   case "${ENABLE_DOH:-1}" in
-    1|true|yes) extra_dns="${extra_dns}, ${DOH_PORT:-4430}" ;;
+    1|true|yes) extra_tcp="${extra_tcp}, ${DOH_PORT:-4430}" ;;
   esac
-  tcp_ports="${DNS_UDP_PORT:-53}${extra_dns}, 80, 443${socks_port}"
+  tcp_ports="80, 443${extra_tcp}${socks_port}"
 
   nft delete table inet "$RETURN_TABLE" 2>/dev/null || true
   nft add table inet "$RETURN_TABLE"
   nft "add chain inet $RETURN_TABLE prerouting { type filter hook prerouting priority mangle; policy accept; }"
   nft "add chain inet $RETURN_TABLE output { type route hook output priority mangle; policy accept; }"
   nft add rule inet "$RETURN_TABLE" prerouting iifname eth0 tcp dport "{ $tcp_ports }" ct mark set "$RETURN_MARK"
-  nft add rule inet "$RETURN_TABLE" prerouting iifname eth0 udp dport "${DNS_UDP_PORT:-53}" ct mark set "$RETURN_MARK"
+  if [ -n "$extra_udp" ]; then
+    nft add rule inet "$RETURN_TABLE" prerouting iifname eth0 udp dport "$extra_udp" ct mark set "$RETURN_MARK"
+  fi
   nft add rule inet "$RETURN_TABLE" output ct mark "$RETURN_MARK" meta mark set "$RETURN_MARK"
 
   ensure_marked_main_rule

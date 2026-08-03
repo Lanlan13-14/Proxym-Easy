@@ -1,10 +1,13 @@
 #!/bin/sh
-# Issue and renew DoT TLS certificates with Let's Encrypt DNS-01 via Cloudflare.
+# Issue and renew DoT/DoH TLS certificates with Let's Encrypt DNS-01 via Cloudflare.
 # Uses lego's Cloudflare DNS provider: CLOUDFLARE_DNS_API_TOKEN needs Zone:Read + DNS:Edit.
+# Skipped entirely when neither DoT nor DoH is enabled (plain DNS only).
 set -eu
 
 CONF_DIR="${CONF_DIR:-/etc/unlock}"
 RUNTIME_DIR="${RUNTIME_DIR:-/run/unlock}"
+ENABLE_DOT="${ENABLE_DOT:-1}"
+ENABLE_DOH="${ENABLE_DOH:-1}"
 DOT_TLS_MODE="${DOT_TLS_MODE:-letsencrypt}"
 DOT_DOMAIN="${DOT_DOMAIN:-${DOT_SERVER_NAME:-}}"
 DOT_EXTRA_DOMAINS="${DOT_EXTRA_DOMAINS:-}"
@@ -14,22 +17,40 @@ LEGO_CA_SERVER="${LEGO_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory
 LEGO_PATH="${LEGO_PATH:-$CONF_DIR/letsencrypt}"
 RENEW_CHECK_HOURS="${RENEW_CHECK_HOURS:-12}"
 RENEW_BEFORE_DAYS="${RENEW_BEFORE_DAYS:-30}"
+
+tls_needed() {
+  case "$ENABLE_DOT" in 1|true|yes) return 0 ;; esac
+  case "$ENABLE_DOH" in 1|true|yes) return 0 ;; esac
+  return 1
+}
+
 # Keep certificate paths identical to gen-configs.sh for every TLS mode.
-case "$DOT_TLS_MODE" in
-  letsencrypt)
-    TLS_CERT="${TLS_CERT:-$LEGO_PATH/certificates/$DOT_DOMAIN.crt}"
-    TLS_KEY="${TLS_KEY:-$LEGO_PATH/certificates/$DOT_DOMAIN.key}"
-    ;;
-  selfsigned|custom)
-    TLS_CERT="${TLS_CERT:-$CONF_DIR/tls/cert.pem}"
-    TLS_KEY="${TLS_KEY:-$CONF_DIR/tls/key.pem}"
-    ;;
-  *)
-    # The case dispatcher reports the actionable error later; preserve values here.
-    TLS_CERT="${TLS_CERT:-$CONF_DIR/tls/cert.pem}"
-    TLS_KEY="${TLS_KEY:-$CONF_DIR/tls/key.pem}"
-    ;;
-esac
+if tls_needed; then
+  case "$DOT_TLS_MODE" in
+    letsencrypt)
+      TLS_CERT="${TLS_CERT:-$LEGO_PATH/certificates/$DOT_DOMAIN.crt}"
+      TLS_KEY="${TLS_KEY:-$LEGO_PATH/certificates/$DOT_DOMAIN.key}"
+      ;;
+    selfsigned|custom)
+      TLS_CERT="${TLS_CERT:-$CONF_DIR/tls/cert.pem}"
+      TLS_KEY="${TLS_KEY:-$CONF_DIR/tls/key.pem}"
+      ;;
+    none|'')
+      # Plain-DNS path should never reach here when ENABLE_DOT/DOH are both off.
+      TLS_CERT="${TLS_CERT:-$CONF_DIR/tls/cert.pem}"
+      TLS_KEY="${TLS_KEY:-$CONF_DIR/tls/key.pem}"
+      ;;
+    *)
+      # The case dispatcher reports the actionable error later; preserve values here.
+      TLS_CERT="${TLS_CERT:-$CONF_DIR/tls/cert.pem}"
+      TLS_KEY="${TLS_KEY:-$CONF_DIR/tls/key.pem}"
+      ;;
+  esac
+else
+  DOT_TLS_MODE="none"
+  TLS_CERT=""
+  TLS_KEY=""
+fi
 SMARTDNS_PID_FILE="${SMARTDNS_PID_FILE:-$RUNTIME_DIR/smartdns.pid}"
 
 log() { echo " >> [cert-manager] $*"; }
@@ -127,14 +148,23 @@ selfsigned() {
 
 case "${1:-ensure}" in
   ensure)
+    if ! tls_needed; then
+      log "DoT/DoH disabled; skipping TLS certificate (plain DNS only)"
+      exit 0
+    fi
     case "$DOT_TLS_MODE" in
       letsencrypt) [ -s "$TLS_CERT" ] && [ -s "$TLS_KEY" ] || issue ;;
       selfsigned) selfsigned ;;
       custom) [ -s "$TLS_CERT" ] && [ -s "$TLS_KEY" ] || fail "custom TLS files missing: $TLS_CERT / $TLS_KEY" ;;
+      none) fail "DOT_TLS_MODE=none is only valid when ENABLE_DOT=ENABLE_DOH=0" ;;
       *) fail "DOT_TLS_MODE must be letsencrypt, selfsigned, or custom" ;;
     esac
     ;;
   renew-loop)
+    if ! tls_needed; then
+      log "renewal disabled: DoT/DoH off (plain DNS only)"
+      exit 0
+    fi
     [ "$DOT_TLS_MODE" = "letsencrypt" ] || { log "renewal disabled for DOT_TLS_MODE=$DOT_TLS_MODE"; exit 0; }
     seconds=$((RENEW_CHECK_HOURS * 3600))
     [ "$seconds" -ge 3600 ] || seconds=3600
@@ -144,6 +174,12 @@ case "${1:-ensure}" in
       renew_once || log "renewal check failed; retrying next interval"
     done
     ;;
-  renew-once) renew_once ;;
+  renew-once)
+    if ! tls_needed; then
+      log "renewal skipped: DoT/DoH off"
+      exit 0
+    fi
+    renew_once
+    ;;
   *) fail "usage: $0 {ensure|renew-loop|renew-once}" ;;
 esac

@@ -16,8 +16,10 @@ services:
       ALLOWED_IPS: ${ALLOWED_IPS:-}
       ENABLE_ACL: ${ENABLE_ACL:-1}
       DNS_UDP_PORT: ${DNS_UDP_PORT:-53}
-      # DoT / DoH are independent. Enable either or both (at least one required).
+      # DNS / DoT / DoH are independent. Enable any combination (at least one).
+      # Plain DNS (ENABLE_DNS=1) needs no DOT_DOMAIN / LE cert.
       # 443 stays reserved for sniproxy SNI unlock — never assign DOH_PORT=443.
+      ENABLE_DNS: ${ENABLE_DNS:-0}
       ENABLE_DOT: ${ENABLE_DOT:-1}
       DOT_PORT: ${DOT_PORT:-853}
       ENABLE_DOH: ${ENABLE_DOH:-1}
@@ -46,7 +48,11 @@ services:
       SOCKS5_PASSWORD: ${SOCKS5_PASSWORD:-}
       SOCKS5_ALLOWED_IPS: ${SOCKS5_ALLOWED_IPS:-}
     ports:
-      # Public clients use DoT + DoH; plaintext DNS/53 stays container-internal.
+      # Plain DNS is public only when ENABLE_DNS=1 (binds 0.0.0.0). When off,
+      # SmartDNS listens on 127.0.0.1 so host mappings to DNS_UDP_PORT refuse.
+      - "${DNS_UDP_PORT:-53}:${DNS_UDP_PORT:-53}/udp"
+      - "${DNS_UDP_PORT:-53}:${DNS_UDP_PORT:-53}/tcp"
+      # DoT / DoH ports are always mapped; listeners start only when enabled.
       - "${DOT_PORT:-853}:${DOT_PORT:-853}/tcp"
       - "${DOH_PORT:-4430}:${DOH_PORT:-4430}/tcp"
       - "80:80/tcp"

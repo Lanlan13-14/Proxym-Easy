@@ -12,13 +12,16 @@ DOMAINS_FILE="${DOMAINS_FILE:-$ROOT/domains/all.txt}"
 
 BIND_HOST="${BIND_HOST:-0.0.0.0}"
 DNS_UDP_PORT="${DNS_UDP_PORT:-53}"
-# Public TLS DNS listeners are independent:
+# Public DNS listeners are independent:
+#   ENABLE_DNS=1 -> plaintext bind UDP/TCP :DNS_UDP_PORT on BIND_HOST (published)
 #   ENABLE_DOT=1 -> bind-tls  :DOT_PORT
 #   ENABLE_DOH=1 -> bind-https :DOH_PORT  (path /dns-query)
-# Either or both may be enabled; at least one is required.
+# At least one of ENABLE_DNS / ENABLE_DOT / ENABLE_DOH is required.
+# Plaintext DNS always binds loopback for healthchecks even when ENABLE_DNS=0.
 # 443 is reserved for sniproxy SNI unlock — never use it for DoH.
 DOT_PORT="${DOT_PORT:-853}"
 DOH_PORT="${DOH_PORT:-4430}"
+ENABLE_DNS="${ENABLE_DNS:-0}"
 ENABLE_DOT="${ENABLE_DOT:-1}"
 ENABLE_DOH="${ENABLE_DOH:-1}"
 # Transparent DNS unlock cannot use custom web ports: clients always connect
@@ -34,19 +37,9 @@ FORCE_AAAA_SOA="${FORCE_AAAA_SOA:-yes}"
 SPEED_CHECK_MODE="${SPEED_CHECK_MODE:-ping,tcp:80,tcp:443}"
 # DOT_DOMAIN is the public FQDN validated by Let's Encrypt DNS-01.
 # Shared by DoT and DoH TLS (same cert/SNI). DOT_SERVER_NAME is a legacy alias.
+# Required only when ENABLE_DOT or ENABLE_DOH is on — plain DNS needs neither.
 DOT_DOMAIN="${DOT_DOMAIN:-${DOT_SERVER_NAME:-}}"
 DOT_TLS_MODE="${DOT_TLS_MODE:-letsencrypt}"
-if [ -z "$DOT_DOMAIN" ]; then
-  echo "ERROR: DOT_DOMAIN is required for DoT/DoH TLS" >&2
-  exit 1
-fi
-case "$DOT_TLS_MODE" in
-  letsencrypt) TLS_CERT="${TLS_CERT:-$CONF_DIR/letsencrypt/certificates/$DOT_DOMAIN.crt}"; TLS_KEY="${TLS_KEY:-$CONF_DIR/letsencrypt/certificates/$DOT_DOMAIN.key}" ;;
-  selfsigned|custom) TLS_CERT="${TLS_CERT:-$CONF_DIR/tls/cert.pem}"; TLS_KEY="${TLS_KEY:-$CONF_DIR/tls/key.pem}" ;;
-  *) echo "ERROR: DOT_TLS_MODE must be letsencrypt, selfsigned, or custom" >&2; exit 1 ;;
-esac
-export DOT_DOMAIN DOT_TLS_MODE TLS_CERT TLS_KEY
-DOT_SERVER_NAME="$DOT_DOMAIN"
 
 valid_port() {
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
@@ -60,12 +53,38 @@ normalize_bool() {
     *) echo "ERROR: $2 must be 0 or 1" >&2; exit 1 ;;
   esac
 }
+ENABLE_DNS="$(normalize_bool "$ENABLE_DNS" ENABLE_DNS)"
 ENABLE_DOT="$(normalize_bool "$ENABLE_DOT" ENABLE_DOT)"
 ENABLE_DOH="$(normalize_bool "$ENABLE_DOH" ENABLE_DOH)"
-if [ "$ENABLE_DOT" = "0" ] && [ "$ENABLE_DOH" = "0" ]; then
-  echo "ERROR: enable at least one of ENABLE_DOT or ENABLE_DOH" >&2
+if [ "$ENABLE_DNS" = "0" ] && [ "$ENABLE_DOT" = "0" ] && [ "$ENABLE_DOH" = "0" ]; then
+  echo "ERROR: enable at least one of ENABLE_DNS, ENABLE_DOT, or ENABLE_DOH" >&2
   exit 1
 fi
+NEED_TLS=0
+if [ "$ENABLE_DOT" = "1" ] || [ "$ENABLE_DOH" = "1" ]; then
+  NEED_TLS=1
+fi
+
+TLS_CERT=""
+TLS_KEY=""
+if [ "$NEED_TLS" = "1" ]; then
+  if [ -z "$DOT_DOMAIN" ]; then
+    echo "ERROR: DOT_DOMAIN is required when ENABLE_DOT or ENABLE_DOH is enabled" >&2
+    exit 1
+  fi
+  case "$DOT_TLS_MODE" in
+    letsencrypt) TLS_CERT="${TLS_CERT:-$CONF_DIR/letsencrypt/certificates/$DOT_DOMAIN.crt}"; TLS_KEY="${TLS_KEY:-$CONF_DIR/letsencrypt/certificates/$DOT_DOMAIN.key}" ;;
+    selfsigned|custom) TLS_CERT="${TLS_CERT:-$CONF_DIR/tls/cert.pem}"; TLS_KEY="${TLS_KEY:-$CONF_DIR/tls/key.pem}" ;;
+    *) echo "ERROR: DOT_TLS_MODE must be letsencrypt, selfsigned, or custom" >&2; exit 1 ;;
+  esac
+  DOT_SERVER_NAME="$DOT_DOMAIN"
+else
+  # Plain DNS only: no cert paths, no ACME domain.
+  DOT_TLS_MODE="none"
+  DOT_SERVER_NAME="${DOT_DOMAIN:-unlock}"
+fi
+export DOT_DOMAIN DOT_TLS_MODE TLS_CERT TLS_KEY NEED_TLS ENABLE_DNS ENABLE_DOT ENABLE_DOH
+export DOT_SERVER_NAME
 
 reserved_port() {
   # $1=port $2=label — reject 53/80/443 and plaintext DNS port
@@ -76,6 +95,14 @@ reserved_port() {
       ;;
   esac
 }
+
+valid_port "$DNS_UDP_PORT" || { echo "ERROR: invalid DNS_UDP_PORT: $DNS_UDP_PORT" >&2; exit 1; }
+case "$DNS_UDP_PORT" in
+  80|443)
+    echo "ERROR: DNS_UDP_PORT=$DNS_UDP_PORT conflicts with sniproxy 80/443" >&2
+    exit 1
+    ;;
+esac
 
 if [ "$ENABLE_DOT" = "1" ]; then
   valid_port "$DOT_PORT" || { echo "ERROR: invalid DOT_PORT: $DOT_PORT" >&2; exit 1; }
@@ -94,7 +121,10 @@ REGIONS="${REGIONS:-}"
 SNIPROXY_USER="${SNIPROXY_USER:-nobody}"
 SNIPROXY_WORKERS="${SNIPROXY_WORKERS:-auto}"
 
-mkdir -p "$CONF_DIR" "$RUNTIME_DIR" "$(dirname "$TLS_CERT")" "$(dirname "$TLS_KEY")"
+mkdir -p "$CONF_DIR" "$RUNTIME_DIR"
+if [ "$NEED_TLS" = "1" ]; then
+  mkdir -p "$(dirname "$TLS_CERT")" "$(dirname "$TLS_KEY")"
+fi
 
 if [ -z "$UNLOCK_IP" ]; then
   # Best-effort public IP; can be overridden via env.
@@ -208,11 +238,18 @@ case "$FORCE_AAAA_SOA" in
   no|false|0|'') ;;
   *) echo "ERROR: FORCE_AAAA_SOA must be yes or no" >&2; exit 1 ;;
 esac
+# Public plaintext DNS only when ENABLE_DNS=1. Otherwise keep loopback for
+# healthchecks/exec dig so the host mapping (if any) has nothing useful to hit.
+if [ "$ENABLE_DNS" = "1" ]; then
+  DNS_BIND_HOST="$BIND_HOST"
+else
+  DNS_BIND_HOST="127.0.0.1"
+fi
 {
   cat <<EOF
 server-name $DOT_SERVER_NAME
-bind ${BIND_HOST}:${DNS_UDP_PORT}${bind_flags}
-bind-tcp ${BIND_HOST}:${DNS_UDP_PORT}${bind_flags}
+bind ${DNS_BIND_HOST}:${DNS_UDP_PORT}${bind_flags}
+bind-tcp ${DNS_BIND_HOST}:${DNS_UDP_PORT}${bind_flags}
 EOF
   if [ "$ENABLE_DOT" = "1" ]; then
     echo "bind-tls ${BIND_HOST}:${DOT_PORT}${bind_flags}"
@@ -222,9 +259,11 @@ EOF
     # Same Let's Encrypt cert/SNI as DoT (DOT_DOMAIN).
     echo "bind-https ${BIND_HOST}:${DOH_PORT}${bind_flags}"
   fi
+  if [ "$NEED_TLS" = "1" ]; then
+    echo "bind-cert-file $TLS_CERT"
+    echo "bind-cert-key-file $TLS_KEY"
+  fi
   cat <<EOF
-bind-cert-file $TLS_CERT
-bind-cert-key-file $TLS_KEY
 cache-size $CACHE_SIZE
 cache-persist no
 prefetch-domain yes
@@ -257,8 +296,14 @@ EOF
 # writes WARP secrets into SmartDNS/sniproxy configuration files.
 
 # Certificate creation/renewal is intentionally handled by cert-manager.sh BEFORE
-# this config is used. There is no silent self-signed fallback in production.
+# this config is used, and only when DoT/DoH needs TLS. Plain DNS skips ACME.
+dns_desc="loopback:$DNS_UDP_PORT"
+[ "$ENABLE_DNS" = "1" ] && dns_desc="public:$DNS_UDP_PORT"
 dot_desc="off"; [ "$ENABLE_DOT" = "1" ] && dot_desc="$DOT_PORT"
 doh_desc="off"; [ "$ENABLE_DOH" = "1" ] && doh_desc="$DOH_PORT"
-echo " >> gen-configs: TLS mode=$DOT_TLS_MODE domain=$DOT_DOMAIN DoT=$dot_desc DoH=$doh_desc cert=$TLS_CERT"
+if [ "$NEED_TLS" = "1" ]; then
+  echo " >> gen-configs: TLS mode=$DOT_TLS_MODE domain=$DOT_DOMAIN DNS=$dns_desc DoT=$dot_desc DoH=$doh_desc cert=$TLS_CERT"
+else
+  echo " >> gen-configs: TLS none (plain DNS only) DNS=$dns_desc DoT=off DoH=off"
+fi
 echo " >> gen-configs: wrote $CONF_DIR/sniproxy.conf $CONF_DIR/smartdns.conf"

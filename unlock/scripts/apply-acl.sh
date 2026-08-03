@@ -10,6 +10,7 @@ SOCKS5_PORT="${SOCKS5_PORT:-1080}"
 DNS_PORT="${DNS_UDP_PORT:-53}"
 DOT_PORT="${DOT_PORT:-853}"
 DOH_PORT="${DOH_PORT:-4430}"
+ENABLE_DNS="${ENABLE_DNS:-0}"
 ENABLE_DOT="${ENABLE_DOT:-1}"
 ENABLE_DOH="${ENABLE_DOH:-1}"
 
@@ -19,10 +20,11 @@ fail() { log "ERROR: $*" >&2; exit 1; }
 case "$ENABLE_ACL" in 1|true|yes) ;; 0|false|no) log "ACL disabled explicitly"; exit 0 ;; *) fail "ENABLE_ACL must be 0 or 1" ;; esac
 [ -n "$ALLOWED_IPS" ] || fail "ALLOWED_IPS is required for DNS/SNI services"
 case "$ENABLE_SOCKS5" in 1|true|yes) ENABLE_SOCKS5=1; [ -n "$SOCKS5_ALLOWED_IPS" ] || fail "SOCKS5_ALLOWED_IPS is required when SOCKS5 is enabled" ;; 0|false|no|'') ENABLE_SOCKS5=0 ;; *) fail "ENABLE_SOCKS5 must be 0 or 1" ;; esac
+case "$ENABLE_DNS" in 1|true|yes) ENABLE_DNS=1 ;; 0|false|no|'') ENABLE_DNS=0 ;; *) fail "ENABLE_DNS must be 0 or 1" ;; esac
 case "$ENABLE_DOT" in 1|true|yes) ENABLE_DOT=1 ;; 0|false|no|'') ENABLE_DOT=0 ;; *) fail "ENABLE_DOT must be 0 or 1" ;; esac
 case "$ENABLE_DOH" in 1|true|yes) ENABLE_DOH=1 ;; 0|false|no|'') ENABLE_DOH=0 ;; *) fail "ENABLE_DOH must be 0 or 1" ;; esac
-if [ "$ENABLE_DOT" = "0" ] && [ "$ENABLE_DOH" = "0" ]; then
-  fail "enable at least one of ENABLE_DOT or ENABLE_DOH"
+if [ "$ENABLE_DNS" = "0" ] && [ "$ENABLE_DOT" = "0" ] && [ "$ENABLE_DOH" = "0" ]; then
+  fail "enable at least one of ENABLE_DNS, ENABLE_DOT, or ENABLE_DOH"
 fi
 
 TABLE="unlock_acl"
@@ -45,17 +47,27 @@ add_cidrs() {
   IFS="$oldifs"
 }
 
-# Plaintext DNS + sniproxy always under ALLOWED_IPS.
+# sniproxy always under ALLOWED_IPS. Plaintext DNS only when ENABLE_DNS=1
+# (public bind); otherwise SmartDNS listens on loopback and no public ACL hole.
 for proto in tcp udp; do
-  add_cidrs "$ALLOWED_IPS" "$proto" dport "$DNS_PORT" accept
   add_cidrs "$ALLOWED_IPS" "$proto" dport 80 accept
   add_cidrs "$ALLOWED_IPS" "$proto" dport 443 accept
 done
 for proto in tcp udp; do
-  nft add rule inet "$TABLE" input "$proto" dport "$DNS_PORT" drop
   nft add rule inet "$TABLE" input "$proto" dport 80 drop
   nft add rule inet "$TABLE" input "$proto" dport 443 drop
 done
+
+case "$ENABLE_DNS" in
+  1)
+    [ "$DNS_PORT" -ge 1 ] 2>/dev/null && [ "$DNS_PORT" -le 65535 ] 2>/dev/null || fail "invalid DNS_UDP_PORT"
+    for proto in tcp udp; do
+      add_cidrs "$ALLOWED_IPS" "$proto" dport "$DNS_PORT" accept
+      nft add rule inet "$TABLE" input "$proto" dport "$DNS_PORT" drop
+    done
+    log "plain DNS ACL applied: UDP/TCP $DNS_PORT"
+    ;;
+esac
 
 # DoT is TCP (and rarely UDP is unused for TLS); SmartDNS bind-tls is TCP.
 case "$ENABLE_DOT" in
@@ -88,6 +100,7 @@ case "$ENABLE_SOCKS5" in
     ;;
 esac
 
+dns_desc="off"; [ "$ENABLE_DNS" = "1" ] && dns_desc="$DNS_PORT"
 dot_desc="off"; [ "$ENABLE_DOT" = "1" ] && dot_desc="$DOT_PORT"
 doh_desc="off"; [ "$ENABLE_DOH" = "1" ] && doh_desc="$DOH_PORT"
-log "DNS/SNI ACL applied for DNS=$DNS_PORT DoT=$dot_desc DoH=$doh_desc HTTP=80 HTTPS=443"
+log "DNS/SNI ACL applied for DNS=$dns_desc DoT=$dot_desc DoH=$doh_desc HTTP=80 HTTPS=443"

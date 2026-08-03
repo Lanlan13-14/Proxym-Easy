@@ -89,13 +89,15 @@ echo $! >"$RUNTIME_DIR/cert-manager.pid"
 "$ROOT/scripts/warp-zt.sh" supervise >"$RUNTIME_DIR/warp-supervisor.log" 2>&1 &
 echo $! >"$RUNTIME_DIR/warp-supervisor.pid"
 
-log "ready: DoT/DoH/DNS -> sniproxy -> Cloudflare Zero Trust WARP"
+log "ready: DNS/DoT/DoH -> sniproxy -> Cloudflare Zero Trust WARP"
 log "  organization=${WARP_ORGANIZATION}"
+dns_desc="loopback:${DNS_UDP_PORT:-53}"
 dot_desc="off"
 doh_desc="off"
+case "${ENABLE_DNS:-0}" in 1|true|yes) dns_desc="public:${DNS_UDP_PORT:-53}" ;; esac
 case "${ENABLE_DOT:-1}" in 1|true|yes) dot_desc="${DOT_PORT:-853}" ;; esac
 case "${ENABLE_DOH:-1}" in 1|true|yes) doh_desc="${DOH_PORT:-4430}" ;; esac
-log "  DNS UDP/TCP=${DNS_UDP_PORT:-53} DoT=$dot_desc DoH=$doh_desc"
+log "  DNS=$dns_desc DoT=$dot_desc DoH=$doh_desc"
 case "${ENABLE_DOH:-1}" in
   1|true|yes)
     log "  DoH URL=https://${DOT_DOMAIN}:${DOH_PORT:-4430}/dns-query"

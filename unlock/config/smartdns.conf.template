@@ -1,12 +1,15 @@
 # Generated at runtime by scripts/gen-configs.sh — do not edit in container.
-# Valid SmartDNS DoT + DoH TLS directive model.
+# Valid SmartDNS plain DNS + optional DoT / DoH TLS directive model.
 
 server-name dot.example.com
 # -force-aaaa-soa is a bind option. It blocks IPv6 direct-connect bypass.
+# ENABLE_DNS=1 -> bind 0.0.0.0:DNS_UDP_PORT (public)
+# ENABLE_DNS=0 -> bind 127.0.0.1:DNS_UDP_PORT (healthcheck only)
 bind 0.0.0.0:53 -force-aaaa-soa
 bind-tcp 0.0.0.0:53 -force-aaaa-soa
 # ENABLE_DOT / ENABLE_DOH control which of these lines are emitted.
 # Same cert for whichever is enabled. Port 443 is NEVER used for DoH.
+# When both DoT and DoH are off, bind-tls / bind-https / bind-cert-* are omitted.
 bind-tls 0.0.0.0:853 -force-aaaa-soa
 # DoH endpoint: https://dot.example.com:4430/dns-query
 bind-https 0.0.0.0:4430 -force-aaaa-soa
