@@ -31,6 +31,7 @@ export RUNTIME_DIR="$tmp/run"
 export UNLOCK_IP="203.0.113.10"
 export DOT_DOMAIN="test.unlock.example.com"
 export DOT_TLS_MODE="selfsigned"
+export ENABLE_DOT="1"
 export DOT_PORT="9853"
 export ENABLE_DOH="1"
 export DOH_PORT="9443"
@@ -68,29 +69,62 @@ grep -q "listen 443" "$CONF_DIR/sniproxy.conf" || { echo "missing transparent HT
 grep -q "table https_hosts" "$CONF_DIR/sniproxy.conf" || { echo "missing sniproxy table"; fail=1; }
 grep -q "netflix" "$CONF_DIR/sniproxy.conf" || { echo "missing netflix in sniproxy"; fail=1; }
 
-echo "== DoH disable path =="
-tmp_off="$(mktemp -d)"
-CONF_DIR="$tmp_off/conf" RUNTIME_DIR="$tmp_off/run" ENABLE_DOH=0 \
+echo "== DoH-only path (no DoT) =="
+tmp_doh="$(mktemp -d)"
+CONF_DIR="$tmp_doh/conf" RUNTIME_DIR="$tmp_doh/run" \
+  ENABLE_DOT=0 ENABLE_DOH=1 DOH_PORT=9853 \
   TLS_CERT="$TLS_CERT" TLS_KEY="$TLS_KEY" \
   sh scripts/gen-configs.sh
-grep -q "bind-tls .*:9853" "$tmp_off/conf/smartdns.conf" || { echo "DoT missing when DoH off"; fail=1; }
-if grep -q 'bind-https' "$tmp_off/conf/smartdns.conf"; then
+grep -q "bind-https .*:9853" "$tmp_doh/conf/smartdns.conf" || { echo "DoH-only missing bind-https:9853"; fail=1; }
+if grep -q 'bind-tls' "$tmp_doh/conf/smartdns.conf"; then
+  echo "bind-tls must be absent when ENABLE_DOT=0"
+  fail=1
+fi
+rm -rf "$tmp_doh"
+
+echo "== DoT-only path (no DoH) =="
+tmp_dot="$(mktemp -d)"
+CONF_DIR="$tmp_dot/conf" RUNTIME_DIR="$tmp_dot/run" \
+  ENABLE_DOT=1 DOT_PORT=9853 ENABLE_DOH=0 \
+  TLS_CERT="$TLS_CERT" TLS_KEY="$TLS_KEY" \
+  sh scripts/gen-configs.sh
+grep -q "bind-tls .*:9853" "$tmp_dot/conf/smartdns.conf" || { echo "DoT-only missing bind-tls"; fail=1; }
+if grep -q 'bind-https' "$tmp_dot/conf/smartdns.conf"; then
   echo "bind-https must be absent when ENABLE_DOH=0"
   fail=1
 fi
-rm -rf "$tmp_off"
+rm -rf "$tmp_dot"
 
-echo "== DoH port conflict =="
-if CONF_DIR="$tmp/conf-bad" RUNTIME_DIR="$tmp/run-bad" ENABLE_DOH=1 DOH_PORT=443 \
+echo "== both disabled rejected =="
+if CONF_DIR="$tmp/conf-none" RUNTIME_DIR="$tmp/run-none" \
+  ENABLE_DOT=0 ENABLE_DOH=0 \
+  TLS_CERT="$TLS_CERT" TLS_KEY="$TLS_KEY" \
+  sh scripts/gen-configs.sh 2>/dev/null; then
+  echo "ENABLE_DOT=0 ENABLE_DOH=0 must be rejected"
+  fail=1
+fi
+
+echo "== DoH/DoT port conflict =="
+if CONF_DIR="$tmp/conf-bad" RUNTIME_DIR="$tmp/run-bad" \
+  ENABLE_DOT=1 ENABLE_DOH=1 DOH_PORT=443 \
   TLS_CERT="$TLS_CERT" TLS_KEY="$TLS_KEY" \
   sh scripts/gen-configs.sh 2>/dev/null; then
   echo "DOH_PORT=443 must be rejected"
   fail=1
 fi
-if CONF_DIR="$tmp/conf-bad2" RUNTIME_DIR="$tmp/run-bad2" ENABLE_DOH=1 DOH_PORT=9853 \
+if CONF_DIR="$tmp/conf-bad2" RUNTIME_DIR="$tmp/run-bad2" \
+  ENABLE_DOT=1 DOT_PORT=9853 ENABLE_DOH=1 DOH_PORT=9853 \
   TLS_CERT="$TLS_CERT" TLS_KEY="$TLS_KEY" \
   sh scripts/gen-configs.sh 2>/dev/null; then
-  echo "DOH_PORT equal to DOT_PORT must be rejected"
+  echo "same DOT_PORT and DOH_PORT must be rejected when both enabled"
+  fail=1
+fi
+# DoH-only may use former DoT port freely.
+if ! CONF_DIR="$tmp/conf-doh9853" RUNTIME_DIR="$tmp/run-doh9853" \
+  ENABLE_DOT=0 ENABLE_DOH=1 DOH_PORT=9853 \
+  TLS_CERT="$TLS_CERT" TLS_KEY="$TLS_KEY" \
+  sh scripts/gen-configs.sh >/dev/null; then
+  echo "DoH-only on 9853 must be allowed"
   fail=1
 fi
 
@@ -121,14 +155,20 @@ fi
 echo "== compose dynamic port + ACME wiring =="
 grep -q 'DOT_TLS_MODE' docker-compose.yml || { echo "compose does not pass TLS mode"; fail=1; }
 grep -q '\${DOT_PORT:-853}:\${DOT_PORT:-853}/tcp' docker-compose.yml || { echo "DoT port mapping is not dynamic"; fail=1; }
+grep -q 'ENABLE_DOT' docker-compose.yml || { echo "compose missing ENABLE_DOT"; fail=1; }
 grep -q 'ENABLE_DOH' docker-compose.yml || { echo "compose missing ENABLE_DOH"; fail=1; }
 grep -q 'DOH_PORT' docker-compose.yml || { echo "compose missing DOH_PORT"; fail=1; }
 grep -q '\${DOH_PORT:-4430}:\${DOH_PORT:-4430}/tcp' docker-compose.yml || { echo "DoH port mapping is not dynamic"; fail=1; }
 grep -q 'bind-https' scripts/gen-configs.sh || { echo "gen-configs missing bind-https"; fail=1; }
+grep -q 'ENABLE_DOT' scripts/gen-configs.sh || { echo "gen-configs missing ENABLE_DOT"; fail=1; }
+grep -q 'ENABLE_DOT' scripts/apply-acl.sh || { echo "ACL missing ENABLE_DOT"; fail=1; }
 grep -q 'DOH_PORT' scripts/apply-acl.sh || { echo "ACL missing DoH port"; fail=1; }
+grep -q 'ENABLE_DOT' scripts/warp-zt.sh || { echo "WARP return mark missing ENABLE_DOT"; fail=1; }
 grep -q 'DOH_PORT' scripts/warp-zt.sh || { echo "WARP return mark missing DoH port"; fail=1; }
+grep -q 'ENABLE_DOT=1' .env.example || { echo "env example missing ENABLE_DOT"; fail=1; }
 grep -q 'ENABLE_DOH=1' .env.example || { echo "env example missing ENABLE_DOH"; fail=1; }
 grep -q 'DOH_PORT=4430' .env.example || { echo "env example missing DOH_PORT"; fail=1; }
+grep -q 'at least one of ENABLE_DOT or ENABLE_DOH' scripts/gen-configs.sh || { echo "missing both-disabled guard"; fail=1; }
 if grep -qE '53:53|DNS_UDP_PORT[^\n]*:/tcp|DNS_UDP_PORT[^\n]*:/udp' docker-compose.yml; then
   echo "plaintext DNS/53 must not be published"
   fail=1

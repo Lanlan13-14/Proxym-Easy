@@ -5,10 +5,10 @@ server-name dot.example.com
 # -force-aaaa-soa is a bind option. It blocks IPv6 direct-connect bypass.
 bind 0.0.0.0:53 -force-aaaa-soa
 bind-tcp 0.0.0.0:53 -force-aaaa-soa
-# DOT_PORT / DOH_PORT are configurable. Same cert for both.
+# ENABLE_DOT / ENABLE_DOH control which of these lines are emitted.
+# Same cert for whichever is enabled. Port 443 is NEVER used for DoH.
 bind-tls 0.0.0.0:853 -force-aaaa-soa
 # DoH endpoint: https://dot.example.com:4430/dns-query
-# Port 443 is intentionally NOT used — sniproxy owns streaming SNI unlock.
 bind-https 0.0.0.0:4430 -force-aaaa-soa
 bind-cert-file /etc/unlock/letsencrypt/certificates/dot.example.com.crt
 bind-cert-key-file /etc/unlock/letsencrypt/certificates/dot.example.com.key

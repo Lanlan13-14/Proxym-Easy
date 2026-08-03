@@ -12,13 +12,17 @@ DOMAINS_FILE="${DOMAINS_FILE:-$ROOT/domains/all.txt}"
 
 BIND_HOST="${BIND_HOST:-0.0.0.0}"
 DNS_UDP_PORT="${DNS_UDP_PORT:-53}"
+# Public TLS DNS listeners are independent:
+#   ENABLE_DOT=1 -> bind-tls  :DOT_PORT
+#   ENABLE_DOH=1 -> bind-https :DOH_PORT  (path /dns-query)
+# Either or both may be enabled; at least one is required.
+# 443 is reserved for sniproxy SNI unlock — never use it for DoH.
 DOT_PORT="${DOT_PORT:-853}"
-# DoH (DNS over HTTPS) on a dedicated port. 443 is reserved for sniproxy SNI
-# unlock traffic, so DoH never steals the streaming HTTPS path.
 DOH_PORT="${DOH_PORT:-4430}"
+ENABLE_DOT="${ENABLE_DOT:-1}"
 ENABLE_DOH="${ENABLE_DOH:-1}"
 # Transparent DNS unlock cannot use custom web ports: clients always connect
-# to HTTP/80 and HTTPS/443 after DNS resolution. DOT_PORT/DOH_PORT are free.
+# to HTTP/80 and HTTPS/443 after DNS resolution.
 HTTP_PORT=80
 HTTPS_PORT=443
 UNLOCK_IP="${UNLOCK_IP:-}"
@@ -33,7 +37,7 @@ SPEED_CHECK_MODE="${SPEED_CHECK_MODE:-ping,tcp:80,tcp:443}"
 DOT_DOMAIN="${DOT_DOMAIN:-${DOT_SERVER_NAME:-}}"
 DOT_TLS_MODE="${DOT_TLS_MODE:-letsencrypt}"
 if [ -z "$DOT_DOMAIN" ]; then
-  echo "ERROR: DOT_DOMAIN is required for DoT/DoH" >&2
+  echo "ERROR: DOT_DOMAIN is required for DoT/DoH TLS" >&2
   exit 1
 fi
 case "$DOT_TLS_MODE" in
@@ -48,21 +52,43 @@ valid_port() {
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
   [ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
 }
-valid_port "$DOT_PORT" || { echo "ERROR: invalid DOT_PORT: $DOT_PORT" >&2; exit 1; }
-case "$ENABLE_DOH" in
-  1|true|yes)
-    ENABLE_DOH=1
-    valid_port "$DOH_PORT" || { echo "ERROR: invalid DOH_PORT: $DOH_PORT" >&2; exit 1; }
-    case "$DOH_PORT" in
-      53|80|443|"$DOT_PORT"|"$DNS_UDP_PORT")
-        echo "ERROR: DOH_PORT=$DOH_PORT conflicts with DNS/DoT/SNI ports" >&2
-        exit 1
-        ;;
-    esac
-    ;;
-  0|false|no|'') ENABLE_DOH=0 ;;
-  *) echo "ERROR: ENABLE_DOH must be 0 or 1" >&2; exit 1 ;;
-esac
+normalize_bool() {
+  # $1=value $2=name -> prints 0 or 1
+  case "$1" in
+    1|true|yes) echo 1 ;;
+    0|false|no|'') echo 0 ;;
+    *) echo "ERROR: $2 must be 0 or 1" >&2; exit 1 ;;
+  esac
+}
+ENABLE_DOT="$(normalize_bool "$ENABLE_DOT" ENABLE_DOT)"
+ENABLE_DOH="$(normalize_bool "$ENABLE_DOH" ENABLE_DOH)"
+if [ "$ENABLE_DOT" = "0" ] && [ "$ENABLE_DOH" = "0" ]; then
+  echo "ERROR: enable at least one of ENABLE_DOT or ENABLE_DOH" >&2
+  exit 1
+fi
+
+reserved_port() {
+  # $1=port $2=label — reject 53/80/443 and plaintext DNS port
+  case "$1" in
+    53|80|443|"$DNS_UDP_PORT")
+      echo "ERROR: $2=$1 conflicts with DNS/SNI reserved ports (53/80/443/DNS_UDP_PORT)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+if [ "$ENABLE_DOT" = "1" ]; then
+  valid_port "$DOT_PORT" || { echo "ERROR: invalid DOT_PORT: $DOT_PORT" >&2; exit 1; }
+  reserved_port "$DOT_PORT" DOT_PORT
+fi
+if [ "$ENABLE_DOH" = "1" ]; then
+  valid_port "$DOH_PORT" || { echo "ERROR: invalid DOH_PORT: $DOH_PORT" >&2; exit 1; }
+  reserved_port "$DOH_PORT" DOH_PORT
+fi
+if [ "$ENABLE_DOT" = "1" ] && [ "$ENABLE_DOH" = "1" ] && [ "$DOT_PORT" = "$DOH_PORT" ]; then
+  echo "ERROR: DOT_PORT and DOH_PORT both set to $DOT_PORT; use different ports or disable one" >&2
+  exit 1
+fi
 PLATFORMS="${PLATFORMS:-all}"
 REGIONS="${REGIONS:-}"
 SNIPROXY_USER="${SNIPROXY_USER:-nobody}"
@@ -187,8 +213,10 @@ esac
 server-name $DOT_SERVER_NAME
 bind ${BIND_HOST}:${DNS_UDP_PORT}${bind_flags}
 bind-tcp ${BIND_HOST}:${DNS_UDP_PORT}${bind_flags}
-bind-tls ${BIND_HOST}:${DOT_PORT}${bind_flags}
 EOF
+  if [ "$ENABLE_DOT" = "1" ]; then
+    echo "bind-tls ${BIND_HOST}:${DOT_PORT}${bind_flags}"
+  fi
   if [ "$ENABLE_DOH" = "1" ]; then
     # SmartDNS DoH endpoint is https://<host>:<DOH_PORT>/dns-query
     # Same Let's Encrypt cert/SNI as DoT (DOT_DOMAIN).
@@ -230,9 +258,7 @@ EOF
 
 # Certificate creation/renewal is intentionally handled by cert-manager.sh BEFORE
 # this config is used. There is no silent self-signed fallback in production.
-if [ "$ENABLE_DOH" = "1" ]; then
-  echo " >> gen-configs: DoT/DoH TLS mode=$DOT_TLS_MODE domain=$DOT_DOMAIN DoT=$DOT_PORT DoH=$DOH_PORT cert=$TLS_CERT"
-else
-  echo " >> gen-configs: DoT TLS mode=$DOT_TLS_MODE domain=$DOT_DOMAIN DoT=$DOT_PORT DoH=disabled cert=$TLS_CERT"
-fi
+dot_desc="off"; [ "$ENABLE_DOT" = "1" ] && dot_desc="$DOT_PORT"
+doh_desc="off"; [ "$ENABLE_DOH" = "1" ] && doh_desc="$DOH_PORT"
+echo " >> gen-configs: TLS mode=$DOT_TLS_MODE domain=$DOT_DOMAIN DoT=$dot_desc DoH=$doh_desc cert=$TLS_CERT"
 echo " >> gen-configs: wrote $CONF_DIR/sniproxy.conf $CONF_DIR/smartdns.conf"

@@ -103,15 +103,29 @@ WARP_ORGANIZATION=example
 
 ## 3. DoT / DoH Let’s Encrypt DNS-01
 
-DoT 与 DoH 共用同一张 TLS 证书与 `DOT_DOMAIN` SNI，生产默认：
+DoT 与 DoH **独立开关**，共用同一张 TLS 证书与 `DOT_DOMAIN` SNI。至少启用其中一个：
 
 ```env
 DOT_TLS_MODE=letsencrypt
 DOT_DOMAIN=dot.example.com
 LE_EMAIL=admin@example.com
 CF_DNS_API_TOKEN=...
-ENABLE_DOH=1
-DOH_PORT=4430
+
+# 只 DoT
+ENABLE_DOT=1
+DOT_PORT=9853
+ENABLE_DOH=0
+
+# 或只 DoH（端口可直接用 9853）
+# ENABLE_DOT=0
+# ENABLE_DOH=1
+# DOH_PORT=9853
+
+# 或两者都开（端口必须不同）
+# ENABLE_DOT=1
+# DOT_PORT=9853
+# ENABLE_DOH=1
+# DOH_PORT=4430
 ```
 
 Cloudflare API Token 最小权限：
@@ -148,9 +162,10 @@ ALLOWED_IPS=198.51.100.8/32
 ENABLE_ACL=1
 
 DNS_UDP_PORT=53
-DOT_PORT=9853
+# 例：只要 DoH，端口 9853
+ENABLE_DOT=0
 ENABLE_DOH=1
-DOH_PORT=4430
+DOH_PORT=9853
 DOT_DOMAIN=dot.example.com
 DOT_TLS_MODE=letsencrypt
 LE_EMAIL=admin@example.com
@@ -173,16 +188,17 @@ docker compose logs -f unlock
 
 - Linux 主机具备 `/dev/net/tun` 和 nftables。
 - Compose 已提供 NET_ADMIN、NET_RAW、MKNOD、AUDIT_WRITE、SYS_PTRACE。
-- 公网发布 DoT、DoH 端口和 sniproxy 的 80/443；明文 DNS/53 默认不发布。
+- 公网发布已启用的 DoT/DoH 端口和 sniproxy 的 80/443；明文 DNS/53 默认不发布。
 - 80/443 必须空闲；它们不是 ACME/DNS 验证端口，而是流媒体客户端解析到解锁机后实际连接 sniproxy 的端口，不能删除或改成非标准端口。
-- `DOH_PORT` 不能是 `53`/`80`/`443`/`DOT_PORT`；默认 `4430`。
+- `ENABLE_DOT` / `ENABLE_DOH` 至少一个为 `1`；两者都开时端口必须不同。
+- `DOT_PORT` / `DOH_PORT` 不能是 `53`/`80`/`443`。
 - `ALLOWED_IPS` 不可为空。它既是 DNS/DoT/DoH/SNI 访问白名单，也是 WARP 全隧道下的回程排除列表。
 - SOCKS5 不继承 `ALLOWED_IPS`：启用时必须单独配置 `SOCKS5_ALLOWED_IPS`，并同时使用用户名/密码认证。
 
 ### 已发布镜像
 
 ```yaml
-image: ghcr.io/lanlan13-14/proxym-easy-unlock:v0.0.8-doh
+image: ghcr.io/lanlan13-14/proxym-easy-unlock:v0.0.9-dot-doh-toggle
 ```
 
 使用镜像时删除 `build:`，其余环境、端口、capabilities、volumes 保持不变。
@@ -315,9 +331,10 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 | `ALLOWED_IPS` | 空，拒绝启动 | DNS/DoT/DoH/SNI 访问白名单；支持任意 CIDR，包括 `0.0.0.0/0` |
 | `ENABLE_ACL` | `1` | 关闭后不应用防火墙白名单，**不建议生产使用** |
 | `DNS_UDP_PORT` | `53` | 容器内部 SmartDNS 明文端口，默认不映射到宿主机 |
-| `DOT_PORT` | `853` | 可自定义 DoT 端口 |
-| `ENABLE_DOH` | `1` | `1` 启用 SmartDNS DoH（`bind-https`） |
-| `DOH_PORT` | `4430` | DoH TCP 端口；不可为 53/80/443/DOT_PORT |
+| `ENABLE_DOT` | `1` | `1` 启用 DoT（`bind-tls`）；与 `ENABLE_DOH` 至少一个为 1 |
+| `DOT_PORT` | `853` | DoT TCP 端口；不可为 53/80/443 |
+| `ENABLE_DOH` | `1` | `1` 启用 DoH（`bind-https`）；与 `ENABLE_DOT` 至少一个为 1 |
+| `DOH_PORT` | `4430` | DoH TCP 端口；不可为 53/80/443；两者都开时不可等于 `DOT_PORT` |
 | `DOT_TLS_MODE` | `letsencrypt` | `letsencrypt` / `selfsigned` / `custom` |
 | `DOT_DOMAIN` | 无 | DoT/DoH 共用 TLS 名称/SNI |
 | `LE_EMAIL` | 无 | Let’s Encrypt 注册邮箱，`letsencrypt` 必填 |
@@ -370,7 +387,7 @@ sh tests/run.sh
 覆盖：
 
 - 600 条合并域名规则
-- SmartDNS DoT/DoH、自定义端口、证书路径、AAAA 防绕过、DoH 禁用与端口冲突
+- SmartDNS DoT/DoH 独立开关、自定义端口、证书路径、AAAA 防绕过、只 DoT/只 DoH/双关拒绝
 - Let’s Encrypt DNS-01 签发/续期/SmartDNS 重载
 - 官方 WARP MDM Service Token、`tunnelonly`、MASQUE、Consumer 拒绝
 - WARP fail-closed 启动顺序与连接标记回程（支持任意 CIDR）

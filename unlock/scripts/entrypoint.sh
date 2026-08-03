@@ -91,13 +91,14 @@ echo $! >"$RUNTIME_DIR/warp-supervisor.pid"
 
 log "ready: DoT/DoH/DNS -> sniproxy -> Cloudflare Zero Trust WARP"
 log "  organization=${WARP_ORGANIZATION}"
+dot_desc="off"
+doh_desc="off"
+case "${ENABLE_DOT:-1}" in 1|true|yes) dot_desc="${DOT_PORT:-853}" ;; esac
+case "${ENABLE_DOH:-1}" in 1|true|yes) doh_desc="${DOH_PORT:-4430}" ;; esac
+log "  DNS UDP/TCP=${DNS_UDP_PORT:-53} DoT=$dot_desc DoH=$doh_desc"
 case "${ENABLE_DOH:-1}" in
   1|true|yes)
-    log "  DNS UDP/TCP=${DNS_UDP_PORT:-53} DoT=${DOT_PORT:-853} DoH=${DOH_PORT:-4430}"
     log "  DoH URL=https://${DOT_DOMAIN}:${DOH_PORT:-4430}/dns-query"
-    ;;
-  *)
-    log "  DNS UDP/TCP=${DNS_UDP_PORT:-53} DoT=${DOT_PORT:-853} DoH=disabled"
     ;;
 esac
 log "  HTTP=80 HTTPS=443 ALLOWED_IPS=${ALLOWED_IPS}"

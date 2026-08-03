@@ -16,8 +16,10 @@ services:
       ALLOWED_IPS: ${ALLOWED_IPS:-}
       ENABLE_ACL: ${ENABLE_ACL:-1}
       DNS_UDP_PORT: ${DNS_UDP_PORT:-53}
+      # DoT / DoH are independent. Enable either or both (at least one required).
+      # 443 stays reserved for sniproxy SNI unlock — never assign DOH_PORT=443.
+      ENABLE_DOT: ${ENABLE_DOT:-1}
       DOT_PORT: ${DOT_PORT:-853}
-      # DoH on a dedicated port; 443 stays reserved for sniproxy SNI unlock.
       ENABLE_DOH: ${ENABLE_DOH:-1}
       DOH_PORT: ${DOH_PORT:-4430}
       DOT_DOMAIN: ${DOT_DOMAIN:-}

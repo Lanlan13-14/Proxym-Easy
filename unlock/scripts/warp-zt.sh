@@ -157,11 +157,16 @@ fix_return_routes() {
   case "${ENABLE_SOCKS5:-0}" in
     1|true|yes) socks_port=", ${SOCKS5_PORT:-1080}" ;;
   esac
-  doh_port=""
-  case "${ENABLE_DOH:-1}" in
-    1|true|yes) doh_port=", ${DOH_PORT:-4430}" ;;
+  # Only mark ports that actually listen. Disabled DoT/DoH must not open
+  # return-path holes for unused ports.
+  extra_dns=""
+  case "${ENABLE_DOT:-1}" in
+    1|true|yes) extra_dns="${extra_dns}, ${DOT_PORT:-853}" ;;
   esac
-  tcp_ports="${DNS_UDP_PORT:-53}, ${DOT_PORT:-853}${doh_port}, 80, 443${socks_port}"
+  case "${ENABLE_DOH:-1}" in
+    1|true|yes) extra_dns="${extra_dns}, ${DOH_PORT:-4430}" ;;
+  esac
+  tcp_ports="${DNS_UDP_PORT:-53}${extra_dns}, 80, 443${socks_port}"
 
   nft delete table inet "$RETURN_TABLE" 2>/dev/null || true
   nft add table inet "$RETURN_TABLE"
