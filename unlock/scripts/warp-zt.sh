@@ -131,6 +131,31 @@ ensure_nft_accept() {
   fi
 }
 
+rule_destination() {
+  # `ip rule list` canonicalizes host prefixes: x.x.x.x/32 becomes x.x.x.x,
+  # and IPv6 /128 is likewise printed without its prefix. Match both forms.
+  case "$1" in
+    */32) printf '%s' "${1%/32}" ;;
+    */128) printf '%s' "${1%/128}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+ensure_main_return_rule() {
+  family="$1"; cidr="$2"; shown="$(rule_destination "$cidr")"
+  if [ "$family" = 6 ]; then
+    ip -6 rule list | grep -Fq "to $cidr lookup main" \
+      || ip -6 rule list | grep -Fq "to $shown lookup main" \
+      || ip -6 rule add to "$cidr" lookup main priority 10 \
+      || { ip -6 rule list | grep -Fq "to $shown lookup main" || fail "cannot add IPv6 return rule for $cidr"; }
+  else
+    ip rule list | grep -Fq "to $cidr lookup main" \
+      || ip rule list | grep -Fq "to $shown lookup main" \
+      || ip rule add to "$cidr" lookup main priority 10 \
+      || { ip rule list | grep -Fq "to $shown lookup main" || fail "cannot add IPv4 return rule for $cidr"; }
+  fi
+}
+
 fix_return_routes() {
   # Preserve replies to each independently ACLed public service. SOCKS5 does
   # not inherit ALLOWED_IPS, so its CIDRs must join WARP return routing too.
@@ -150,14 +175,14 @@ fix_return_routes() {
     cidr="$(printf '%s' "$cidr" | tr -d ' ')"; [ -n "$cidr" ] || continue
     case "$cidr" in
       *:*)
-        ip -6 rule list | grep -Fq "to $cidr lookup main" || ip -6 rule add to "$cidr" lookup main priority 10
+        ensure_main_return_rule 6 "$cidr"
         if nft list table inet cloudflare-warp >/dev/null 2>&1; then
           ensure_nft_accept inet input "ip6 saddr $cidr accept"
           ensure_nft_accept inet output "ip6 daddr $cidr accept"
         fi
         ;;
       *)
-        ip rule list | grep -Fq "to $cidr lookup main" || ip rule add to "$cidr" lookup main priority 10
+        ensure_main_return_rule 4 "$cidr"
         if nft list table inet cloudflare-warp >/dev/null 2>&1; then
           ensure_nft_accept inet input "ip saddr $cidr accept"
           ensure_nft_accept inet output "ip daddr $cidr accept"

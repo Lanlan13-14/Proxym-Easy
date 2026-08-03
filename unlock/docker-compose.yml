@@ -8,6 +8,8 @@ services:
     image: proxym-easy-unlock:latest
     container_name: proxym-unlock
     restart: unless-stopped
+    # SOCKS5 TCP port is published only with `--profile socks5`.
+    profiles: ["socks5"]
     env_file:
       - ${ENV_FILE:-.env}
     environment:
@@ -45,6 +47,9 @@ services:
       - "${DOT_PORT:-853}:${DOT_PORT:-853}/tcp"
       - "80:80/tcp"
       - "443:443/tcp"
+      # SOCKS5 TCP CONNECT is opt-in. It is only published when this service
+      # is started with `--profile socks5` (ENABLE_SOCKS5=1).
+      - "${SOCKS5_PORT:-1080}:${SOCKS5_PORT:-1080}/tcp"
     volumes:
       - unlock-data:/etc/unlock
       - warp-data:/var/lib/cloudflare-warp

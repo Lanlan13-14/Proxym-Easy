@@ -5,7 +5,6 @@ SCRIPT="$ROOT/scripts/start-socks.sh"
 ACL="$ROOT/scripts/apply-acl.sh"
 WARP="$ROOT/scripts/warp-zt.sh"
 COMPOSE="$ROOT/docker-compose.yml"
-COMPOSE_SOCKS="$ROOT/docker-compose.socks.yml"
 ENV="$ROOT/.env.example"
 
 [ -x "$SCRIPT" ] || { echo "start-socks.sh not executable" >&2; exit 1; }
@@ -20,7 +19,7 @@ grep -q 'external: \$SOCKS5_EXTERNAL_IP' "$SCRIPT"
 grep -q 'socksmethod: username' "$SCRIPT"
 grep -q 'command: connect' "$SCRIPT"
 grep -q 'protocol: tcp' "$SCRIPT"
-if grep -Eq 'udpassociate|udp\.portrange|SOCKS5_UDP' "$SCRIPT" "$ACL" "$COMPOSE" "$COMPOSE_SOCKS" "$ENV"; then
+if grep -Eq 'udpassociate|udp\.portrange|SOCKS5_UDP' "$SCRIPT" "$ACL" "$COMPOSE" "$ENV"; then
   echo "unreliable SOCKS UDP support must not be advertised through Docker bridge" >&2
   exit 1
 fi
@@ -37,7 +36,7 @@ fi
 grep -q 'SOCKS5_ALLOWED_IPS' "$ACL"
 grep -q 'SOCKS5_ALLOWED_IPS' "$WARP"
 grep -q 'SOCKS5_PORT' "$COMPOSE"
-grep -q 'SOCKS5_PORT' "$COMPOSE_SOCKS"
+grep -q 'profiles: \["socks5"\]' "$COMPOSE"
 grep -q 'DANTE_AUTH_PASS' "$ROOT/tests/dante-runtime.py"
 if grep -qE 'SOCKS5_PORT:-1080.*:/tcp' "$COMPOSE"; then
   echo "base Compose must not publish SOCKS ports" >&2
