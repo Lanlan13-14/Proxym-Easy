@@ -47,6 +47,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install SOCKS5 runtime test dependency
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dante-server
+      - name: Docs/config consistency
+        run: |
+          set -e
+          grep -q 'ALLOWED_IPS' README.md .env.example
+          grep -q 'SOCKS5_ALLOWED_IPS' README.md .env.example
+          grep -q 'DOT_TLS_MODE' README.md .env.example
+          grep -q 'ENABLE_ACL' README.md .env.example
+          grep -q 'SOCKS5_PORT' README.md .env.example docker-compose.yml
       - name: Shell syntax
         run: |
           set -e
