@@ -76,7 +76,12 @@ while IFS= read -r line || [ -n "$line" ]; do
   esac
   log "source geosite: $name"
   fetch_list "$name"
-  cat "$tmp_fetch/$name.list" >>"$tmp_raw"
+  # MetaCubeX .list files often omit a trailing newline; force one so domains
+  # from adjacent lists never concatenate into a single invalid FQDN.
+  {
+    cat "$tmp_fetch/$name.list"
+    printf '\n'
+  } >>"$tmp_raw"
   count_lists=$((count_lists + 1))
 done <"$SOURCES_FILE"
 
@@ -87,12 +92,16 @@ if [ -f "$STREAM_CONFIG" ]; then
   log "merge StreamConfig supplemental: $STREAM_CONFIG"
   grep -E '^\s+-\s+[A-Za-z0-9._-]+' "$STREAM_CONFIG" \
     | sed -E 's/^\s+-\s+//; s/\s+$//' >>"$tmp_raw" || true
+  printf '\n' >>"$tmp_raw"
 fi
 
 # Supplemental: normalized 1-stream snapshot.
 if [ -f "$ONE_STREAM_FILE" ]; then
   log "merge 1-stream supplemental: $ONE_STREAM_FILE"
-  cat "$ONE_STREAM_FILE" >>"$tmp_raw"
+  {
+    cat "$ONE_STREAM_FILE"
+    printf '\n'
+  } >>"$tmp_raw"
 fi
 
 # Normalize mihomo geosite lines:

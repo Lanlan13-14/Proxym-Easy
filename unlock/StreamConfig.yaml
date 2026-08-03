@@ -349,10 +349,14 @@ Japan_Media:
     - nhk.jp
     - nhk.or.jp
   DMM:
+    # MetaCubeX geosite: dmm.list (+ dmm-porn subset already covered).
     - dmm-extension.com
     - dmm.co.jp
     - dmm.com
+    - dmmapis.com
+    - dmmrex.com
     - videomarket.jp
+    - api-p.videomarket.jp
     - p-smith.com
     - vmdash-cenc.akamaized.net
     - img.vm-movie.jp

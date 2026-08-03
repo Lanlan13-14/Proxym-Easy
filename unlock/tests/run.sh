@@ -42,6 +42,16 @@ if grep -qiE '(^|\.)(google|googleapis|gstatic|youtube|ytimg)(\.|$)' domains/all
   echo "google-related domains must not appear in domains/all.txt"
   fail=1
 fi
+# Reject known glued FQDNs from missing newlines between geosite list files.
+if grep -qE 'nhk\.or\.jpapi|tiktok\.comapi|f1tv\.comopenai|nethulu\.playback|akamaized\.netespn|netflixdnstest10\.comespn|indaznlab\.comaudio|openai\.qualtrics\.comservd|policy\.video\.iqiyi\.comd1|smartstream\.ne\.jpaod|socdm\.comabema|tvb\.comykimg|twitchsvc\.netapple' domains/all.txt; then
+  echo "domains/all.txt contains concatenated FQDNs (missing newline between sources)"
+  fail=1
+fi
+grep -qx 'dmm.com' domains/all.txt || { echo "missing DMM domain dmm.com"; fail=1; }
+grep -qx 'dmm.co.jp' domains/all.txt || { echo "missing DMM domain dmm.co.jp"; fail=1; }
+grep -qx 'api-p.videomarket.jp' domains/all.txt || { echo "missing DMM domain api-p.videomarket.jp"; fail=1; }
+grep -qx 'dmmapis.com' domains/all.txt || { echo "missing DMM domain dmmapis.com"; fail=1; }
+grep -qE '^dmm$' domains/geosite-sources.txt || { echo "geosite-sources missing dmm"; fail=1; }
 # geosite source map and builder must exist
 test -f domains/geosite-sources.txt || fail=1
 test -f scripts/build-geosite-domains.sh || fail=1
