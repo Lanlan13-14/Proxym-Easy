@@ -311,9 +311,11 @@ Taiwan_Media:
     - hbolb.onwardsmg.com
     - hbounify-prod.evergent.com
     - hbogo.co.th
+    - hboasia.com
     - hbogoasia.com
     - hbogoasia.hk
     - hbogoasia.id
+    - hbogoasia.my
     - hbogoasia.ph
     - hbogoasia.sg
     - hbogoasia.tw
@@ -548,9 +550,11 @@ Hong_Kong_Media:
     - hbolb.onwardsmg.com
     - hbounify-prod.evergent.com
     - hbogo.co.th
+    - hboasia.com
     - hbogoasia.com
     - hbogoasia.hk
     - hbogoasia.id
+    - hbogoasia.my
     - hbogoasia.ph
     - hbogoasia.sg
     - hbogoasia.tw
@@ -573,8 +577,12 @@ Indian_Media:
 
 Korean_Media:
   Wavve:
+    # No dedicated MetaCubeX geosite list; keep StreamConfig supplemental.
+    # DOMAIN-SUFFIX pooq.co.kr covers apis/static CDN hosts; list them explicitly too.
     - wavve.com
     - pooq.co.kr
+    - apis.pooq.co.kr
+    - pooq3-static-json.pooq.co.kr
   Tving:
     - tving.com
   Coupang_Play:

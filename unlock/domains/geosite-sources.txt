@@ -10,6 +10,7 @@ bamtech
 hotstar
 espn
 hbo
+# hbo.list covers HBO Max + HBO GO Asia (hboasia / hbogoasia.*)
 hulu
 primevideo
 dazn
@@ -22,6 +23,10 @@ instagram
 iqiyi
 twitch
 apple-tvplus
+reddit
+
+# --- Meta AI (meta.ai / llama.com / meta.com; full company geosite) ---
+meta
 
 # --- Greater China / Asia SVOD ---
 kktv
