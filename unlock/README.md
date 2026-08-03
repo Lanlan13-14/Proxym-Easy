@@ -251,7 +251,7 @@ docker compose logs -f unlock
 ### 已发布镜像
 
 ```yaml
-image: ghcr.io/lanlan13-14/proxym-easy-unlock:v0.0.9-dot-doh-toggle
+image: ghcr.io/lanlan13-14/proxym-easy-unlock:latest
 ```
 
 使用镜像时删除 `build:`，其余环境、端口、capabilities、volumes 保持不变。发布含明文 DNS 支持的新版本后改用新 tag。
