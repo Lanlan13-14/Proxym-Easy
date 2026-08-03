@@ -157,7 +157,11 @@ fix_return_routes() {
   case "${ENABLE_SOCKS5:-0}" in
     1|true|yes) socks_port=", ${SOCKS5_PORT:-1080}" ;;
   esac
-  tcp_ports="${DNS_UDP_PORT:-53}, ${DOT_PORT:-853}, 80, 443${socks_port}"
+  doh_port=""
+  case "${ENABLE_DOH:-1}" in
+    1|true|yes) doh_port=", ${DOH_PORT:-4430}" ;;
+  esac
+  tcp_ports="${DNS_UDP_PORT:-53}, ${DOT_PORT:-853}${doh_port}, 80, 443${socks_port}"
 
   nft delete table inet "$RETURN_TABLE" 2>/dev/null || true
   nft add table inet "$RETURN_TABLE"

@@ -1,7 +1,7 @@
 FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.title="Proxym-Easy DNS Unlock"
-LABEL org.opencontainers.image.description="SmartDNS DoT + sniproxy with mandatory Cloudflare Zero Trust WARP egress"
+LABEL org.opencontainers.image.description="SmartDNS DoT/DoH + sniproxy with mandatory Cloudflare Zero Trust WARP egress"
 LABEL org.opencontainers.image.source="https://github.com/Lanlan13-14/Proxym-Easy/tree/main/unlock"
 
 ARG SMARTDNS_RELEASE=Release48.3
@@ -79,5 +79,5 @@ HEALTHCHECK --interval=30s --timeout=15s --start-period=180s --retries=3 \
   CMD ["/opt/unlock/scripts/healthcheck.sh"]
 
 # Plain DNS/53 remains internal. SOCKS ports are opt-in in Compose.
-EXPOSE 853/tcp 80/tcp 443/tcp 1080/tcp
+EXPOSE 853/tcp 4430/tcp 80/tcp 443/tcp 1080/tcp
 ENTRYPOINT ["/opt/unlock/scripts/entrypoint.sh"]

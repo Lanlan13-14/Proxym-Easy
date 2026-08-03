@@ -32,6 +32,8 @@ export UNLOCK_IP="203.0.113.10"
 export DOT_DOMAIN="test.unlock.example.com"
 export DOT_TLS_MODE="selfsigned"
 export DOT_PORT="9853"
+export ENABLE_DOH="1"
+export DOH_PORT="9443"
 # HTTP_PORT/HTTPS_PORT are intentionally ignored by transparent DNS unlock.
 # sniproxy must stay on 80/443 because clients retain their destination port.
 unset TLS_CERT TLS_KEY LEGO_PATH
@@ -46,18 +48,51 @@ sh scripts/gen-configs.sh
 test -s "$CONF_DIR/smartdns.conf" || fail=1
 test -s "$CONF_DIR/sniproxy.conf" || fail=1
 grep -q "bind-tls .*:9853" "$CONF_DIR/smartdns.conf" || { echo "missing custom bind-tls port"; fail=1; }
+grep -q "bind-https .*:9443" "$CONF_DIR/smartdns.conf" || { echo "missing custom bind-https DoH port"; fail=1; }
 grep -q "bind-cert-file $TLS_CERT" "$CONF_DIR/smartdns.conf" || { echo "missing TLS certificate path"; fail=1; }
 grep -q "bind-cert-key-file $TLS_KEY" "$CONF_DIR/smartdns.conf" || { echo "missing TLS key path"; fail=1; }
 grep -q "address /netflix.com/203.0.113.10" "$CONF_DIR/smartdns.conf" || { echo "missing netflix address"; fail=1; }
 grep -q "bind-tls .*:9853 -force-aaaa-soa" "$CONF_DIR/smartdns.conf" || { echo "missing IPv6 bypass protection on DoT"; fail=1; }
+grep -q "bind-https .*:9443 -force-aaaa-soa" "$CONF_DIR/smartdns.conf" || { echo "missing IPv6 bypass protection on DoH"; fail=1; }
 if grep -q '^force-aaaa-soa ' "$CONF_DIR/smartdns.conf"; then
   echo "invalid global force-aaaa-soa directive"
+  fail=1
+fi
+# DoH must not steal sniproxy 443.
+if grep -E 'bind-https .*:443([[:space:]]|$)' "$CONF_DIR/smartdns.conf"; then
+  echo "DoH must not bind port 443 (reserved for sniproxy)"
   fail=1
 fi
 grep -q "listen 80" "$CONF_DIR/sniproxy.conf" || { echo "missing transparent HTTP/80"; fail=1; }
 grep -q "listen 443" "$CONF_DIR/sniproxy.conf" || { echo "missing transparent HTTPS/443"; fail=1; }
 grep -q "table https_hosts" "$CONF_DIR/sniproxy.conf" || { echo "missing sniproxy table"; fail=1; }
 grep -q "netflix" "$CONF_DIR/sniproxy.conf" || { echo "missing netflix in sniproxy"; fail=1; }
+
+echo "== DoH disable path =="
+tmp_off="$(mktemp -d)"
+CONF_DIR="$tmp_off/conf" RUNTIME_DIR="$tmp_off/run" ENABLE_DOH=0 \
+  TLS_CERT="$TLS_CERT" TLS_KEY="$TLS_KEY" \
+  sh scripts/gen-configs.sh
+grep -q "bind-tls .*:9853" "$tmp_off/conf/smartdns.conf" || { echo "DoT missing when DoH off"; fail=1; }
+if grep -q 'bind-https' "$tmp_off/conf/smartdns.conf"; then
+  echo "bind-https must be absent when ENABLE_DOH=0"
+  fail=1
+fi
+rm -rf "$tmp_off"
+
+echo "== DoH port conflict =="
+if CONF_DIR="$tmp/conf-bad" RUNTIME_DIR="$tmp/run-bad" ENABLE_DOH=1 DOH_PORT=443 \
+  TLS_CERT="$TLS_CERT" TLS_KEY="$TLS_KEY" \
+  sh scripts/gen-configs.sh 2>/dev/null; then
+  echo "DOH_PORT=443 must be rejected"
+  fail=1
+fi
+if CONF_DIR="$tmp/conf-bad2" RUNTIME_DIR="$tmp/run-bad2" ENABLE_DOH=1 DOH_PORT=9853 \
+  TLS_CERT="$TLS_CERT" TLS_KEY="$TLS_KEY" \
+  sh scripts/gen-configs.sh 2>/dev/null; then
+  echo "DOH_PORT equal to DOT_PORT must be rejected"
+  fail=1
+fi
 
 echo "== cert-manager DNS-01 / renewal / reload =="
 sh tests/cert-manager.test.sh || fail=1
@@ -86,6 +121,14 @@ fi
 echo "== compose dynamic port + ACME wiring =="
 grep -q 'DOT_TLS_MODE' docker-compose.yml || { echo "compose does not pass TLS mode"; fail=1; }
 grep -q '\${DOT_PORT:-853}:\${DOT_PORT:-853}/tcp' docker-compose.yml || { echo "DoT port mapping is not dynamic"; fail=1; }
+grep -q 'ENABLE_DOH' docker-compose.yml || { echo "compose missing ENABLE_DOH"; fail=1; }
+grep -q 'DOH_PORT' docker-compose.yml || { echo "compose missing DOH_PORT"; fail=1; }
+grep -q '\${DOH_PORT:-4430}:\${DOH_PORT:-4430}/tcp' docker-compose.yml || { echo "DoH port mapping is not dynamic"; fail=1; }
+grep -q 'bind-https' scripts/gen-configs.sh || { echo "gen-configs missing bind-https"; fail=1; }
+grep -q 'DOH_PORT' scripts/apply-acl.sh || { echo "ACL missing DoH port"; fail=1; }
+grep -q 'DOH_PORT' scripts/warp-zt.sh || { echo "WARP return mark missing DoH port"; fail=1; }
+grep -q 'ENABLE_DOH=1' .env.example || { echo "env example missing ENABLE_DOH"; fail=1; }
+grep -q 'DOH_PORT=4430' .env.example || { echo "env example missing DOH_PORT"; fail=1; }
 if grep -qE '53:53|DNS_UDP_PORT[^\n]*:/tcp|DNS_UDP_PORT[^\n]*:/udp' docker-compose.yml; then
   echo "plaintext DNS/53 must not be published"
   fail=1

@@ -45,7 +45,11 @@ validate_env() {
   export SOCKS5_USERNAME SOCKS5_PASSWORD
 
   valid_port "$SOCKS5_PORT" || fail "invalid SOCKS5_PORT: $SOCKS5_PORT"
-  case "$SOCKS5_PORT" in 53|80|443|"${DOT_PORT:-853}") fail "SOCKS5_PORT conflicts with DNS/DoT/SNI service" ;; esac
+  case "$SOCKS5_PORT" in
+    53|80|443|"${DOT_PORT:-853}"|"${DOH_PORT:-4430}")
+      fail "SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service"
+      ;;
+  esac
   [ -n "$SOCKS5_ALLOWED_IPS" ] || fail "SOCKS5_ALLOWED_IPS is required when SOCKS is enabled (it does not inherit ALLOWED_IPS)"
 
   ulen="$(byte_len "$SOCKS5_USERNAME")"

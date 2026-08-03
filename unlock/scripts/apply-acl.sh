@@ -9,6 +9,8 @@ SOCKS5_ALLOWED_IPS="${SOCKS5_ALLOWED_IPS:-}"
 SOCKS5_PORT="${SOCKS5_PORT:-1080}"
 DNS_PORT="${DNS_UDP_PORT:-53}"
 DOT_PORT="${DOT_PORT:-853}"
+DOH_PORT="${DOH_PORT:-4430}"
+ENABLE_DOH="${ENABLE_DOH:-1}"
 
 log() { echo " >> [apply-acl] $*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
@@ -16,6 +18,7 @@ fail() { log "ERROR: $*" >&2; exit 1; }
 case "$ENABLE_ACL" in 1|true|yes) ;; 0|false|no) log "ACL disabled explicitly"; exit 0 ;; *) fail "ENABLE_ACL must be 0 or 1" ;; esac
 [ -n "$ALLOWED_IPS" ] || fail "ALLOWED_IPS is required for DNS/SNI services"
 case "$ENABLE_SOCKS5" in 1|true|yes) ENABLE_SOCKS5=1; [ -n "$SOCKS5_ALLOWED_IPS" ] || fail "SOCKS5_ALLOWED_IPS is required when SOCKS5 is enabled" ;; 0|false|no|'') ENABLE_SOCKS5=0 ;; *) fail "ENABLE_SOCKS5 must be 0 or 1" ;; esac
+case "$ENABLE_DOH" in 1|true|yes) ENABLE_DOH=1 ;; 0|false|no|'') ENABLE_DOH=0 ;; *) fail "ENABLE_DOH must be 0 or 1" ;; esac
 
 TABLE="unlock_acl"
 nft delete table inet "$TABLE" 2>/dev/null || true
@@ -51,6 +54,16 @@ for proto in tcp udp; do
   nft add rule inet "$TABLE" input "$proto" dport 443 drop
 done
 
+# DoH is TCP-only HTTPS on DOH_PORT; shares ALLOWED_IPS with DoT/DNS/SNI.
+case "$ENABLE_DOH" in
+  1)
+    [ "$DOH_PORT" -ge 1 ] 2>/dev/null && [ "$DOH_PORT" -le 65535 ] 2>/dev/null || fail "invalid DOH_PORT"
+    add_cidrs "$ALLOWED_IPS" tcp dport "$DOH_PORT" accept
+    nft add rule inet "$TABLE" input tcp dport "$DOH_PORT" drop
+    log "DoH ACL applied: TCP $DOH_PORT"
+    ;;
+esac
+
 # SOCKS uses an independent CIDR list. DNS/SNI ALLOWED_IPS never authorizes
 # SOCKS access.
 case "$ENABLE_SOCKS5" in
@@ -62,4 +75,8 @@ case "$ENABLE_SOCKS5" in
     ;;
 esac
 
-log "DNS/SNI ACL applied for DNS=$DNS_PORT DoT=$DOT_PORT HTTP=80 HTTPS=443"
+if [ "$ENABLE_DOH" = "1" ]; then
+  log "DNS/SNI ACL applied for DNS=$DNS_PORT DoT=$DOT_PORT DoH=$DOH_PORT HTTP=80 HTTPS=443"
+else
+  log "DNS/SNI ACL applied for DNS=$DNS_PORT DoT=$DOT_PORT DoH=off HTTP=80 HTTPS=443"
+fi

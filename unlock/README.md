@@ -2,13 +2,13 @@
 
 单镜像流媒体 DNS 解锁，**流媒体出站必须经过 Cloudflare Zero Trust WARP**：
 
-- SmartDNS：容器内明文 DNS + 公网可自定义端口的 DoT
+- SmartDNS：容器内明文 DNS + 公网可自定义端口的 DoT / DoH
 - sniproxy：透明接收客户端对流媒体域名的 HTTP/80、TLS SNI/443
 - 可选 SOCKS5：RFC1929 用户名/密码（任意字符）、独立 CIDR 白名单、可靠的 TCP CONNECT
 - 官方 Cloudflare One Client：Service Token 加入 Zero Trust，`tunnelonly` Traffic-only 模式
 - Fail closed：Zero Trust 注册/连接/`warp=on` 任一步失败，SmartDNS/sniproxy/SOCKS5 不启动或容器退出
-- Let’s Encrypt：Cloudflare DNS-01 签发 DoT TLS 证书，自动续期后 SIGHUP 重载 SmartDNS
-- IP/CIDR 白名单：DNS、DoT、80、443、SOCKS5 各自独立，并保证 WARP 全隧道下的回程
+- Let’s Encrypt：Cloudflare DNS-01 签发 DoT/DoH 共用 TLS 证书，自动续期后 SIGHUP 重载 SmartDNS
+- IP/CIDR 白名单：DNS、DoT、DoH、80、443、SOCKS5，并保证 WARP 全隧道下的回程
 - 域名规则：合并 StreamConfig + 1-stream，有效 FQDN 共 600 条
 - GitHub Actions：仅手动发布，多架构 amd64/arm64，版本号必填
 
@@ -23,7 +23,7 @@
 ```text
 白名单客户端
   │
-  ├─ DoT:DOT_PORT / DNS:53
+  ├─ DoT:DOT_PORT / DoH:DOH_PORT / DNS:53
   │       ▼
   │   SmartDNS
   │   流媒体 A = UNLOCK_IP
@@ -39,12 +39,12 @@
 
 启动顺序固定为：
 
-1. Cloudflare DNS-01 签发/验证 DoT 证书。
+1. Cloudflare DNS-01 签发/验证 DoT/DoH 共用证书。
 2. 写入官方 WARP `mdm.xml`。
 3. `warp-svc` 通过 Service Token 加入 `WARP_ORGANIZATION`。
 4. 校验注册不是 Consumer/Free，并且 organization 正确。
 5. 连接 Traffic-only WARP，校验 `cdn-cgi/trace` 中 `warp=on`。
-6. 给进入公开服务端口（53/DoT/80/443/SOCKS5）的连接写入 conntrack mark，只让这些连接的回包走 `main`；新建出站仍走 WARP。支持任意 CIDR 包括 `0.0.0.0/0`。
+6. 给进入公开服务端口（53/DoT/DoH/80/443/SOCKS5）的连接写入 conntrack mark，只让这些连接的回包走 `main`；新建出站仍走 WARP。支持任意 CIDR 包括 `0.0.0.0/0`。
 7. 之后才启动 SmartDNS、sniproxy 和可选 SOCKS5。
 
 WARP 失联时 sniproxy/SOCKS5 会立即停止、容器退出并由 Docker 重启，**不会回退为 VPS 直连出口**。
@@ -101,15 +101,17 @@ WARP_ORGANIZATION=example
 
 ---
 
-## 3. DoT Let’s Encrypt DNS-01
+## 3. DoT / DoH Let’s Encrypt DNS-01
 
-DoT 是 TLS，生产默认：
+DoT 与 DoH 共用同一张 TLS 证书与 `DOT_DOMAIN` SNI，生产默认：
 
 ```env
 DOT_TLS_MODE=letsencrypt
 DOT_DOMAIN=dot.example.com
 LE_EMAIL=admin@example.com
 CF_DNS_API_TOKEN=...
+ENABLE_DOH=1
+DOH_PORT=4430
 ```
 
 Cloudflare API Token 最小权限：
@@ -118,7 +120,13 @@ Cloudflare API Token 最小权限：
 - Zone / DNS / Edit
 - 资源限制到 `DOT_DOMAIN` 所属单一 Zone
 
-`dot.example.com` 建 A 记录指向 `UNLOCK_IP`，设为 DNS only（灰云）。DNS-01 不需要开放 HTTP-01，因此 `DOT_PORT` 可以改成 9853 等自定义端口。
+`dot.example.com` 建 A 记录指向 `UNLOCK_IP`，设为 DNS only（灰云）。DNS-01 不需要开放 HTTP-01，因此 `DOT_PORT` / `DOH_PORT` 都可以自定义。
+
+**DoH 不占用 443**：443 专供 sniproxy 做流媒体 SNI 解锁。DoH 默认 `4430`，端点固定：
+
+```text
+https://DOT_DOMAIN:DOH_PORT/dns-query
+```
 
 证书每 `RENEW_CHECK_HOURS` 检查一次，剩余不高于 `RENEW_BEFORE_DAYS` 时续期，成功后向 SmartDNS monitor 发 SIGHUP。
 
@@ -141,6 +149,8 @@ ENABLE_ACL=1
 
 DNS_UDP_PORT=53
 DOT_PORT=9853
+ENABLE_DOH=1
+DOH_PORT=4430
 DOT_DOMAIN=dot.example.com
 DOT_TLS_MODE=letsencrypt
 LE_EMAIL=admin@example.com
@@ -163,15 +173,16 @@ docker compose logs -f unlock
 
 - Linux 主机具备 `/dev/net/tun` 和 nftables。
 - Compose 已提供 NET_ADMIN、NET_RAW、MKNOD、AUDIT_WRITE、SYS_PTRACE。
-- 公网只发布 DoT 端口和 sniproxy 的 80/443；明文 DNS/53 默认不发布。
+- 公网发布 DoT、DoH 端口和 sniproxy 的 80/443；明文 DNS/53 默认不发布。
 - 80/443 必须空闲；它们不是 ACME/DNS 验证端口，而是流媒体客户端解析到解锁机后实际连接 sniproxy 的端口，不能删除或改成非标准端口。
-- `ALLOWED_IPS` 不可为空。它既是 DNS/DoT/SNI 访问白名单，也是 WARP 全隧道下的回程排除列表。
+- `DOH_PORT` 不能是 `53`/`80`/`443`/`DOT_PORT`；默认 `4430`。
+- `ALLOWED_IPS` 不可为空。它既是 DNS/DoT/DoH/SNI 访问白名单，也是 WARP 全隧道下的回程排除列表。
 - SOCKS5 不继承 `ALLOWED_IPS`：启用时必须单独配置 `SOCKS5_ALLOWED_IPS`，并同时使用用户名/密码认证。
 
 ### 已发布镜像
 
 ```yaml
-image: ghcr.io/lanlan13-14/proxym-easy-unlock:v0.0.7-free-socks-auth
+image: ghcr.io/lanlan13-14/proxym-easy-unlock:v0.0.8-doh
 ```
 
 使用镜像时删除 `build:`，其余环境、端口、capabilities、volumes 保持不变。
@@ -226,9 +237,9 @@ curl --proxy "socks5h://UNLOCK_IP:9857" \
 
 安全边界：
 
-- `SOCKS5_ALLOWED_IPS` 和 `ALLOWED_IPS` 完全独立；前者不授权 DNS/DoT/SNI，后者不授权 SOCKS。
+- `SOCKS5_ALLOWED_IPS` 和 `ALLOWED_IPS` 完全独立；前者不授权 DNS/DoT/DoH/SNI，后者不授权 SOCKS。
 - 用户名/密码只在 `.env` 与进程环境变量，不写入配置文件、不出现在 argv。
-- SOCKS5 不能使用 `53`、`80`、`443` 或 DoT 端口，避免和现有服务冲突。
+- SOCKS5 不能使用 `53`、`80`、`443`、DoT 或 DoH 端口，避免和现有服务冲突。
 - `SOCKS5_ALLOWED_IPS` 支持任意 CIDR，包括 `0.0.0.0/0`；公网开放时仍依赖用户名/密码认证，建议用 `/32` 或 `/24` 收紧。
 
 ---
@@ -252,7 +263,7 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 - status 为 Connected
 - trace 含 `warp=on`
 
-DoT/DNS：
+DoT / DoH / DNS：
 
 ```bash
 # 明文 DNS 只在容器内部做健康检查，不发布宿主机 53。
@@ -262,6 +273,12 @@ docker compose exec unlock dig @127.0.0.1 netflix.com A +short
 openssl s_client -connect 203.0.113.10:9853 \
   -servername dot.example.com -verify_hostname dot.example.com </dev/null
 kdig @203.0.113.10 -p 9853 +tls-ca +tls-host=dot.example.com netflix.com A
+
+# 公网客户端使用 DoH（路径固定 /dns-query；端口默认 4430）。
+curl -fsS --doh-url https://dot.example.com:4430/dns-query \
+  https://netflix.com >/dev/null && echo doh_ok
+# 或：
+# kdig @203.0.113.10 -p 4430 +https +tls-ca +tls-host=dot.example.com netflix.com A
 ```
 
 出站故障时：
@@ -295,13 +312,14 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 | 变量 | 默认 | 作用 |
 |---|---:|---|
 | `UNLOCK_IP` | 自动探测 | 流媒体域名返回的解锁机 IP，生产建议显式设置 |
-| `ALLOWED_IPS` | 空，拒绝启动 | DNS/DoT/SNI 访问白名单；支持任意 CIDR，包括 `0.0.0.0/0` |
+| `ALLOWED_IPS` | 空，拒绝启动 | DNS/DoT/DoH/SNI 访问白名单；支持任意 CIDR，包括 `0.0.0.0/0` |
 | `ENABLE_ACL` | `1` | 关闭后不应用防火墙白名单，**不建议生产使用** |
 | `DNS_UDP_PORT` | `53` | 容器内部 SmartDNS 明文端口，默认不映射到宿主机 |
 | `DOT_PORT` | `853` | 可自定义 DoT 端口 |
+| `ENABLE_DOH` | `1` | `1` 启用 SmartDNS DoH（`bind-https`） |
+| `DOH_PORT` | `4430` | DoH TCP 端口；不可为 53/80/443/DOT_PORT |
 | `DOT_TLS_MODE` | `letsencrypt` | `letsencrypt` / `selfsigned` / `custom` |
-| `DOT_DOMAIN` | 无 | DoT TLS 名称/SNI |
-| `DOT_TLS_MODE` | `letsencrypt` | `letsencrypt` / `selfsigned` / `custom` |
+| `DOT_DOMAIN` | 无 | DoT/DoH 共用 TLS 名称/SNI |
 | `LE_EMAIL` | 无 | Let’s Encrypt 注册邮箱，`letsencrypt` 必填 |
 | `CF_DNS_API_TOKEN` | 无 | Cloudflare DNS-01 token，`letsencrypt` 必填 |
 | `WARP_ORGANIZATION` | 无 | Zero Trust team name |
@@ -352,7 +370,7 @@ sh tests/run.sh
 覆盖：
 
 - 600 条合并域名规则
-- SmartDNS DoT、自定义端口、证书路径、AAAA 防绕过
+- SmartDNS DoT/DoH、自定义端口、证书路径、AAAA 防绕过、DoH 禁用与端口冲突
 - Let’s Encrypt DNS-01 签发/续期/SmartDNS 重载
 - 官方 WARP MDM Service Token、`tunnelonly`、MASQUE、Consumer 拒绝
 - WARP fail-closed 启动顺序与连接标记回程（支持任意 CIDR）

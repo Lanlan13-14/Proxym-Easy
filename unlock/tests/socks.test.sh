@@ -31,7 +31,7 @@ if grep -Eq 'useradd|chpasswd|dante|/etc/shadow' "$SRC"; then
   echo "socks5d.c must not depend on system accounts" >&2
   exit 1
 fi
-grep -q 'SOCKS5_PORT conflicts with DNS/DoT/SNI service' "$SCRIPT"
+grep -q 'SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service' "$SCRIPT"
 grep -q 'validate_env' "$SCRIPT"
 grep -q 'start-socks.sh" env' "$ENTRY"
 grep -q 'socks5d.pid' "$ENTRY"

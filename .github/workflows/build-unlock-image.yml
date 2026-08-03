@@ -54,6 +54,10 @@ jobs:
           grep -q 'DOT_TLS_MODE' README.md .env.example
           grep -q 'ENABLE_ACL' README.md .env.example
           grep -q 'SOCKS5_PORT' README.md .env.example docker-compose.yml
+          grep -q 'ENABLE_DOH' README.md .env.example docker-compose.yml
+          grep -q 'DOH_PORT' README.md .env.example docker-compose.yml
+          grep -q 'bind-https' scripts/gen-configs.sh
+          grep -q '/dns-query' README.md
           # Free-charset SOCKS auth (not Linux account rules).
           grep -q 'RFC1929' README.md .env.example || grep -q '1-255' README.md .env.example
           ! grep -q 'dante-server' Dockerfile

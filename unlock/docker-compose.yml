@@ -17,6 +17,9 @@ services:
       ENABLE_ACL: ${ENABLE_ACL:-1}
       DNS_UDP_PORT: ${DNS_UDP_PORT:-53}
       DOT_PORT: ${DOT_PORT:-853}
+      # DoH on a dedicated port; 443 stays reserved for sniproxy SNI unlock.
+      ENABLE_DOH: ${ENABLE_DOH:-1}
+      DOH_PORT: ${DOH_PORT:-4430}
       DOT_DOMAIN: ${DOT_DOMAIN:-}
       DOT_TLS_MODE: ${DOT_TLS_MODE:-letsencrypt}
       LE_EMAIL: ${LE_EMAIL:-}
@@ -41,8 +44,9 @@ services:
       SOCKS5_PASSWORD: ${SOCKS5_PASSWORD:-}
       SOCKS5_ALLOWED_IPS: ${SOCKS5_ALLOWED_IPS:-}
     ports:
-      # Public clients use DoT only; plaintext DNS/53 stays container-internal.
+      # Public clients use DoT + DoH; plaintext DNS/53 stays container-internal.
       - "${DOT_PORT:-853}:${DOT_PORT:-853}/tcp"
+      - "${DOH_PORT:-4430}:${DOH_PORT:-4430}/tcp"
       - "80:80/tcp"
       - "443:443/tcp"
       # SOCKS5 TCP port is mapped by this single Compose file. unlock-socks5d

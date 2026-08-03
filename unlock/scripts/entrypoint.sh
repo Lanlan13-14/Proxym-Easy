@@ -89,9 +89,17 @@ echo $! >"$RUNTIME_DIR/cert-manager.pid"
 "$ROOT/scripts/warp-zt.sh" supervise >"$RUNTIME_DIR/warp-supervisor.log" 2>&1 &
 echo $! >"$RUNTIME_DIR/warp-supervisor.pid"
 
-log "ready: DoT/DNS -> sniproxy -> Cloudflare Zero Trust WARP"
+log "ready: DoT/DoH/DNS -> sniproxy -> Cloudflare Zero Trust WARP"
 log "  organization=${WARP_ORGANIZATION}"
-log "  DNS UDP/TCP=${DNS_UDP_PORT:-53} DoT=${DOT_PORT:-853}"
+case "${ENABLE_DOH:-1}" in
+  1|true|yes)
+    log "  DNS UDP/TCP=${DNS_UDP_PORT:-53} DoT=${DOT_PORT:-853} DoH=${DOH_PORT:-4430}"
+    log "  DoH URL=https://${DOT_DOMAIN}:${DOH_PORT:-4430}/dns-query"
+    ;;
+  *)
+    log "  DNS UDP/TCP=${DNS_UDP_PORT:-53} DoT=${DOT_PORT:-853} DoH=disabled"
+    ;;
+esac
 log "  HTTP=80 HTTPS=443 ALLOWED_IPS=${ALLOWED_IPS}"
 
 # Fail closed: if WARP is no longer healthy, stop sniproxy immediately. The

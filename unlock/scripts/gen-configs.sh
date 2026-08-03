@@ -13,8 +13,12 @@ DOMAINS_FILE="${DOMAINS_FILE:-$ROOT/domains/all.txt}"
 BIND_HOST="${BIND_HOST:-0.0.0.0}"
 DNS_UDP_PORT="${DNS_UDP_PORT:-53}"
 DOT_PORT="${DOT_PORT:-853}"
+# DoH (DNS over HTTPS) on a dedicated port. 443 is reserved for sniproxy SNI
+# unlock traffic, so DoH never steals the streaming HTTPS path.
+DOH_PORT="${DOH_PORT:-4430}"
+ENABLE_DOH="${ENABLE_DOH:-1}"
 # Transparent DNS unlock cannot use custom web ports: clients always connect
-# to HTTP/80 and HTTPS/443 after DNS resolution. Only DOT_PORT is configurable.
+# to HTTP/80 and HTTPS/443 after DNS resolution. DOT_PORT/DOH_PORT are free.
 HTTP_PORT=80
 HTTPS_PORT=443
 UNLOCK_IP="${UNLOCK_IP:-}"
@@ -25,11 +29,11 @@ CACHE_SIZE="${CACHE_SIZE:-32768}"
 FORCE_AAAA_SOA="${FORCE_AAAA_SOA:-yes}"
 SPEED_CHECK_MODE="${SPEED_CHECK_MODE:-ping,tcp:80,tcp:443}"
 # DOT_DOMAIN is the public FQDN validated by Let's Encrypt DNS-01.
-# DOT_SERVER_NAME is retained as a backwards-compatible alias.
+# Shared by DoT and DoH TLS (same cert/SNI). DOT_SERVER_NAME is a legacy alias.
 DOT_DOMAIN="${DOT_DOMAIN:-${DOT_SERVER_NAME:-}}"
 DOT_TLS_MODE="${DOT_TLS_MODE:-letsencrypt}"
 if [ -z "$DOT_DOMAIN" ]; then
-  echo "ERROR: DOT_DOMAIN is required for DoT" >&2
+  echo "ERROR: DOT_DOMAIN is required for DoT/DoH" >&2
   exit 1
 fi
 case "$DOT_TLS_MODE" in
@@ -39,6 +43,26 @@ case "$DOT_TLS_MODE" in
 esac
 export DOT_DOMAIN DOT_TLS_MODE TLS_CERT TLS_KEY
 DOT_SERVER_NAME="$DOT_DOMAIN"
+
+valid_port() {
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
+}
+valid_port "$DOT_PORT" || { echo "ERROR: invalid DOT_PORT: $DOT_PORT" >&2; exit 1; }
+case "$ENABLE_DOH" in
+  1|true|yes)
+    ENABLE_DOH=1
+    valid_port "$DOH_PORT" || { echo "ERROR: invalid DOH_PORT: $DOH_PORT" >&2; exit 1; }
+    case "$DOH_PORT" in
+      53|80|443|"$DOT_PORT"|"$DNS_UDP_PORT")
+        echo "ERROR: DOH_PORT=$DOH_PORT conflicts with DNS/DoT/SNI ports" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  0|false|no|'') ENABLE_DOH=0 ;;
+  *) echo "ERROR: ENABLE_DOH must be 0 or 1" >&2; exit 1 ;;
+esac
 PLATFORMS="${PLATFORMS:-all}"
 REGIONS="${REGIONS:-}"
 SNIPROXY_USER="${SNIPROXY_USER:-nobody}"
@@ -164,6 +188,13 @@ server-name $DOT_SERVER_NAME
 bind ${BIND_HOST}:${DNS_UDP_PORT}${bind_flags}
 bind-tcp ${BIND_HOST}:${DNS_UDP_PORT}${bind_flags}
 bind-tls ${BIND_HOST}:${DOT_PORT}${bind_flags}
+EOF
+  if [ "$ENABLE_DOH" = "1" ]; then
+    # SmartDNS DoH endpoint is https://<host>:<DOH_PORT>/dns-query
+    # Same Let's Encrypt cert/SNI as DoT (DOT_DOMAIN).
+    echo "bind-https ${BIND_HOST}:${DOH_PORT}${bind_flags}"
+  fi
+  cat <<EOF
 bind-cert-file $TLS_CERT
 bind-cert-key-file $TLS_KEY
 cache-size $CACHE_SIZE
@@ -199,5 +230,9 @@ EOF
 
 # Certificate creation/renewal is intentionally handled by cert-manager.sh BEFORE
 # this config is used. There is no silent self-signed fallback in production.
-echo " >> gen-configs: DoT TLS mode=$DOT_TLS_MODE domain=$DOT_DOMAIN cert=$TLS_CERT"
+if [ "$ENABLE_DOH" = "1" ]; then
+  echo " >> gen-configs: DoT/DoH TLS mode=$DOT_TLS_MODE domain=$DOT_DOMAIN DoT=$DOT_PORT DoH=$DOH_PORT cert=$TLS_CERT"
+else
+  echo " >> gen-configs: DoT TLS mode=$DOT_TLS_MODE domain=$DOT_DOMAIN DoT=$DOT_PORT DoH=disabled cert=$TLS_CERT"
+fi
 echo " >> gen-configs: wrote $CONF_DIR/sniproxy.conf $CONF_DIR/smartdns.conf"
