@@ -19,9 +19,14 @@ UNLOCK_ROOT="$ROOT" sh scripts/gen-domains.sh
 test -s domains/all.txt || fail=1
 count="$(wc -l < domains/all.txt | tr -d ' ')"
 echo "domains=$count"
-[ "$count" -ge 600 ] || { echo "merged domain list is incomplete (<600)"; fail=1; }
+[ "$count" -ge 588 ] || { echo "merged domain list is incomplete (<588)"; fail=1; }
 grep -qx 'claude.com' domains/all.txt || { echo "missing 1-stream supplemental domain claude.com"; fail=1; }
 grep -qx 'spotify.com' domains/all.txt || { echo "missing StreamConfig-only domain spotify.com"; fail=1; }
+# Google / YouTube intentionally excluded from unlock domain set.
+if grep -qiE 'google|googleapis|youtube' domains/all.txt; then
+  echo "google-related domains must not appear in domains/all.txt"
+  fail=1
+fi
 
 echo "== gen-configs smoke =="
 tmp="$(mktemp -d)"

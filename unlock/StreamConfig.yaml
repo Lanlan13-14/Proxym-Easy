@@ -77,11 +77,6 @@ Global_Platform:
     - viu.com
   Steam_Store:
     - steampowered.com
-  YouTube:
-    - youtube.com
-    - youtubei.googleapis.com
-  Google_Search:
-    - google.com
   Instagram:
     - instagram.com
   iQiyi:
@@ -446,9 +441,6 @@ Korean_Media:
     - jtbc.co.kr
 
 China_Media:
-  YouTube:
-    - youtube.com
-    - youtubei.googleapis.com
   BiliBili:
     - bilibili.com
   Netease_Cloud_Music:
@@ -774,12 +766,5 @@ AI_Platform:
   Claude_2:
     - anthropic.com
     - claude.ai
-  Google_Gemini:
-    - gemini.google.com
-    - proactivebackend-pa.googleapis.com
-  Google_AiStudio:
-    - aistudio.google.com
-    - alkalimakersuite-pa.clients6.google.com
-    - generativelanguage.googleapis.com
   Copilot:
     - copilot.microsoft.com

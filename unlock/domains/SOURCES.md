@@ -14,6 +14,8 @@ other.
 
 Current counts:
 
-- StreamConfig source: 522 domains
-- normalized 1-stream source: 585 domains
-- merged canonical set: 600 unique valid FQDNs
+- StreamConfig source: 514 domains
+- normalized 1-stream source: 573 domains
+- merged canonical set: 588 unique valid FQDNs
+
+Google / YouTube related FQDNs are intentionally removed from both sources.

@@ -9,7 +9,7 @@
 - Fail closed：Zero Trust 注册/连接/`warp=on` 任一步失败，SmartDNS/sniproxy/SOCKS5 不启动或容器退出
 - Let’s Encrypt：仅在启用 DoT/DoH 时签发共用 TLS 证书；纯明文 DNS **不需要**域名/证书
 - IP/CIDR 白名单：DNS、DoT、DoH、80、443、SOCKS5，并保证 WARP 全隧道下的回程
-- 域名规则：合并 StreamConfig + 1-stream，有效 FQDN 共 600 条
+- 域名规则：合并 StreamConfig + 1-stream，有效 FQDN 共 588 条（不含 Google / YouTube）
 - GitHub Actions：仅手动发布，多架构 amd64/arm64，版本号必填
 
 > `cloudflared Tunnel` 只解决入站连接，不能把 sniproxy 的源站出站流量送入 WARP，因此本方案不使用它实现解锁。这里使用官方 `warp-svc` 的 Zero Trust Traffic-only 隧道。
@@ -369,11 +369,11 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 
 `scripts/gen-domains.sh` 合并：
 
-1. `StreamConfig.yaml`：522 条。
-2. `domains/1stream.txt`：从 `1-stream/1stream-public-utils/stream.smartdns.list` 规范化出的 585 条 FQDN。
-3. 合并去重后 `domains/all.txt`：600 条有效 FQDN。
+1. `StreamConfig.yaml`：514 条。
+2. `domains/1stream.txt`：从 `1-stream/1stream-public-utils/stream.smartdns.list` 规范化出的 573 条 FQDN。
+3. 合并去重后 `domains/all.txt`：588 条有效 FQDN。
 
-不直接覆盖旧表，因为两份来源各自有独有域名；例如 1-stream 补充了 Bilibili、Radiko、meWATCH、StarHub、Shahid、Claude/Sora 等，原 StreamConfig 则保留 Spotify 域名。来源与快照哈希见 `domains/SOURCES.md`。
+不直接覆盖旧表，因为两份来源各自有独有域名；例如 1-stream 补充了 Bilibili、Radiko、meWATCH、StarHub、Shahid、Claude/Sora 等，原 StreamConfig 则保留 Spotify 域名。Google / YouTube 相关域名已从两边剔除。来源与快照哈希见 `domains/SOURCES.md`。
 
 默认 `FORCE_AAAA_SOA=yes`，防止 IPv4 解锁机上的客户端通过 AAAA 直连真实流媒体源站绕过 sniproxy。
 
@@ -445,7 +445,7 @@ sh tests/run.sh
 
 覆盖：
 
-- 600 条合并域名规则
+- 588 条合并域名规则（已排除 Google / YouTube）
 - SmartDNS 明文 DNS / DoT / DoH 独立开关、自定义端口、纯明文无域名、证书路径、AAAA 防绕过、三关拒绝
 - Let’s Encrypt DNS-01 签发/续期/SmartDNS 重载；纯 DNS 时 cert-manager 跳过
 - 官方 WARP MDM Service Token、`tunnelonly`、MASQUE、Consumer 拒绝

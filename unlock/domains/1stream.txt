@@ -41,14 +41,10 @@ aiqiyicloud.com
 aiqiyicloud.net
 airspace-cdn.cbsviedo.com
 ais-vidnt.com
-aisandbox-pa.googleapis.com
 aisplay.ais.co.th
-aistudio.google.com
 aiv-cdn.net
 aiv-delivery.net
 akamai.prod-live.h264.io
-alkalicore-pa.clients6.google.com
-alkalimakersuite-pa.clients6.google.com
 amazonvideo.com
 ameba.jp
 amediateka.ru
@@ -250,8 +246,6 @@ fxnow.fxnetworks.com
 gamer-cds.cdn.hinet.net
 gamer.com.tw
 gamer2-cds.cdn.hinet.net
-gemini.google.com
-generativelanguage.googleapis.com
 geo-id-media-001-vidio-com.akamaized.net
 geolocation.onetrust.com
 getblueshift.com
@@ -259,7 +253,6 @@ gitv.cn
 gitv.tv
 glxplay.io
 go-mpulse.net
-google.com
 gorin.jp
 grpc.biliapi.net
 gyao.yahoo.co.jp
@@ -449,7 +442,6 @@ ppstream.net
 ppstream.net.cn
 ppsurl.com
 primevideo.com
-proactivebackend-pa.googleapis.com
 prod-skyonelive.akamaized.net
 prod.hjholdings.tv
 pstatic.net
@@ -463,7 +455,6 @@ radiko.jp
 radionikkei.jp
 rakuten.co.jp
 rakuten.tv
-robinfrontend-pa.googleapis.com
 salto.fr
 sbs-live-dai.akamaized.net
 sbs-live-prod-01.akamaized.net
@@ -565,7 +556,6 @@ vod-thumb-uk-live.akamaized.net
 vod-thumb-ww-live.akamaized.net
 vrv.co
 vs-cmaf-push-uk-live.akamaized.net
-waa-pa.clients6.google.com
 watchespn.com
 watchnba.cdnfastly.endeavorstreaming.net
 wavve.com
@@ -578,8 +568,6 @@ yb.uncn.jp
 ykimg.com
 youku.com
 yourtv.com.au
-youtube.com
-youtubei.googleapis.com
 zahs.tv
 zdf.de
 zee5.com
