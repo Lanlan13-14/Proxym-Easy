@@ -2,13 +2,13 @@
 
 单镜像流媒体 DNS 解锁，**流媒体出站必须经过 Cloudflare Zero Trust WARP**：
 
-- SmartDNS：容器内明文 DNS + 公网可自定义端口的 DoT（默认不发布 53）
+- SmartDNS：容器内明文 DNS + 公网可自定义端口的 DoT
 - sniproxy：透明接收客户端对流媒体域名的 HTTP/80、TLS SNI/443
 - 可选 SOCKS5：Dante 用户名/密码认证、独立 CIDR 白名单、可靠的 TCP CONNECT
 - 官方 Cloudflare One Client：Service Token 加入 Zero Trust，`tunnelonly` Traffic-only 模式
-- Fail closed：Zero Trust 注册/连接/`warp=on` 任一步失败，SmartDNS/sniproxy 不启动或容器退出
+- Fail closed：Zero Trust 注册/连接/`warp=on` 任一步失败，SmartDNS/sniproxy/SOCKS5 不启动或容器退出
 - Let’s Encrypt：Cloudflare DNS-01 签发 DoT TLS 证书，自动续期后 SIGHUP 重载 SmartDNS
-- IP/CIDR 白名单：保护 DNS、DoT、80、443，并保持 WARP 全隧道下的客户端回程路由
+- IP/CIDR 白名单：DNS、DoT、80、443、SOCKS5 各自独立，并保证 WARP 全隧道下的回程
 - 域名规则：合并 StreamConfig + 1-stream，有效 FQDN 共 600 条
 - GitHub Actions：仅手动发布，多架构 amd64/arm64，版本号必填
 
@@ -44,7 +44,7 @@
 3. `warp-svc` 通过 Service Token 加入 `WARP_ORGANIZATION`。
 4. 校验注册不是 Consumer/Free，并且 organization 正确。
 5. 连接 Traffic-only WARP，校验 `cdn-cgi/trace` 中 `warp=on`。
-6. 为 `ALLOWED_IPS` 和启用时的 `SOCKS5_ALLOWED_IPS` 添加 main-table 回程策略，避免 WARP 抢走客户端回包。
+6. 给进入公开服务端口（53/DoT/80/443/SOCKS5）的连接写入 conntrack mark，只让这些连接的回包走 `main`；新建出站仍走 WARP。支持任意 CIDR 包括 `0.0.0.0/0`。
 7. 之后才启动 SmartDNS、sniproxy 和可选 SOCKS5。
 
 WARP 失联时 sniproxy/SOCKS5 会立即停止、容器退出并由 Docker 重启，**不会回退为 VPS 直连出口**。
@@ -171,7 +171,7 @@ docker compose logs -f unlock
 ### 已发布镜像
 
 ```yaml
-image: ghcr.io/lanlan13-14/proxym-easy-unlock:v1.0.0
+image: ghcr.io/lanlan13-14/proxym-easy-unlock:v0.0.5-any-cidr
 ```
 
 使用镜像时删除 `build:`，其余环境、端口、capabilities、volumes 保持不变。
@@ -180,20 +180,20 @@ image: ghcr.io/lanlan13-14/proxym-easy-unlock:v1.0.0
 
 ## 5. 可选 SOCKS5 代理
 
-默认 `ENABLE_SOCKS5=0`，基础 Compose **不会发布** SOCKS5 端口。启用时，编辑 `.env`：
+默认 `ENABLE_SOCKS5=0`，Dante 不启动。启用时，编辑 `.env`：
 
 ```env
 ENABLE_SOCKS5=1
-SOCKS5_PORT=1080
+SOCKS5_PORT=9857
 SOCKS5_USERNAME=proxyuser
 SOCKS5_PASSWORD=替换为高强度密码
-# 与 ALLOWED_IPS 完全独立；不要留空，也不要因此放宽 DNS 白名单。
-SOCKS5_ALLOWED_IPS=203.0.113.25/32
+# 与 ALLOWED_IPS 完全独立；不要留空。
+SOCKS5_ALLOWED_IPS=0.0.0.0/0
 ```
 
 [KNOWN] SOCKS5 使用 Dante 的用户名/密码认证，支持可靠的 TCP CONNECT。Docker bridge 下 UDP ASSOCIATE 会向公网客户端通告容器/WARP 内网中继地址，因此本镜像不伪装成可用：不发布 UDP 中继端口。
 
-这是同一份 Compose 文件，不需要 profile 或第二份覆盖文件。`SOCKS5_PORT` 始终映射到宿主机；当 `ENABLE_SOCKS5=0` 时 Dante 不启动，连接该端口会被拒绝而不是提供未认证代理。启用 SOCKS 时只需：
+这是**同一份 Compose 文件**，不需要 profile 或第二份覆盖文件。`SOCKS5_PORT` 始终映射到宿主机；当 `ENABLE_SOCKS5=0` 时 Dante 不启动，连接该端口会被拒绝而不是提供未认证代理。启用 SOCKS 时只需：
 
 ```bash
 docker compose up -d
@@ -202,13 +202,13 @@ docker compose up -d
 客户端代理 URI：
 
 ```text
-socks5h://proxyuser:你的密码@UNLOCK_IP:1080
+socks5h://proxyuser:你的密码@UNLOCK_IP:9857
 ```
 
 验证 TCP：
 
 ```bash
-curl --proxy 'socks5h://proxyuser:你的密码@UNLOCK_IP:1080' \
+curl --proxy 'socks5h://proxyuser:你的密码@UNLOCK_IP:9857' \
   https://cloudflare.com/cdn-cgi/trace | grep -E '^(ip|warp|gateway)='
 ```
 
@@ -219,6 +219,9 @@ curl --proxy 'socks5h://proxyuser:你的密码@UNLOCK_IP:1080' \
 - `SOCKS5_ALLOWED_IPS` 和 `ALLOWED_IPS` 完全独立；前者不授权 DNS/DoT/SNI，后者不授权 SOCKS。
 - 用户名/密码只在 `.env` 和容器 `/etc/shadow`，不写入 Dante 配置或进程命令行。
 - SOCKS5 不能使用 `53`、`80`、`443` 或 DoT 端口，避免和现有服务冲突。
+- `SOCKS5_ALLOWED_IPS` 支持任意 CIDR，包括 `0.0.0.0/0`；公网开放时仍依赖用户名/密码认证，建议用 `/32` 或 `/24` 收紧。
+
+---
 
 ## 6. 验证
 
@@ -282,11 +285,15 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 | 变量 | 默认 | 作用 |
 |---|---:|---|
 | `UNLOCK_IP` | 自动探测 | 流媒体域名返回的解锁机 IP，生产建议显式设置 |
-| `ALLOWED_IPS` | 空，拒绝启动 | 访问白名单及 WARP 回程排除 CIDR |
+| `ALLOWED_IPS` | 空，拒绝启动 | DNS/DoT/SNI 访问白名单；支持任意 CIDR，包括 `0.0.0.0/0` |
+| `ENABLE_ACL` | `1` | 关闭后不应用防火墙白名单，**不建议生产使用** |
 | `DNS_UDP_PORT` | `53` | 容器内部 SmartDNS 明文端口，默认不映射到宿主机 |
 | `DOT_PORT` | `853` | 可自定义 DoT 端口 |
+| `DOT_TLS_MODE` | `letsencrypt` | `letsencrypt` / `selfsigned` / `custom` |
 | `DOT_DOMAIN` | 无 | DoT TLS 名称/SNI |
-| `CF_DNS_API_TOKEN` | 无 | Let’s Encrypt Cloudflare DNS-01 token |
+| `DOT_TLS_MODE` | `letsencrypt` | `letsencrypt` / `selfsigned` / `custom` |
+| `LE_EMAIL` | 无 | Let’s Encrypt 注册邮箱，`letsencrypt` 必填 |
+| `CF_DNS_API_TOKEN` | 无 | Cloudflare DNS-01 token，`letsencrypt` 必填 |
 | `WARP_ORGANIZATION` | 无 | Zero Trust team name |
 | `WARP_CLIENT_ID` | 无 | Service Token Client ID |
 | `WARP_CLIENT_SECRET` | 无 | Service Token Client Secret |
@@ -296,7 +303,7 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 | `ENABLE_SOCKS5` | `0` | `1` 启用同一 Compose 中的可选 SOCKS5 服务 |
 | `SOCKS5_PORT` | `1080` | SOCKS5 TCP 控制端口 |
 | `SOCKS5_USERNAME` / `SOCKS5_PASSWORD` | 无 | SOCKS5 用户名/密码，启用时必填 |
-| `SOCKS5_ALLOWED_IPS` | 无 | SOCKS5 独立 CIDR 白名单，启用时必填，不继承 `ALLOWED_IPS` |
+| `SOCKS5_ALLOWED_IPS` | 无 | SOCKS5 独立 CIDR 白名单，启用时必填，不继承 `ALLOWED_IPS`；支持任意 CIDR |
 | `FORCE_AAAA_SOA` | `yes` | IPv4 部署防止 AAAA 绕过 |
 | `PLATFORMS` | `all` | StreamConfig 平台过滤 |
 | `REGIONS` | 空 | StreamConfig 地区过滤 |
@@ -338,5 +345,6 @@ sh tests/run.sh
 - SmartDNS DoT、自定义端口、证书路径、AAAA 防绕过
 - Let’s Encrypt DNS-01 签发/续期/SmartDNS 重载
 - 官方 WARP MDM Service Token、`tunnelonly`、MASQUE、Consumer 拒绝
-- WARP fail-closed 启动顺序与回程策略
+- WARP fail-closed 启动顺序与连接标记回程（支持任意 CIDR）
 - Compose 接线及 `unlock/` 构建上下文隔离
+- Dante 用户名/密码认证真实运行测试
