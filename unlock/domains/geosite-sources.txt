@@ -1,0 +1,69 @@
+# MetaCubeX meta-rules-dat geosite basenames (meta branch).
+# One name per line. Comments and blank lines ignored.
+# Used by scripts/build-geosite-domains.sh and the daily domain update Action.
+# Prefer service-specific lists over company-wide mega lists (no amazon/facebook/microsoft/google).
+
+# --- Global streaming ---
+netflix
+disney
+bamtech
+hotstar
+espn
+hbo
+hulu
+primevideo
+dazn
+spotify
+tiktok
+viu
+tvb
+steam
+instagram
+iqiyi
+twitch
+apple-tvplus
+
+# --- Greater China / Asia SVOD ---
+kktv
+litv
+hamivideo
+catchplay
+bahamut
+bilibili
+bilibili2
+bilibili-cdn
+biliintl
+mytvsuper
+youku
+netease
+
+# --- Japan ---
+nhk
+dmm
+abema
+niconico
+unext
+tver
+radiko
+
+# --- Europe / UK ---
+bbc
+discoveryplus
+sky
+
+# --- Korea / India-ish ---
+coupang
+naver
+zee
+
+# --- North America extras ---
+fox
+tubi
+sling
+plutotv
+showtimeanytime
+formula1
+
+# --- AI (no Google) ---
+openai
+anthropic

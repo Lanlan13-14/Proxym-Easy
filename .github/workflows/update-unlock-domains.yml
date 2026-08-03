@@ -1,0 +1,95 @@
+# Daily rebuild of unlock/domains/all.txt from MetaCubeX geosite lists.
+# Publishes a stable raw URL consumed by running containers at 04:00:
+#   https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock/domains/all.txt
+name: update-unlock-domains
+
+on:
+  schedule:
+    # 19:00 UTC = 03:00 Asia/Shanghai
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Commit even when the domain list is unchanged"
+        required: false
+        default: "false"
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-unlock-domains
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Proxym-Easy
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout MetaCubeX geosite (meta branch)
+        uses: actions/checkout@v4
+        with:
+          repository: MetaCubeX/meta-rules-dat
+          ref: meta
+          sparse-checkout: |
+            geo/geosite
+          sparse-checkout-cone-mode: true
+          path: meta-rules-dat
+
+      - name: Build merged domain list
+        working-directory: unlock
+        env:
+          GEOSITE_DIR: ${{ github.workspace }}/meta-rules-dat/geo/geosite
+          MIN_DOMAIN_COUNT: "800"
+        run: |
+          set -euo pipefail
+          sh scripts/build-geosite-domains.sh
+          test -s domains/all.txt
+          count="$(wc -l < domains/all.txt | tr -d ' ')"
+          echo "domains=$count" >> "$GITHUB_STEP_SUMMARY"
+          echo "Merged domain count: $count"
+          # Safety: never publish Google/YouTube unlock targets.
+          if grep -qiE '(^|\.)(google|googleapis|gstatic|youtube|ytimg)(\.|$)' domains/all.txt; then
+            echo "ERROR: google/youtube domains leaked into all.txt" >&2
+            exit 1
+          fi
+          for must in netflix.com disneyplus.com bamgrid.com; do
+            grep -qx "$must" domains/all.txt || {
+              echo "ERROR: missing required domain $must" >&2
+              exit 1
+            }
+          done
+
+      - name: Unit tests with new list
+        working-directory: unlock
+        env:
+          DOMAIN_SOURCE: keep
+        run: |
+          set -euo pipefail
+          sh tests/run.sh
+
+      - name: Commit and push if changed
+        env:
+          FORCE: ${{ inputs.force || 'false' }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add unlock/domains/all.txt unlock/domains/SOURCES.md unlock/domains/geosite-sources.txt 2>/dev/null || true
+          git add unlock/domains/all.txt
+          if git diff --cached --quiet; then
+            if [ "$FORCE" = "true" ]; then
+              echo "No domain changes; force requested but nothing to commit."
+            else
+              echo "No domain changes."
+            fi
+            exit 0
+          fi
+          count="$(wc -l < unlock/domains/all.txt | tr -d ' ')"
+          git commit -m "chore(unlock): refresh geosite domain list (${count})"
+          git push origin HEAD:main

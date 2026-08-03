@@ -9,7 +9,7 @@
 - Fail closed：Zero Trust 注册/连接/`warp=on` 任一步失败，SmartDNS/sniproxy/SOCKS5 不启动或容器退出
 - Let’s Encrypt：仅在启用 DoT/DoH 时签发共用 TLS 证书；纯明文 DNS **不需要**域名/证书
 - IP/CIDR 白名单：DNS、DoT、DoH、80、443、SOCKS5，并保证 WARP 全隧道下的回程
-- 域名规则：合并 StreamConfig + 1-stream，有效 FQDN 共 588 条（不含 Google / YouTube）
+- 域名规则：每日从 MetaCubeX geosite 合并发布 `domains/all.txt`（固定 raw URL），容器 04:00 自动拉取热更新；不含 Google / YouTube
 - GitHub Actions：仅手动发布，多架构 amd64/arm64，版本号必填
 
 > `cloudflared Tunnel` 只解决入站连接，不能把 sniproxy 的源站出站流量送入 WARP，因此本方案不使用它实现解锁。这里使用官方 `warp-svc` 的 Zero Trust Traffic-only 隧道。
@@ -365,15 +365,36 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 
 ---
 
-## 7. 域名规则
+## 7. 域名规则（geosite 日更）
 
-`scripts/gen-domains.sh` 合并：
+发布清单（固定 URL，容器默认识别）：
 
-1. `StreamConfig.yaml`：514 条。
-2. `domains/1stream.txt`：从 `1-stream/1stream-public-utils/stream.smartdns.list` 规范化出的 573 条 FQDN。
-3. 合并去重后 `domains/all.txt`：588 条有效 FQDN。
+```text
+https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock/domains/all.txt
+```
 
-不直接覆盖旧表，因为两份来源各自有独有域名；例如 1-stream 补充了 Bilibili、Radiko、meWATCH、StarHub、Shahid、Claude/Sora 等，原 StreamConfig 则保留 Spotify 域名。Google / YouTube 相关域名已从两边剔除。来源与快照哈希见 `domains/SOURCES.md`。
+### 上游构建（GitHub Actions，每天 03:00 上海时区）
+
+工作流：`.github/workflows/update-unlock-domains.yml`（`0 19 * * *` UTC）
+
+1. 拉取 `MetaCubeX/meta-rules-dat` 的 `meta` 分支 `geo/geosite`
+2. 按 `domains/geosite-sources.txt` 列出的服务 basenames 合并 `.list`
+3. 再并入 `StreamConfig.yaml` + `domains/1stream.txt` 作为无 geosite 条目时的补充
+4. 规范化 mihomo 标记：`+.` / `*.` → 裸 FQDN（按 DOMAIN-SUFFIX 语义存储）
+5. **剔除** Google / YouTube 族域名后写回 `domains/all.txt` 并 push `main`
+
+### 容器热更新（默认 04:00）
+
+`scripts/domain-updater.sh`：
+
+- 启动时用镜像内嵌 `domains/all.txt` 打底，并 best-effort 拉一次远程
+- 每天 `DOMAIN_UPDATE_HOUR:DOMAIN_UPDATE_MINUTE`（默认 4:00，跟随容器 `TZ`）再拉
+- 变更后重建配置：SmartDNS `SIGHUP`，sniproxy 重启
+- 远程列表过小 / 含 Google/YouTube / 缺核心域名 → **拒绝并保留旧表**
+
+相关环境变量见 `.env.example` 的 `ENABLE_DOMAIN_AUTO_UPDATE` / `DOMAIN_LIST_URL` / `MIN_DOMAIN_COUNT`。
+
+匹配语义：列表存裸 FQDN；SmartDNS `address /domain/ip` 与 sniproxy `(^|\.)domain$` 覆盖本域及子域。详情与来源见 `domains/SOURCES.md`。
 
 默认 `FORCE_AAAA_SOA=yes`，防止 IPv4 解锁机上的客户端通过 AAAA 直连真实流媒体源站绕过 sniproxy。
 
@@ -407,8 +428,12 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 | `SOCKS5_USERNAME` / `SOCKS5_PASSWORD` | 无 | SOCKS5 用户名/密码（RFC1929 任意 1–255 字节），启用时必填 |
 | `SOCKS5_ALLOWED_IPS` | 无 | SOCKS5 独立 CIDR 白名单，启用时必填，不继承 `ALLOWED_IPS`；支持任意 CIDR |
 | `FORCE_AAAA_SOA` | `yes` | IPv4 部署防止 AAAA 绕过 |
-| `PLATFORMS` | `all` | StreamConfig 平台过滤 |
-| `REGIONS` | 空 | StreamConfig 地区过滤 |
+| `PLATFORMS` | `all` | StreamConfig 平台过滤（仅 streamconfig 回退路径） |
+| `REGIONS` | 空 | StreamConfig 地区过滤（仅 streamconfig 回退路径） |
+| `ENABLE_DOMAIN_AUTO_UPDATE` | `1` | 是否按 `DOMAIN_LIST_URL` 日更域名 |
+| `DOMAIN_LIST_URL` | raw `.../unlock/domains/all.txt` | 发布清单固定 URL |
+| `DOMAIN_UPDATE_HOUR` / `DOMAIN_UPDATE_MINUTE` | `4` / `0` | 容器内日更时刻（`TZ`） |
+| `MIN_DOMAIN_COUNT` | `800` | 远程清单最小行数，过小则拒绝 |
 
 至少启用 `ENABLE_DNS` / `ENABLE_DOT` / `ENABLE_DOH` 之一。
 
@@ -445,7 +470,7 @@ sh tests/run.sh
 
 覆盖：
 
-- 588 条合并域名规则（已排除 Google / YouTube）
+- MetaCubeX geosite 日更域名清单 + 容器 04:00 热更新（排除 Google / YouTube）
 - SmartDNS 明文 DNS / DoT / DoH 独立开关、自定义端口、纯明文无域名、证书路径、AAAA 防绕过、三关拒绝
 - Let’s Encrypt DNS-01 签发/续期/SmartDNS 重载；纯 DNS 时 cert-manager 跳过
 - 官方 WARP MDM Service Token、`tunnelonly`、MASQUE、Consumer 拒绝

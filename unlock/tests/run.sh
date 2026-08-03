@@ -11,22 +11,31 @@ for f in scripts/*.sh tests/*.sh; do
 done
 
 echo "== gen-domains =="
-# CI runs inside unlock/ without UNLOCK_ROOT; the script must find checkout files.
-env -u UNLOCK_ROOT sh scripts/gen-domains.sh
+# Bundled all.txt is the geosite artifact; keep mode must not wipe it.
+env -u UNLOCK_ROOT DOMAIN_SOURCE=keep sh scripts/gen-domains.sh
 test -s domains/all.txt || fail=1
-# Image mode still supports its explicit /opt/unlock root.
-UNLOCK_ROOT="$ROOT" sh scripts/gen-domains.sh
+UNLOCK_ROOT="$ROOT" DOMAIN_SOURCE=auto sh scripts/gen-domains.sh
 test -s domains/all.txt || fail=1
 count="$(wc -l < domains/all.txt | tr -d ' ')"
 echo "domains=$count"
-[ "$count" -ge 588 ] || { echo "merged domain list is incomplete (<588)"; fail=1; }
+[ "$count" -ge 800 ] || { echo "merged domain list is incomplete (<800)"; fail=1; }
 grep -qx 'claude.com' domains/all.txt || { echo "missing 1-stream supplemental domain claude.com"; fail=1; }
 grep -qx 'spotify.com' domains/all.txt || { echo "missing StreamConfig-only domain spotify.com"; fail=1; }
+# Core geosite unlock targets must be present.
+grep -qx 'bamgrid.com' domains/all.txt || { echo "missing Disney core domain bamgrid.com"; fail=1; }
+grep -qx 'netflix.com' domains/all.txt || { echo "missing Netflix domain netflix.com"; fail=1; }
+grep -qx 'disneyplus.com' domains/all.txt || { echo "missing Disney domain disneyplus.com"; fail=1; }
+grep -qx 'starplus.com' domains/all.txt || { echo "missing Disney domain starplus.com"; fail=1; }
 # Google / YouTube intentionally excluded from unlock domain set.
-if grep -qiE 'google|googleapis|youtube' domains/all.txt; then
+if grep -qiE '(^|\.)(google|googleapis|gstatic|youtube|ytimg)(\.|$)' domains/all.txt; then
   echo "google-related domains must not appear in domains/all.txt"
   fail=1
 fi
+# geosite source map and builder must exist
+test -f domains/geosite-sources.txt || fail=1
+test -f scripts/build-geosite-domains.sh || fail=1
+test -f scripts/domain-updater.sh || fail=1
+grep -q 'DOMAIN_LIST_URL' .env.example || fail=1
 
 echo "== gen-configs smoke =="
 tmp="$(mktemp -d)"

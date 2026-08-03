@@ -222,9 +222,10 @@ listen $HTTPS_PORT {
 table https_hosts {
 EOF
   printf '%s\n' "$DOMAIN_LIST" | sed '/^$/d' | while IFS= read -r d; do
-    # regex match suffix domain
+    # DOMAIN-SUFFIX style: match the FQDN itself or any real subdomain.
+    # Use (^|\.) boundary so short labels like go.com do not match evilgo.com.
     esc="$(printf '%s' "$d" | sed 's/\./\\./g')"
-    printf '    .*%s$ *\n' "$esc"
+    printf '    (^|\\.)%s$ *\n' "$esc"
   done
   echo "}"
 } > "$CONF_DIR/sniproxy.conf"

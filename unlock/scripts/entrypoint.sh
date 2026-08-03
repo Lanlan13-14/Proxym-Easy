@@ -11,7 +11,20 @@ log() { echo " >> [entrypoint] $*"; }
 
 # DoT certificate first: DNS-01 does not depend on WARP or inbound 80/443.
 "$ROOT/scripts/cert-manager.sh" ensure
-"$ROOT/scripts/gen-domains.sh"
+
+# Domain list: seed runtime copy from image artifact, then optional remote pull.
+# The published list is rebuilt daily by GitHub Actions from MetaCubeX geosite.
+export DOMAINS_FILE="${DOMAINS_FILE:-$RUNTIME_DIR/domains.all.txt}"
+export BUNDLED_DOMAINS="${BUNDLED_DOMAINS:-$ROOT/domains/all.txt}"
+"$ROOT/scripts/domain-updater.sh" seed
+# Best-effort boot refresh; failure keeps the bundled/seeded list.
+"$ROOT/scripts/domain-updater.sh" once || log "boot domain refresh skipped/failed; continue with local list"
+# Keep offline fallback generator available for empty/broken images.
+if [ ! -s "$DOMAINS_FILE" ]; then
+  DOMAIN_SOURCE=streamconfig DOMAINS_DIR="$RUNTIME_DIR" OUT_FILE="$DOMAINS_FILE" \
+    "$ROOT/scripts/gen-domains.sh"
+fi
+
 # Resolve public upstream names before WARP enters Traffic-only mode. SmartDNS
 # then uses numeric endpoints and never depends on WARP changing /etc/resolv.conf.
 UPSTREAM_DNS="${UPSTREAM_DNS:-1.1.1.1,1.0.0.1,8.8.8.8}"
@@ -88,6 +101,8 @@ fi
 echo $! >"$RUNTIME_DIR/cert-manager.pid"
 "$ROOT/scripts/warp-zt.sh" supervise >"$RUNTIME_DIR/warp-supervisor.log" 2>&1 &
 echo $! >"$RUNTIME_DIR/warp-supervisor.pid"
+"$ROOT/scripts/domain-updater.sh" loop >"$RUNTIME_DIR/domain-updater.log" 2>&1 &
+echo $! >"$RUNTIME_DIR/domain-updater.pid"
 
 log "ready: DNS/DoT/DoH -> sniproxy -> Cloudflare Zero Trust WARP"
 log "  organization=${WARP_ORGANIZATION}"
