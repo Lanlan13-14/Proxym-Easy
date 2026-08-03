@@ -19,7 +19,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget openssl procps iproute2 iptables nftables \
       dbus libdbus-1-3 libnss3 libnspr4 libpcap0.8 libtss2-esys-3.0.2-0 \
-      libtss2-tctildr0 libgcc-s1 sniproxy dnsutils \
+      libtss2-tctildr0 libgcc-s1 sniproxy dnsutils dante-server passwd \
     && rm -rf /var/lib/apt/lists/*
 
 # SmartDNS official self-contained runtime, amd64 + arm64.
@@ -71,6 +71,6 @@ RUN chmod +x /opt/unlock/scripts/*.sh \
 HEALTHCHECK --interval=30s --timeout=15s --start-period=180s --retries=3 \
   CMD ["/opt/unlock/scripts/healthcheck.sh"]
 
-# Plain DNS/53 remains internal. Public service ports: DoT + transparent SNI.
-EXPOSE 853/tcp 80/tcp 443/tcp
+# Plain DNS/53 remains internal. SOCKS ports are opt-in in Compose.
+EXPOSE 853/tcp 80/tcp 443/tcp 1080/tcp
 ENTRYPOINT ["/opt/unlock/scripts/entrypoint.sh"]

@@ -1,0 +1,19 @@
+# Generated at runtime by scripts/start-socks.sh — reference only.
+# Username authentication uses the container account created from SOCKS5_* env.
+logoutput: stderr
+internal: 0.0.0.0 port = 1080
+# At runtime this is the CloudflareWARP interface IPv4.
+external: 192.168.100.2
+socksmethod: username
+clientmethod: none
+user.privileged: root
+user.unprivileged: nobody
+client pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+}
+socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    command: connect
+    protocol: tcp
+    socksmethod: username
+}

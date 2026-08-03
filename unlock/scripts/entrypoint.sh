@@ -70,6 +70,10 @@ if ! kill -0 "$(cat "$RUNTIME_DIR/sniproxy.pid")" 2>/dev/null; then
   exit 1
 fi
 
+# Optional SOCKS5: separate source whitelist and username/password. It starts
+# only after WARP has passed its mandatory egress validation.
+"$ROOT/scripts/start-socks.sh" start
+
 "$ROOT/scripts/cert-manager.sh" renew-loop >"$RUNTIME_DIR/cert-manager.log" 2>&1 &
 echo $! >"$RUNTIME_DIR/cert-manager.pid"
 "$ROOT/scripts/warp-zt.sh" supervise >"$RUNTIME_DIR/warp-supervisor.log" 2>&1 &
@@ -86,11 +90,13 @@ while true; do
   if [ -f "$RUNTIME_DIR/warp-restart-required" ]; then
     log "scheduled Zero Trust restart; stopping sniproxy and exiting"
     kill "$(cat "$RUNTIME_DIR/sniproxy.pid")" 2>/dev/null || true
+    [ ! -f "$RUNTIME_DIR/danted.pid" ] || kill "$(cat "$RUNTIME_DIR/danted.pid")" 2>/dev/null || true
     exit 1
   fi
   "$ROOT/scripts/warp-zt.sh" status || {
-    log "Zero Trust WARP unhealthy; stopping sniproxy and exiting"
+    log "Zero Trust WARP unhealthy; stopping sniproxy/SOCKS and exiting"
     [ ! -f "$RUNTIME_DIR/sniproxy.pid" ] || kill "$(cat "$RUNTIME_DIR/sniproxy.pid")" 2>/dev/null || true
+    [ ! -f "$RUNTIME_DIR/danted.pid" ] || kill "$(cat "$RUNTIME_DIR/danted.pid")" 2>/dev/null || true
     exit 1
   }
   for name in smartdns sniproxy; do
@@ -100,5 +106,13 @@ while true; do
       exit 1
     }
   done
+  case "${ENABLE_SOCKS5:-0}" in
+    1|true|yes)
+      [ -f "$RUNTIME_DIR/danted.pid" ] && kill -0 "$(cat "$RUNTIME_DIR/danted.pid")" 2>/dev/null || {
+        log "SOCKS5 danted died; exiting for clean container restart"
+        exit 1
+      }
+      ;;
+  esac
   sleep 10
 done

@@ -1,86 +1,65 @@
 #!/bin/sh
-# Apply IP whitelist for DNS unlock ports using nftables (fallback iptables).
-# ALLOWED_IPS: comma-separated CIDRs/IPs. Empty = allow all (not recommended).
 set -eu
 
+RUNTIME_DIR="${RUNTIME_DIR:-/run/unlock}"
 ALLOWED_IPS="${ALLOWED_IPS:-}"
-DNS_UDP_PORT="${DNS_UDP_PORT:-53}"
+ENABLE_ACL="${ENABLE_ACL:-1}"
+ENABLE_SOCKS5="${ENABLE_SOCKS5:-0}"
+SOCKS5_ALLOWED_IPS="${SOCKS5_ALLOWED_IPS:-}"
+SOCKS5_PORT="${SOCKS5_PORT:-1080}"
+DNS_PORT="${DNS_UDP_PORT:-53}"
 DOT_PORT="${DOT_PORT:-853}"
-# Transparent DNS unlock always proxies the web ports clients actually use.
-HTTP_PORT=80
-HTTPS_PORT=443
-ACL_TABLE="${ACL_TABLE:-unlock_acl}"
 
-ports="$DNS_UDP_PORT,$DOT_PORT,$HTTP_PORT,$HTTPS_PORT"
+log() { echo " >> [apply-acl] $*"; }
+fail() { log "ERROR: $*" >&2; exit 1; }
 
-if [ -z "$ALLOWED_IPS" ]; then
-  echo " >> apply-acl: ERROR ALLOWED_IPS is empty; refusing to expose DNS/DoT/SNI proxy without a whitelist" >&2
-  exit 1
-fi
+case "$ENABLE_ACL" in 1|true|yes) ;; 0|false|no) log "ACL disabled explicitly"; exit 0 ;; *) fail "ENABLE_ACL must be 0 or 1" ;; esac
+[ -n "$ALLOWED_IPS" ] || fail "ALLOWED_IPS is required for DNS/SNI services"
+case "$ENABLE_SOCKS5" in 1|true|yes) ENABLE_SOCKS5=1; [ -n "$SOCKS5_ALLOWED_IPS" ] || fail "SOCKS5_ALLOWED_IPS is required when SOCKS5 is enabled" ;; 0|false|no|'') ENABLE_SOCKS5=0 ;; *) fail "ENABLE_SOCKS5 must be 0 or 1" ;; esac
 
-# Normalize list
-list="$(printf '%s' "$ALLOWED_IPS" | tr ',' ' ' | xargs)"
+TABLE="unlock_acl"
+nft delete table inet "$TABLE" 2>/dev/null || true
+nft add table inet "$TABLE"
+nft 'add chain inet unlock_acl input { type filter hook input priority filter - 10; policy accept; }'
+nft add rule inet "$TABLE" input iif lo accept
 
-apply_nft() {
-  command -v nft >/dev/null 2>&1 || return 1
-  nft list table inet "$ACL_TABLE" >/dev/null 2>&1 && nft delete table inet "$ACL_TABLE" || true
-  nft add table inet "$ACL_TABLE"
-  nft add chain inet "$ACL_TABLE" input '{ type filter hook input priority -10; policy accept; }'
-
-  # Always allow loopback
-  nft add rule inet "$ACL_TABLE" input iif lo accept
-
-  # For unlock ports: accept whitelist, drop others
-  for p in $(printf '%s' "$ports" | tr ',' ' '); do
-    for ip in $list; do
-      case "$ip" in
-        *:*) # v6
-          nft add rule inet "$ACL_TABLE" input ip6 saddr "$ip" tcp dport "$p" accept 2>/dev/null || true
-          nft add rule inet "$ACL_TABLE" input ip6 saddr "$ip" udp dport "$p" accept 2>/dev/null || true
-          ;;
-        *)
-          nft add rule inet "$ACL_TABLE" input ip saddr "$ip" tcp dport "$p" accept
-          nft add rule inet "$ACL_TABLE" input ip saddr "$ip" udp dport "$p" accept
-          ;;
-      esac
-    done
-    nft add rule inet "$ACL_TABLE" input tcp dport "$p" drop
-    nft add rule inet "$ACL_TABLE" input udp dport "$p" drop
+add_cidrs() {
+  cidrs="$1"; shift
+  oldifs="$IFS"; IFS=','
+  for cidr in $cidrs; do
+    cidr="$(printf '%s' "$cidr" | tr -d ' ')"
+    [ -n "$cidr" ] || continue
+    case "$cidr" in
+      *:*) nft add rule inet "$TABLE" input ip6 saddr "$cidr" "$@" ;;
+      *)   nft add rule inet "$TABLE" input ip saddr "$cidr" "$@" ;;
+    esac
   done
-  echo " >> apply-acl: nftables table $ACL_TABLE applied for ports $ports"
-  return 0
+  IFS="$oldifs"
 }
 
-apply_iptables() {
-  command -v iptables >/dev/null 2>&1 || return 1
-  # Clean previous chain
-  iptables -D INPUT -j UNLOCK_ACL 2>/dev/null || true
-  iptables -F UNLOCK_ACL 2>/dev/null || true
-  iptables -X UNLOCK_ACL 2>/dev/null || true
-  iptables -N UNLOCK_ACL
-  iptables -A UNLOCK_ACL -i lo -j ACCEPT
-  for p in $(printf '%s' "$ports" | tr ',' ' '); do
-    for ip in $list; do
-      case "$ip" in
-        *:*) continue ;; # skip v6 in iptables path
-      esac
-      iptables -A UNLOCK_ACL -p tcp --dport "$p" -s "$ip" -j ACCEPT
-      iptables -A UNLOCK_ACL -p udp --dport "$p" -s "$ip" -j ACCEPT
-    done
-    iptables -A UNLOCK_ACL -p tcp --dport "$p" -j DROP
-    iptables -A UNLOCK_ACL -p udp --dport "$p" -j DROP
-  done
-  iptables -I INPUT 1 -j UNLOCK_ACL
-  echo " >> apply-acl: iptables chain UNLOCK_ACL applied for ports $ports"
-  return 0
-}
+# DNS/SNI whitelist: only ports whose connection must originate at the client.
+for proto in tcp udp; do
+  add_cidrs "$ALLOWED_IPS" "$proto" dport "$DNS_PORT" accept
+  add_cidrs "$ALLOWED_IPS" "$proto" dport "$DOT_PORT" accept
+  add_cidrs "$ALLOWED_IPS" "$proto" dport 80 accept
+  add_cidrs "$ALLOWED_IPS" "$proto" dport 443 accept
+done
+for proto in tcp udp; do
+  nft add rule inet "$TABLE" input "$proto" dport "$DNS_PORT" drop
+  nft add rule inet "$TABLE" input "$proto" dport "$DOT_PORT" drop
+  nft add rule inet "$TABLE" input "$proto" dport 80 drop
+  nft add rule inet "$TABLE" input "$proto" dport 443 drop
+done
 
-if apply_nft; then
-  exit 0
-fi
-if apply_iptables; then
-  exit 0
-fi
+# SOCKS uses an independent CIDR list. DNS/SNI ALLOWED_IPS never authorizes
+# SOCKS access.
+case "$ENABLE_SOCKS5" in
+  1)
+    [ "$SOCKS5_PORT" -ge 1 ] 2>/dev/null && [ "$SOCKS5_PORT" -le 65535 ] 2>/dev/null || fail "invalid SOCKS5_PORT"
+    add_cidrs "$SOCKS5_ALLOWED_IPS" tcp dport "$SOCKS5_PORT" accept
+    nft add rule inet "$TABLE" input tcp dport "$SOCKS5_PORT" drop
+    log "SOCKS5 ACL applied: TCP $SOCKS5_PORT"
+    ;;
+esac
 
-echo " >> apply-acl: WARNING neither nft nor iptables available; ACL not enforced" >&2
-exit 0
+log "DNS/SNI ACL applied for DNS=$DNS_PORT DoT=$DOT_PORT HTTP=80 HTTPS=443"

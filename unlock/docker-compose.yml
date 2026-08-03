@@ -34,6 +34,12 @@ services:
       WARP_REGISTER_TIMEOUT: ${WARP_REGISTER_TIMEOUT:-240}
       WARP_CONNECT_TIMEOUT: ${WARP_CONNECT_TIMEOUT:-120}
       ZT_RESTART_HOURS: ${ZT_RESTART_HOURS:-12}
+      # Optional SOCKS5; uses independent IP ACL and username/password.
+      ENABLE_SOCKS5: ${ENABLE_SOCKS5:-0}
+      SOCKS5_PORT: ${SOCKS5_PORT:-1080}
+      SOCKS5_USERNAME: ${SOCKS5_USERNAME:-}
+      SOCKS5_PASSWORD: ${SOCKS5_PASSWORD:-}
+      SOCKS5_ALLOWED_IPS: ${SOCKS5_ALLOWED_IPS:-}
     ports:
       # Public clients use DoT only; plaintext DNS/53 stays container-internal.
       - "${DOT_PORT:-853}:${DOT_PORT:-853}/tcp"

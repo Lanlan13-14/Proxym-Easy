@@ -132,9 +132,16 @@ ensure_nft_accept() {
 }
 
 fix_return_routes() {
-  # Preserve replies to external clients and the Docker subnet so published
-  # DoT/SNI ports are not swallowed by WARP's firewall/policy routing.
+  # Preserve replies to each independently ACLed public service. SOCKS5 does
+  # not inherit ALLOWED_IPS, so its CIDRs must join WARP return routing too.
   routes="$ALLOWED_IPS"
+  case "${ENABLE_SOCKS5:-0}" in
+    1|true|yes)
+      [ -n "${SOCKS5_ALLOWED_IPS:-}" ] || fail "SOCKS5_ALLOWED_IPS is required when SOCKS5 is enabled"
+      routes="$routes,$SOCKS5_ALLOWED_IPS"
+      ;;
+  esac
+  # Preserve Docker subnet too, so published ports retain their host path.
   docker_cidr="$(ip -4 route show dev eth0 proto kernel 2>/dev/null | awk 'NR==1{print $1}')"
   [ -z "$docker_cidr" ] || routes="$routes,$docker_cidr"
 
@@ -159,7 +166,7 @@ fix_return_routes() {
     esac
   done
   IFS="$oldifs"
-  log "preserved inbound client return path for ALLOWED_IPS and Docker subnet"
+  log "preserved inbound return paths for DNS ACL, optional SOCKS ACL, and Docker subnet"
 }
 
 trace_request() {

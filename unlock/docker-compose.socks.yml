@@ -1,0 +1,6 @@
+# Apply with: docker compose -f docker-compose.yml -f docker-compose.socks.yml up -d
+# Also set ENABLE_SOCKS5=1 and the SOCKS5_* values in .env.
+services:
+  unlock:
+    ports:
+      - "${SOCKS5_PORT:-1080}:${SOCKS5_PORT:-1080}/tcp"

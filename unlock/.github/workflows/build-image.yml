@@ -45,6 +45,8 @@ jobs:
         working-directory: unlock
     steps:
       - uses: actions/checkout@v4
+      - name: Install SOCKS5 runtime test dependency
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dante-server
       - name: Shell syntax
         run: |
           set -e
@@ -55,6 +57,8 @@ jobs:
           test -s domains/all.txt
       - name: Unit tests
         run: sh tests/run.sh
+      - name: Dante username/password runtime
+        run: sudo python3 tests/dante-runtime.py
 
   publish:
     needs: [prepare, test]

@@ -65,6 +65,9 @@ sh tests/cert-manager.test.sh || fail=1
 echo "== mandatory Cloudflare Zero Trust WARP =="
 sh tests/warp-zt.test.sh || fail=1
 
+echo "== optional SOCKS5 independent access controls =="
+sh tests/socks.test.sh || fail=1
+
 echo "== dockerfile context isolation =="
 # Ensure Dockerfile only COPY . (relative to unlock/)
 grep -q '^COPY \. /opt/unlock/' Dockerfile || { echo "Dockerfile COPY not isolated"; fail=1; }
@@ -93,6 +96,9 @@ grep -q 'WARP_CLIENT_ID' docker-compose.yml || { echo "compose missing Zero Trus
 grep -q 'WARP_CLIENT_SECRET' docker-compose.yml || { echo "compose missing Zero Trust Client Secret"; fail=1; }
 grep -q 'cloudflare-warp_' Dockerfile || { echo "official Cloudflare One Client package missing"; fail=1; }
 grep -q 'warp-svc' Dockerfile || { echo "official warp-svc missing"; fail=1; }
+grep -q 'dante-server' Dockerfile || { echo "Dante SOCKS5 server missing"; fail=1; }
+grep -q 'start-socks.sh' scripts/entrypoint.sh || { echo "SOCKS5 startup not wired"; fail=1; }
+grep -q 'SOCKS5_ALLOWED_IPS' docker-compose.yml || { echo "SOCKS5 independent ACL missing"; fail=1; }
 
 echo "== .dockerignore present =="
 test -f .dockerignore || { echo "missing .dockerignore"; fail=1; }
