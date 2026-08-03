@@ -100,13 +100,13 @@ while true; do
   if [ -f "$RUNTIME_DIR/warp-restart-required" ]; then
     log "scheduled Zero Trust restart; stopping sniproxy and exiting"
     kill "$(cat "$RUNTIME_DIR/sniproxy.pid")" 2>/dev/null || true
-    [ ! -f "$RUNTIME_DIR/danted.pid" ] || kill "$(cat "$RUNTIME_DIR/danted.pid")" 2>/dev/null || true
+    [ ! -f "$RUNTIME_DIR/socks5d.pid" ] || kill "$(cat "$RUNTIME_DIR/socks5d.pid")" 2>/dev/null || true
     exit 1
   fi
   "$ROOT/scripts/warp-zt.sh" status || {
     log "Zero Trust WARP unhealthy; stopping sniproxy/SOCKS and exiting"
     [ ! -f "$RUNTIME_DIR/sniproxy.pid" ] || kill "$(cat "$RUNTIME_DIR/sniproxy.pid")" 2>/dev/null || true
-    [ ! -f "$RUNTIME_DIR/danted.pid" ] || kill "$(cat "$RUNTIME_DIR/danted.pid")" 2>/dev/null || true
+    [ ! -f "$RUNTIME_DIR/socks5d.pid" ] || kill "$(cat "$RUNTIME_DIR/socks5d.pid")" 2>/dev/null || true
     exit 1
   }
   for name in smartdns sniproxy; do
@@ -118,8 +118,8 @@ while true; do
   done
   case "${ENABLE_SOCKS5:-0}" in
     1|true|yes)
-      [ -f "$RUNTIME_DIR/danted.pid" ] && kill -0 "$(cat "$RUNTIME_DIR/danted.pid")" 2>/dev/null || {
-        log "SOCKS5 danted died; exiting for clean container restart"
+      [ -f "$RUNTIME_DIR/socks5d.pid" ] && kill -0 "$(cat "$RUNTIME_DIR/socks5d.pid")" 2>/dev/null || {
+        log "SOCKS5 unlock-socks5d died; exiting for clean container restart"
         exit 1
       }
       ;;

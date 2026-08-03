@@ -46,8 +46,6 @@ jobs:
         working-directory: unlock
     steps:
       - uses: actions/checkout@v4
-      - name: Install SOCKS5 runtime test dependency
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dante-server
       - name: Docs/config consistency
         run: |
           set -e
@@ -56,6 +54,10 @@ jobs:
           grep -q 'DOT_TLS_MODE' README.md .env.example
           grep -q 'ENABLE_ACL' README.md .env.example
           grep -q 'SOCKS5_PORT' README.md .env.example docker-compose.yml
+          # Free-charset SOCKS auth (not Linux account rules).
+          grep -q 'RFC1929' README.md .env.example || grep -q '1-255' README.md .env.example
+          ! grep -q 'dante-server' Dockerfile
+          test -f scripts/socks5d.c
       - name: Shell syntax
         run: |
           set -e
@@ -71,8 +73,8 @@ jobs:
           wc -l domains/all.txt
       - name: Unit tests
         run: sh tests/run.sh
-      - name: Dante username/password runtime
-        run: sudo python3 tests/dante-runtime.py
+      - name: SOCKS5 free-charset runtime
+        run: python3 tests/socks5-runtime.py
 
   publish:
     needs: [prepare, test]

@@ -67,6 +67,8 @@ sh tests/warp-zt.test.sh || fail=1
 
 echo "== optional SOCKS5 independent access controls =="
 sh tests/socks.test.sh || fail=1
+echo "== SOCKS5 free-charset runtime =="
+python3 tests/socks5-runtime.py || fail=1
 
 echo "== dockerfile context isolation =="
 # Ensure Dockerfile only COPY . (relative to unlock/)
@@ -96,7 +98,12 @@ grep -q 'WARP_CLIENT_ID' docker-compose.yml || { echo "compose missing Zero Trus
 grep -q 'WARP_CLIENT_SECRET' docker-compose.yml || { echo "compose missing Zero Trust Client Secret"; fail=1; }
 grep -q 'cloudflare-warp_' Dockerfile || { echo "official Cloudflare One Client package missing"; fail=1; }
 grep -q 'warp-svc' Dockerfile || { echo "official warp-svc missing"; fail=1; }
-grep -q 'dante-server' Dockerfile || { echo "Dante SOCKS5 server missing"; fail=1; }
+grep -q 'unlock-socks5d' Dockerfile || { echo "unlock-socks5d SOCKS5 server missing"; fail=1; }
+grep -q 'socks5d.c' Dockerfile || { echo "socks5d.c not built in image"; fail=1; }
+if grep -q 'dante-server' Dockerfile; then
+  echo "Dockerfile still installs dante-server"
+  fail=1
+fi
 grep -q 'start-socks.sh' scripts/entrypoint.sh || { echo "SOCKS5 startup not wired"; fail=1; }
 grep -q 'SOCKS5_ALLOWED_IPS' docker-compose.yml || { echo "SOCKS5 independent ACL missing"; fail=1; }
 

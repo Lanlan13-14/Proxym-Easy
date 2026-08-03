@@ -16,7 +16,7 @@ alive "$RUNTIME_DIR/sniproxy.pid"
 alive "$RUNTIME_DIR/smartdns.pid"
 case "${ENABLE_SOCKS5:-0}" in
     1|true|yes)
-      alive "$RUNTIME_DIR/danted.pid"
+      alive "$RUNTIME_DIR/socks5d.pid"
       ;;
   esac
 "$ROOT/scripts/warp-zt.sh" status

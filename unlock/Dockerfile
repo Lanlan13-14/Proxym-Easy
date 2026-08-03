@@ -16,10 +16,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     RUNTIME_DIR=/run/unlock
 
 # Headless-only dependencies. Do not install the WARP GUI/WebKit package.
+# SOCKS5 is unlock-socks5d (RFC1929 free-charset auth), not Dante/system users.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget openssl procps iproute2 iptables nftables \
       dbus libdbus-1-3 libnss3 libnspr4 libpcap0.8 libtss2-esys-3.0.2-0 \
-      libtss2-tctildr0 libgcc-s1 sniproxy dnsutils dante-server passwd \
+      libtss2-tctildr0 libgcc-s1 sniproxy dnsutils gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # SmartDNS official self-contained runtime, amd64 + arm64.
@@ -62,9 +63,15 @@ RUN set -eu; \
 WORKDIR /opt/unlock
 COPY . /opt/unlock/
 
+# Build the free-charset SOCKS5 daemon, then drop the compiler toolchain.
 # tests/ is intentionally excluded by .dockerignore; only runtime scripts are
 # made executable inside the image.
-RUN chmod +x /opt/unlock/scripts/*.sh \
+RUN gcc -O2 -Wall -Wextra -o /usr/local/bin/unlock-socks5d /opt/unlock/scripts/socks5d.c \
+    && strip /usr/local/bin/unlock-socks5d \
+    && apt-get purge -y gcc libc6-dev \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod +x /opt/unlock/scripts/*.sh \
     && mkdir -p /etc/unlock /run/unlock /var/log/unlock /var/lib/cloudflare-warp /dev/net
 # /dev/net/tun is created at runtime after Docker grants MKNOD + cgroup access.
 

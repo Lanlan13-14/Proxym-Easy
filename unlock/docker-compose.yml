@@ -45,8 +45,8 @@ services:
       - "${DOT_PORT:-853}:${DOT_PORT:-853}/tcp"
       - "80:80/tcp"
       - "443:443/tcp"
-      # SOCKS5 TCP port is mapped by this single Compose file. Dante listens
-      # only when ENABLE_SOCKS5=1; otherwise no SOCKS service is available.
+      # SOCKS5 TCP port is mapped by this single Compose file. unlock-socks5d
+      # listens only when ENABLE_SOCKS5=1; otherwise no SOCKS service is available.
       - "${SOCKS5_PORT:-1080}:${SOCKS5_PORT:-1080}/tcp"
     volumes:
       - unlock-data:/etc/unlock

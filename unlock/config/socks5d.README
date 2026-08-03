@@ -1,0 +1,10 @@
+# unlock-socks5d
+
+Runtime SOCKS5 TCP CONNECT proxy with RFC1929 username/password auth.
+
+- Binary: `/usr/local/bin/unlock-socks5d` (built from `scripts/socks5d.c`)
+- Credentials: env `SOCKS5_USERNAME` / `SOCKS5_PASSWORD` (1-255 bytes each, free charset)
+- Outbound bind: `--bind-ip <CloudflareWARP IPv4>` so egress stays on Zero Trust WARP
+- No Linux account creation, no Dante, no `/etc/shadow`
+
+Started by `scripts/start-socks.sh` after WARP is ready.
