@@ -1,0 +1,11 @@
+# Lanlan13-14/Rules Clash Domain YAML basenames (main branch).
+# Path: rules/Domain/<name>.yaml
+# Format: payload list of DOMAIN-SUFFIX-style entries, usually quoted as '*.example.com'.
+# Multi-level wildcards like '*.*.example.com' normalize to bare example.com.
+# Used by scripts/build-geosite-domains.sh daily rebuild.
+
+streaming_hk
+streaming_sg
+streaming_tw
+streaming_uk
+tvb

@@ -52,11 +52,30 @@ grep -qx 'dmm.co.jp' domains/all.txt || { echo "missing DMM domain dmm.co.jp"; f
 grep -qx 'api-p.videomarket.jp' domains/all.txt || { echo "missing DMM domain api-p.videomarket.jp"; fail=1; }
 grep -qx 'dmmapis.com' domains/all.txt || { echo "missing DMM domain dmmapis.com"; fail=1; }
 grep -qE '^dmm$' domains/geosite-sources.txt || { echo "geosite-sources missing dmm"; fail=1; }
+# Rules Domain YAML sources (HK/SG/TW/UK/TVB) must be wired in.
+test -f domains/rules-domain-sources.txt || fail=1
+for must in streaming_hk streaming_sg streaming_tw streaming_uk tvb; do
+  grep -qE "^${must}$" domains/rules-domain-sources.txt || {
+    echo "rules-domain-sources missing $must"
+    fail=1
+  }
+done
+grep -qx 'mytvsuper.com' domains/all.txt || { echo "missing Rules HK domain mytvsuper.com"; fail=1; }
+grep -qx 'mewatch.sg' domains/all.txt || { echo "missing Rules SG domain mewatch.sg"; fail=1; }
+grep -qx 'friday.tw' domains/all.txt || { echo "missing Rules TW domain friday.tw"; fail=1; }
+grep -qx 'itv.com' domains/all.txt || { echo "missing Rules UK domain itv.com"; fail=1; }
+grep -qx 'tvbanywhere.com' domains/all.txt || { echo "missing Rules TVB domain tvbanywhere.com"; fail=1; }
+# Google leftovers from Rules lists must stay out.
+if grep -qiE 'app-measurement\.com|pik\.goog|appspot\.com' domains/all.txt; then
+  echo "google-related domains from Rules lists must not appear in all.txt"
+  fail=1
+fi
 # geosite source map and builder must exist
 test -f domains/geosite-sources.txt || fail=1
 test -f scripts/build-geosite-domains.sh || fail=1
 test -f scripts/domain-updater.sh || fail=1
 grep -q 'DOMAIN_LIST_URL' .env.example || fail=1
+grep -q 'rules-domain-sources' domains/SOURCES.md || fail=1
 
 echo "== gen-configs smoke =="
 tmp="$(mktemp -d)"

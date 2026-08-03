@@ -51,6 +51,28 @@ Mihomo markers in those files mean:
 
 SmartDNS `address /example.com/IP` and sniproxy `(^|\.)example\.com$` both match the name and its subdomains.
 
+## Rules Domain YAML (Lanlan13-14/Rules)
+
+See `rules-domain-sources.txt`. Daily rebuild also pulls Clash Domain payloads:
+
+```text
+https://raw.githubusercontent.com/Lanlan13-14/Rules/main/rules/Domain/<name>.yaml
+```
+
+Current basenames: `streaming_hk`, `streaming_sg`, `streaming_tw`, `streaming_uk`, `tvb`.
+
+Format:
+
+```yaml
+payload:
+  - '*.example.com'
+  - bare.example.com
+  - '*.*.example.com'   # multi-level wildcard → example.com
+```
+
+Normalization strips repeated `*.` / `+.` prefixes, then the same Google/YouTube
+blocklist and global `sort -u` dedupe apply.
+
 ## Supplemental sources
 
 Still merged so services without a geosite list are not lost:
@@ -59,6 +81,8 @@ Still merged so services without a geosite list are not lost:
 2. `1stream.txt` — normalized FQDN snapshot from
    `1-stream/1stream-public-utils/stream.smartdns.list` (SHA-256
    `b9b31491c0ab99aaa88ddcef7038e296f4275401dd838aaf07c005d4ff2d2ca1`).
+
+All sources are concatenated then **deduplicated** into one `all.txt`.
 
 ## Counts
 

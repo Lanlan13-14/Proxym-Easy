@@ -45,6 +45,7 @@ jobs:
         working-directory: unlock
         env:
           GEOSITE_DIR: ${{ github.workspace }}/meta-rules-dat/geo/geosite
+          # Rules Domain YAML fetched from GitHub raw (Lanlan13-14/Rules).
           MIN_DOMAIN_COUNT: "800"
         run: |
           set -euo pipefail
@@ -54,16 +55,22 @@ jobs:
           echo "domains=$count" >> "$GITHUB_STEP_SUMMARY"
           echo "Merged domain count: $count"
           # Safety: never publish Google/YouTube unlock targets.
-          if grep -qiE '(^|\.)(google|googleapis|gstatic|youtube|ytimg)(\.|$)' domains/all.txt; then
+          if grep -qiE '(^|\.)(google|googleapis|gstatic|youtube|ytimg|appspot|app-measurement)(\.|$)' domains/all.txt; then
             echo "ERROR: google/youtube domains leaked into all.txt" >&2
             exit 1
           fi
-          for must in netflix.com disneyplus.com bamgrid.com; do
+          for must in netflix.com disneyplus.com bamgrid.com mytvsuper.com mewatch.sg friday.tw itv.com tvbanywhere.com; do
             grep -qx "$must" domains/all.txt || {
               echo "ERROR: missing required domain $must" >&2
               exit 1
             }
           done
+          # Dedup sanity: all.txt must already be unique.
+          uniq_count="$(sort -u domains/all.txt | wc -l | tr -d ' ')"
+          [ "$count" = "$uniq_count" ] || {
+            echo "ERROR: all.txt has duplicates ($count vs $uniq_count unique)" >&2
+            exit 1
+          }
 
       - name: Unit tests with new list
         working-directory: unlock

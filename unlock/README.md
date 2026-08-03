@@ -378,10 +378,10 @@ https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock/domains/al
 工作流：`.github/workflows/update-unlock-domains.yml`（`0 19 * * *` UTC）
 
 1. 拉取 `MetaCubeX/meta-rules-dat` 的 `meta` 分支 `geo/geosite`
-2. 按 `domains/geosite-sources.txt` 列出的服务 basenames 合并 `.list`
-3. 再并入 `StreamConfig.yaml` + `domains/1stream.txt` 作为无 geosite 条目时的补充
-4. 规范化 mihomo 标记：`+.` / `*.` → 裸 FQDN（按 DOMAIN-SUFFIX 语义存储）
-5. **剔除** Google / YouTube 族域名后写回 `domains/all.txt` 并 push `main`
+2. 按 `domains/geosite-sources.txt` 合并 geosite `.list`
+3. 按 `domains/rules-domain-sources.txt` 拉取 `Lanlan13-14/Rules` 的 Clash Domain YAML（`streaming_hk/sg/tw/uk`、`tvb`；`*.example.com` / `*.*.example.com` → 裸 FQDN）
+4. 再并入 `StreamConfig.yaml` + `domains/1stream.txt` 补充
+5. 规范化标记、**全局去重**、**剔除** Google / YouTube 族后写回 `domains/all.txt` 并 push `main`
 
 ### 容器热更新（默认 04:00）
 

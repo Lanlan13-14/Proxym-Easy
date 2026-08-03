@@ -30,6 +30,7 @@
 4gtvfreepcvod-cds.cdn.hinet.net
 4gtvpc-cds.cdn.hinet.net
 4gtvpcvod-cds.cdn.hinet.net
+567852.xyz
 5a929471-madman-com-au.akamaized.net
 71.am
 71.am.com
@@ -49,6 +50,7 @@
 9xsecndns.cn
 a.youdao.com
 a4e8s8k3.map2.ssl.hwcdn.net
+a753.w10.akamai.net
 abc-iview-mediapackagestreams-2.akamaized.net
 abc-studios.com
 abc.com
@@ -91,6 +93,7 @@ ais-vidnt.com
 aisplay.ais.co.th
 aiv-cdn.net
 aiv-delivery.net
+aka03p.akamaized.net
 akamai.prod-live.h264.io
 alibaba.cdn.steampipe.steamcontent.com
 amazonprimevideo.cn
@@ -104,6 +107,7 @@ amebaownd.com
 amebaowndme.com
 ameblo.jp
 amediateka.ru
+amnet.tw
 analytics.163.com
 analytics.tiktok.com
 anidom.com
@@ -135,6 +139,7 @@ app.global.bilibili.com
 apple-tv-plus-press.apple.com
 as-dash-uk-live.akamaized.net
 as-hls-uk-live.akamaized.net
+assets.livednow.com
 assetshuluimcom-a.akamaihd.net
 atm.youku.com
 atttvnow.com
@@ -156,6 +161,8 @@ bahamut.com.tw
 baiying.com
 bamgrid.com
 band.us
+bats.video.yahoo.com
+bats.yahoodns.net
 bbc-reporting-api.app
 bbc.co
 bbc.co.uk
@@ -174,6 +181,7 @@ bbcverticals.com
 bcbolt446c5271-a.akamaihd.net
 bcbolthboa-a.akamaihd.net
 beautyandthebeastmusical.co.uk
+beesport.livednow.com
 beforeigners.com
 bentobox.tv
 bgr.in
@@ -223,6 +231,7 @@ bluekai.com
 bollywoodlife.com
 boltdns.net
 bookstagram.com
+bootstrapcdn.com
 brightline.tv
 britbox.com
 browser-intake-datadoghq.com
@@ -231,7 +240,10 @@ bucketeer.jp
 byspotify.com
 bytedapm.com
 byteoversea.com
+c.contentsquare.net
 c.uaa.iqiyi.com
+c4assets.com
+cache.video.iqiyi.com
 callhulu.com
 canalplus.com
 careerfundas.com
@@ -255,9 +267,11 @@ cdn-euronews-australia.akamaized.net
 cdn-fox-networks-group-green.akamaized.net
 cdn-spotify-experiments.conductrics.com
 cdn.7livecloud.io
+cdn.hgc.com.hk
 cdn.hinet.net
 cdn.plyr.io
 cdn.registerdisney.go.com
+cdn.tvb.com
 cdninstagram.com
 channel4.com
 channel5.com
@@ -282,6 +296,7 @@ clubdam.com
 cn-cdn1.skymansion.net
 cognito-identity.us-east-1.amazonaws.com
 colorfulpalette.org
+console.567852.xyz
 content-ause1-ur-discovery1.uplynk.com
 content-jiovoot.voot.com
 content.jwplatform.com
@@ -301,6 +316,7 @@ csgo.com.cn
 csgo.wmsj.cn
 cssott.com
 cupid.iqiyi.com
+cwb.gov.tw
 cws-hulu.conviva.com
 cwtv.com
 cygames.jp
@@ -333,6 +349,7 @@ d2vjef5jvl6bfs.cloudfront.net
 d2xmjdvx03ij56.cloudfront.net
 d2yrmv70395w79.cloudfront.net
 d2z3p34itxwaj7.cloudfront.net
+d349g9zuie06uo.cloudfront.net
 d36nr0u3xmc4mm.cloudfront.net
 d3aqoihi2n8ty8.cloudfront.net
 d3c27h4odz752x.cloudfront.net
@@ -341,6 +358,7 @@ d3cv4a9a9wh0bt.cloudfront.net
 d3o7oi00quuwqu.cloudfront.net
 d3rj5p7u4c4icq.cloudfront.net
 d3vd9lfkzbru3h.cloudfront.net
+d5m9nd9n1srh4.cloudfront.net
 d6d4ismr40iw.cloudfront.net
 d6tizftlrpuof.cloudfront.net
 dai3fd1oh325y.cloudfront.net
@@ -473,6 +491,7 @@ dmmrex.com
 dmqdd6hw24ucf.cloudfront.net
 dnai.in
 dnaindia.com
+docker.mytvsuper.us.kg
 docplay.com
 dogatch.jp
 dokusho-ojikan.jp
@@ -497,6 +516,7 @@ easebar.com
 edge.api.brightcove.com
 edge.steam-dns.top.comcast.net
 edgedatg.com
+edgeware.tvb.com
 edv021asd.freetls.fastly.net
 efe8f8a4-abd5-44c9-bf5c-cd217442c52f.t.ssp.hinet.net
 ekhindi.com
@@ -710,8 +730,10 @@ foxuv.com
 foxweatherwatch.com
 freehulu.com
 freeviewplus.net.au
+friday.tw
 fse.tv
 fssta.com
+ftv.com.tw
 ftven.fr
 fubo.tv
 fujitv.co.jp
@@ -749,6 +771,7 @@ gstore.val.manlaxy.com
 guanggaoad.youku.com
 gyao.yahoo.co.jp
 h-adashx.ut.youku.com
+hamifans.emome.net
 hamivideo.hinet.net
 haowu.link
 happyon.jp
@@ -820,7 +843,10 @@ hdslb.com
 hdslb.org
 heads-ak-spotify-com.akamaized.net
 heads4-ak-spotify-com.akamaized.net
+hinet.net
 hjholdings.jp
+hkatv.com
+hkatv.vip
 hls-amt.itunes.apple.com
 hls-hamivideo.cdn.hinet.net
 hls.itunes.apple.com
@@ -904,6 +930,8 @@ indazn.com
 indaznlab.com
 india.com
 indiancolleges.com
+infinity-c12.youboranqs01.com
+infinity-c15.youboranqs01.com
 instaadder.com
 instachecker.com
 instafallow.com
@@ -962,7 +990,10 @@ iqiyiedge.com
 iqiyiedge.net
 iqiyipic.com
 itripto.com
+itv-hub.cdn-v3.conductrics.com
 itv.com
+itvdotcom.2cnt.net
+itvpnp.live.ott.irdeto.com
 itvpnpmobile-a.akamaihd.net
 itvstatic.com
 iview.abc.net.au
@@ -973,6 +1004,8 @@ joyn.de
 jtbc.co.kr
 jtvnw.net
 jujutsuphanpara.jp
+jwpcdn.com
+jwplayer.com
 kada.com
 kaltura.com
 kayosports.com.au
@@ -1005,6 +1038,7 @@ line-cdn.net
 line-scdn.net
 line.biz
 line.me
+line.naver.jp
 linear-abematv.akamaized.net
 linecorp.com
 linefriends.com
@@ -1018,6 +1052,7 @@ link.theplatform.com
 lion-nba-msl.akamaized.net
 litix.io
 litv.tv
+litvfreemobile-hichannel.cdn.hinet.net
 litvfreepc.akamaized.net
 live-video.net
 live01-stan.akamaized.net
@@ -1028,6 +1063,7 @@ lnstagram-help.com
 lofter.com
 lstat.youku.com
 lv.queniujq.cn
+mainserver.567852.xyz
 maoer.com
 maoercdn.com
 marvel.com
@@ -1047,6 +1083,7 @@ mbdlog.iqiyi.com
 media-shield.live.eurosport.map.fastly.net
 mediapolisvod.rai.it
 megogo.net
+meovse.com
 meta.ai
 mewatch.sg
 mgd0ee5iankkv3gidl14rm7c0.litix.io
@@ -1112,7 +1149,10 @@ myfoxzone.com
 myhulu.com
 myq2.com
 mytv.vn
+mytvb.livednow.us.kg
 mytvsuper.com
+mytvsuper.com.mp
+mytvsuper.us.kg
 mytvsuperlimited.hb.omtrdc.net
 mytvsuperlimited.sc.omtrdc.net
 myvideo.net.tw
@@ -1194,6 +1234,7 @@ ninemsn.com.au
 nlnbamdnyc-a.akamaihd.net
 nlnbaqos.neulion.com
 nomadlandmovie.ch
+now-tv.com
 now.com
 nowe.com
 nowestatic.com
@@ -1218,6 +1259,7 @@ oaiusercontent.com
 ofiii.com
 ols-ww100-cp.akamaized.net
 oncars.in
+onead.com.tw
 oninstagram.com
 online-instagram.com
 onlineinstagram.com
@@ -1236,6 +1278,8 @@ optussport.tv
 optusvideo.tv
 originalhulu.com
 orlandohurricane.com
+oth.eve.mdt.qq.com
+oth.str.mdt.qq.com
 p-9now.akamaized.net
 p-bstarstatic.akamaized.net
 p-log.ykimg.com
@@ -1259,6 +1303,7 @@ pluto.tv
 plutotv.net
 pndsn.com
 policy.video.iqiyi.com
+polyfill.io
 pooq.co.kr
 pooq3-static-json.pooq.co.kr
 popcornflix-prod.cloud.seachange.com
@@ -1364,6 +1409,7 @@ sky.co.nz
 sky.com
 sky.de
 skyassets.com
+skyking.com.tw
 skymansion.net
 skyoceanrescue.com
 skyoceanrescue.de
@@ -1480,6 +1526,7 @@ tataplay.com
 teenchoice.com
 telasa.jp
 testonfox.com
+tglmp03.akamaized.net
 theater-kktv.cdn.hinet.net
 theclasshroom.com
 thefoxnation.com
@@ -1517,6 +1564,7 @@ tiktokw.eu
 tiktokw.us
 tlmr-hamivideo2.cdn.hinet.net
 tls1.yospace.com
+today.line.me
 tospotify.com
 tra-ww000-cp.akamaized.net
 tra-www000-cp.akamaized.net
@@ -1540,6 +1588,7 @@ tvbanywhere.com
 tvbanywhere.com.sg
 tvbc.com.cn
 tvbeventpower.com.hk
+tvbtracking.azurewebsites.net
 tvbusa.com
 tvbweekly.com
 tvcastlive-hamivideo.cdn.hinet.net
@@ -1547,6 +1596,8 @@ tver.co.jp
 tver.jp
 tving.com
 tvmedia.net.au
+tw.tv.yahoo.com
+tw.yahoo.com
 twitch.tv
 twitchcdn.net
 twitchcon.com
@@ -1572,6 +1623,7 @@ ve-dash-uk-live.akamaized.net
 ve-uhd-push-uk-live.akamaized.net
 viaplay.com
 viaplay.pl
+video-api.yql.yahoo.com
 video.a2z.com
 video.friday.tw
 videocdn-sbs.akamaized.net
@@ -1595,6 +1647,7 @@ vod-playout-abematv.akamaized.net
 vod-sub-uk-live.akamaized.net
 vod-thumb-uk-live.akamaized.net
 vod-thumb-ww-live.akamaized.net
+vop-yahoo.akamaized.net
 vrv.co
 vs-cmaf-push-uk-live.akamaized.net
 vs-cmaf-pushb-ww-live.akamaized.net
@@ -1612,6 +1665,9 @@ webtoons.com
 webtoonscorp.com
 webvodad-hamivideo.cdn.hinet.net
 weiyang.cn
+wetv.acc.qq.com
+wetv.vip
+wetvinfo.com
 whatthefox.com
 whosthehost.com
 winticket.jp
@@ -1629,9 +1685,11 @@ wwwinstagram.com
 x-default-stgec.uplynk.com
 x-live-fox-stgec.uplynk.com
 xz.pphimalayanrt.com
+yahoovod.hs.llnwd.net
 yb.uncn.jp
 ydstatic.com
 yeah.net
+yep.video.yahoo.com
 yjwujian.cn
 yk-ssp.ad.youku.com
 ykad-data.youku.com
@@ -1639,6 +1697,8 @@ ykimg.alicdn.com
 ykimg.com
 yo1health.com
 yo9.com
+yospace.com
+youboranqs01.com
 youdao.com
 youdaoads.com
 youku.com
