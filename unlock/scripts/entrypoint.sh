@@ -45,6 +45,16 @@ else
   log "WARNING: ACL disabled explicitly (ENABLE_ACL=${ENABLE_ACL:-0})"
 fi
 
+# Validate optional SOCKS5 env early. A bad username/password must not thrash
+# WARP enrollment + DNS/SNI just to die after sniproxy starts. Interface/IP
+# checks still run later in start-socks.sh after WARP is up.
+case "${ENABLE_SOCKS5:-0}" in
+  1|true|yes)
+    log "validating optional SOCKS5 configuration"
+    "$ROOT/scripts/start-socks.sh" env
+    ;;
+esac
+
 # Mandatory egress: official Cloudflare One Client, Service Token enrollment,
 # Traffic-only mode. If this fails, no DNS/sniproxy service is started.
 log "starting mandatory Cloudflare Zero Trust WARP egress"

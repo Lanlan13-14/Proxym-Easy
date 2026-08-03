@@ -185,13 +185,16 @@ image: ghcr.io/lanlan13-14/proxym-easy-unlock:v0.0.5-any-cidr
 ```env
 ENABLE_SOCKS5=1
 SOCKS5_PORT=9857
+# Dante 会创建 Linux 系统用户，必须匹配：^[A-Za-z_][A-Za-z0-9_-]{0,31}$
+# 可用：proxyuser / unlock_socks / user_01
+# 不可用：邮箱、中文、空格、点号、数字开头、root/nobody/proxy
 SOCKS5_USERNAME=proxyuser
 SOCKS5_PASSWORD=替换为高强度密码
 # 与 ALLOWED_IPS 完全独立；不要留空。
 SOCKS5_ALLOWED_IPS=0.0.0.0/0
 ```
 
-[KNOWN] SOCKS5 使用 Dante 的用户名/密码认证，支持可靠的 TCP CONNECT。Docker bridge 下 UDP ASSOCIATE 会向公网客户端通告容器/WARP 内网中继地址，因此本镜像不伪装成可用：不发布 UDP 中继端口。
+SOCKS5 使用 Dante 的用户名/密码认证，支持可靠的 TCP CONNECT。Docker bridge 下 UDP ASSOCIATE 会向公网客户端通告容器/WARP 内网中继地址，因此本镜像不伪装成可用：不发布 UDP 中继端口。
 
 这是**同一份 Compose 文件**，不需要 profile 或第二份覆盖文件。`SOCKS5_PORT` 始终映射到宿主机；当 `ENABLE_SOCKS5=0` 时 Dante 不启动，连接该端口会被拒绝而不是提供未认证代理。启用 SOCKS 时只需：
 

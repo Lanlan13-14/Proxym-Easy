@@ -24,9 +24,15 @@ if grep -Eq 'udpassociate|udp\.portrange|SOCKS5_UDP' "$SCRIPT" "$ACL" "$COMPOSE"
   exit 1
 fi
 grep -q 'SOCKS5_USERNAME collides with a protected system account' "$SCRIPT"
+grep -q 'normalize_username' "$SCRIPT"
+grep -q 'only A-Za-z0-9_-' "$SCRIPT"
+grep -q 'validate_env' "$SCRIPT"
+grep -q 'validating optional SOCKS5 configuration' "$ROOT/scripts/entrypoint.sh"
+grep -q 'start-socks.sh" env' "$ROOT/scripts/entrypoint.sh"
 grep -q 'refusing to change password of pre-existing user' "$SCRIPT"
 grep -q "SOCKS5_PASSWORD must not contain ':'" "$SCRIPT"
 grep -q 'SOCKS5_PORT conflicts with DNS/DoT/SNI service' "$SCRIPT"
+grep -q '^[A-Za-z_][A-Za-z0-9_-]' "$ENV" || grep -q 'A-Za-z0-9_-' "$ENV"
 grep -q '"\$DANTED_BIN" -f "\$SOCKS_CONF"' "$SCRIPT"
 if grep -q '"\$DANTED_BIN" -N' "$SCRIPT"; then
   echo "Dante -N is worker-count, not foreground mode" >&2

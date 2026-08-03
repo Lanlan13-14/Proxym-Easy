@@ -27,11 +27,44 @@ valid_port() {
   [ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
 }
 
-validate() {
+normalize_username() {
+  # Strip CR/LF and surrounding whitespace from .env paste accidents.
+  printf '%s' "$1" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+username_reason() {
+  user="$1"
+  if [ -z "$user" ]; then
+    echo "empty (set SOCKS5_USERNAME=proxyuser style value)"
+    return
+  fi
+  len="$(printf '%s' "$user" | wc -c | tr -d ' ')"
+  if [ "$len" -gt 32 ]; then
+    echo "length $len > 32"
+    return
+  fi
+  case "$user" in
+    [0-9]*)
+      echo "must start with letter or underscore, not a digit"
+      return
+      ;;
+  esac
+  if printf '%s' "$user" | grep -q '[^A-Za-z0-9_-]'; then
+    echo "only A-Za-z0-9_- allowed (no @ . space or CJK)"
+    return
+  fi
+  echo "must match ^[A-Za-z_][A-Za-z0-9_-]{0,31}$"
+}
+
+validate_env() {
+  # Static env checks only. Safe before WARP creates CloudflareWARP.
+  SOCKS5_USERNAME="$(normalize_username "$SOCKS5_USERNAME")"
   valid_port "$SOCKS5_PORT" || fail "invalid SOCKS5_PORT: $SOCKS5_PORT"
   case "$SOCKS5_PORT" in 53|80|443|"${DOT_PORT:-853}") fail "SOCKS5_PORT conflicts with DNS/DoT/SNI service" ;; esac
   [ -n "$SOCKS5_ALLOWED_IPS" ] || fail "SOCKS5_ALLOWED_IPS is required when SOCKS is enabled (it does not inherit ALLOWED_IPS)"
-  printf '%s' "$SOCKS5_USERNAME" | grep -Eq '^[A-Za-z_][A-Za-z0-9_-]{0,31}$' || fail "SOCKS5_USERNAME must be 1-32 safe Linux username characters"
+  if ! printf '%s' "$SOCKS5_USERNAME" | grep -Eq '^[A-Za-z_][A-Za-z0-9_-]{0,31}$'; then
+    fail "SOCKS5_USERNAME='$SOCKS5_USERNAME' invalid: $(username_reason "$SOCKS5_USERNAME"); example: proxyuser"
+  fi
   case "$SOCKS5_USERNAME" in
     root|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|www-data|backup|list|irc|_apt|nobody|systemd-*)
       fail "SOCKS5_USERNAME collides with a protected system account"
@@ -41,11 +74,19 @@ validate() {
   case "$SOCKS5_PASSWORD" in *:*) fail "SOCKS5_PASSWORD must not contain ':'" ;; esac
   [ "$(printf '%s\n' "$SOCKS5_PASSWORD" | wc -l)" -eq 1 ] || fail "SOCKS5_PASSWORD must not contain newline"
   [ -n "$SOCKS5_EXTERNAL_INTERFACE" ] || fail "SOCKS5_EXTERNAL_INTERFACE is required"
+}
+
+validate_runtime() {
   if [ -z "$SOCKS5_EXTERNAL_IP" ]; then
     ip link show "$SOCKS5_EXTERNAL_INTERFACE" >/dev/null 2>&1 || fail "$SOCKS5_EXTERNAL_INTERFACE interface is unavailable"
     SOCKS5_EXTERNAL_IP="$(ip -4 -o addr show dev "$SOCKS5_EXTERNAL_INTERFACE" | awk 'NR==1{sub(/\/.*/, "", $4); print $4}')"
   fi
   printf '%s' "$SOCKS5_EXTERNAL_IP" | grep -Eq '^[0-9]+(\.[0-9]+){3}$' || fail "SOCKS5_EXTERNAL_IP must be an IPv4 address"
+}
+
+validate() {
+  validate_env
+  validate_runtime
 }
 
 write_config() {
@@ -77,6 +118,11 @@ EOF
 }
 
 case "${1:-start}" in
+  env)
+    is_enabled || exit 0
+    validate_env
+    log "SOCKS5 env ok (user=$SOCKS5_USERNAME port=$SOCKS5_PORT)"
+    ;;
   config)
     is_enabled || exit 0
     validate; write_config
@@ -107,5 +153,5 @@ case "${1:-start}" in
     ss -lnt | grep -Eq ":${SOCKS5_PORT}[[:space:]]" || { tail -n 100 "$RUNTIME_DIR/danted.log" >&2 || true; fail "danted is not listening on TCP $SOCKS5_PORT"; }
     log "SOCKS5 ready (separate ACL=$SOCKS5_ALLOWED_IPS)"
     ;;
-  *) fail "usage: $0 [config|start]" ;;
+  *) fail "usage: $0 [env|config|start]" ;;
 esac
