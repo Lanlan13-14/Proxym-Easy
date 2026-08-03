@@ -131,67 +131,48 @@ ensure_nft_accept() {
   fi
 }
 
-rule_destination() {
-  # `ip rule list` canonicalizes host prefixes: x.x.x.x/32 becomes x.x.x.x,
-  # and IPv6 /128 is likewise printed without its prefix. Match both forms.
-  case "$1" in
-    */32) printf '%s' "${1%/32}" ;;
-    */128) printf '%s' "${1%/128}" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
+RETURN_MARK="${RETURN_MARK:-0x4d01}"
+RETURN_TABLE="unlock_return"
 
-ensure_main_return_rule() {
-  family="$1"; cidr="$2"; shown="$(rule_destination "$cidr")"
-  if [ "$family" = 6 ]; then
-    ip -6 rule list | grep -Fq "to $cidr lookup main" \
-      || ip -6 rule list | grep -Fq "to $shown lookup main" \
-      || ip -6 rule add to "$cidr" lookup main priority 10 \
-      || { ip -6 rule list | grep -Fq "to $shown lookup main" || fail "cannot add IPv6 return rule for $cidr"; }
-  else
-    ip rule list | grep -Fq "to $cidr lookup main" \
-      || ip rule list | grep -Fq "to $shown lookup main" \
-      || ip rule add to "$cidr" lookup main priority 10 \
-      || { ip rule list | grep -Fq "to $shown lookup main" || fail "cannot add IPv4 return rule for $cidr"; }
-  fi
+ensure_marked_main_rule() {
+  # A destination-CIDR rule works only for finite client CIDRs. With 0.0.0.0/0
+  # it would send every new connection through main and bypass WARP. Instead,
+  # route only packets marked as replies to connections accepted on public ports.
+  ip rule list | grep -Fq "fwmark $RETURN_MARK lookup main" \
+    || ip rule add fwmark "$RETURN_MARK" lookup main priority 9 \
+    || ip rule list | grep -Fq "fwmark $RETURN_MARK lookup main" \
+    || fail "cannot add marked IPv4 return route"
+  ip -6 rule list | grep -Fq "fwmark $RETURN_MARK lookup main" \
+    || ip -6 rule add fwmark "$RETURN_MARK" lookup main priority 9 \
+    || ip -6 rule list | grep -Fq "fwmark $RETURN_MARK lookup main" \
+    || fail "cannot add marked IPv6 return route"
 }
 
 fix_return_routes() {
-  # Preserve replies to each independently ACLed public service. SOCKS5 does
-  # not inherit ALLOWED_IPS, so its CIDRs must join WARP return routing too.
-  routes="$ALLOWED_IPS"
+  # Mark only inbound service connections, persist the mark in conntrack, then
+  # restore it in local OUTPUT. `type route` re-runs policy routing after the
+  # mark is restored, so replies leave eth0/main while new outbound traffic
+  # continues to use CloudflareWARP. This works safely for /32, subnets, and /0.
+  socks_port=""
   case "${ENABLE_SOCKS5:-0}" in
-    1|true|yes)
-      [ -n "${SOCKS5_ALLOWED_IPS:-}" ] || fail "SOCKS5_ALLOWED_IPS is required when SOCKS5 is enabled"
-      routes="$routes,$SOCKS5_ALLOWED_IPS"
-      ;;
+    1|true|yes) socks_port=", ${SOCKS5_PORT:-1080}" ;;
   esac
-  # Preserve Docker subnet too, so published ports retain their host path.
-  docker_cidr="$(ip -4 route show dev eth0 proto kernel 2>/dev/null | awk 'NR==1{print $1}')"
-  [ -z "$docker_cidr" ] || routes="$routes,$docker_cidr"
+  tcp_ports="${DNS_UDP_PORT:-53}, ${DOT_PORT:-853}, 80, 443${socks_port}"
 
-  oldifs="$IFS"; IFS=','
-  for cidr in $routes; do
-    cidr="$(printf '%s' "$cidr" | tr -d ' ')"; [ -n "$cidr" ] || continue
-    case "$cidr" in
-      *:*)
-        ensure_main_return_rule 6 "$cidr"
-        if nft list table inet cloudflare-warp >/dev/null 2>&1; then
-          ensure_nft_accept inet input "ip6 saddr $cidr accept"
-          ensure_nft_accept inet output "ip6 daddr $cidr accept"
-        fi
-        ;;
-      *)
-        ensure_main_return_rule 4 "$cidr"
-        if nft list table inet cloudflare-warp >/dev/null 2>&1; then
-          ensure_nft_accept inet input "ip saddr $cidr accept"
-          ensure_nft_accept inet output "ip daddr $cidr accept"
-        fi
-        ;;
-    esac
-  done
-  IFS="$oldifs"
-  log "preserved inbound return paths for DNS ACL, optional SOCKS ACL, and Docker subnet"
+  nft delete table inet "$RETURN_TABLE" 2>/dev/null || true
+  nft add table inet "$RETURN_TABLE"
+  nft "add chain inet $RETURN_TABLE prerouting { type filter hook prerouting priority mangle; policy accept; }"
+  nft "add chain inet $RETURN_TABLE output { type route hook output priority mangle; policy accept; }"
+  nft add rule inet "$RETURN_TABLE" prerouting iifname eth0 tcp dport "{ $tcp_ports }" ct mark set "$RETURN_MARK"
+  nft add rule inet "$RETURN_TABLE" prerouting iifname eth0 udp dport "${DNS_UDP_PORT:-53}" ct mark set "$RETURN_MARK"
+  nft add rule inet "$RETURN_TABLE" output ct mark "$RETURN_MARK" meta mark set "$RETURN_MARK"
+
+  ensure_marked_main_rule
+  if nft list table inet cloudflare-warp >/dev/null 2>&1; then
+    ensure_nft_accept inet input "ct mark $RETURN_MARK accept"
+    ensure_nft_accept inet output "meta mark $RETURN_MARK accept"
+  fi
+  log "preserved marked service reply paths for any DNS/SNI/SOCKS ACL CIDR"
 }
 
 trace_request() {

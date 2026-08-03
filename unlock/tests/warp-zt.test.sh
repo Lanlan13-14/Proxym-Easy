@@ -21,12 +21,15 @@ grep -q "grep -Eq '\^warp=(on|plus)\$'" "$SCRIPT"
 grep -q 'https://cloudflare.com/cdn-cgi/trace' "$SCRIPT"
 grep -q 'https://1.1.1.1/cdn-cgi/trace' "$SCRIPT"
 grep -q 'dump_diagnostics' "$SCRIPT"
-grep -q 'ensure_main_return_rule' "$SCRIPT"
-grep -q 'rule_destination' "$SCRIPT"
-grep -q '*/32) printf' "$SCRIPT"
-grep -q '*/128) printf' "$SCRIPT"
-grep -q 'ip rule add to.*lookup main priority 10' "$SCRIPT"
-grep -q 'ip -4 route show dev eth0 proto kernel' "$SCRIPT"
+grep -q 'ensure_marked_main_rule' "$SCRIPT"
+grep -q 'ct mark set' "$SCRIPT"
+grep -q 'ct mark .*meta mark set' "$SCRIPT"
+grep -q 'type route hook output priority mangle' "$SCRIPT"
+grep -q 'fwmark .* lookup main priority 9' "$SCRIPT"
+if grep -q 'ip rule add to' "$SCRIPT"; then
+  echo "CIDR return rules must not bypass WARP for 0.0.0.0/0" >&2
+  exit 1
+fi
 grep -q 'nft insert rule inet cloudflare-warp' "$SCRIPT"
 if grep -Eq 'nft add rule inet cloudflare-warp' "$SCRIPT"; then
   echo "WARP client allow rules must insert at chain head, not append" >&2

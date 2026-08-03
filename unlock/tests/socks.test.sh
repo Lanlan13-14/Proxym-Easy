@@ -34,12 +34,15 @@ if grep -q '"\$DANTED_BIN" -N' "$SCRIPT"; then
 fi
 
 grep -q 'SOCKS5_ALLOWED_IPS' "$ACL"
-grep -q 'SOCKS5_ALLOWED_IPS' "$WARP"
+# WARP return routing is connection-mark based, so 0.0.0.0/0 is safe:
+# only replies to SOCKS connections on SOCKS5_PORT use main/eth0.
+grep -q 'socks_port=.*SOCKS5_PORT' "$WARP"
+grep -q 'ct mark set' "$WARP"
 grep -q 'SOCKS5_PORT' "$COMPOSE"
-grep -q 'profiles: \["socks5"\]' "$COMPOSE"
 grep -q 'DANTE_AUTH_PASS' "$ROOT/tests/dante-runtime.py"
-if grep -qE 'SOCKS5_PORT:-1080.*:/tcp' "$COMPOSE"; then
-  echo "base Compose must not publish SOCKS ports" >&2
+grep -q 'SOCKS5_PORT:-1080}:${SOCKS5_PORT:-1080}/tcp' "$COMPOSE"
+if grep -q 'profiles:' "$COMPOSE"; then
+  echo "unlock service must not be hidden behind a Compose profile" >&2
   exit 1
 fi
 grep -q 'ENABLE_SOCKS5=0' "$ENV"

@@ -193,10 +193,10 @@ SOCKS5_ALLOWED_IPS=203.0.113.25/32
 
 [KNOWN] SOCKS5 使用 Dante 的用户名/密码认证，支持可靠的 TCP CONNECT。Docker bridge 下 UDP ASSOCIATE 会向公网客户端通告容器/WARP 内网中继地址，因此本镜像不伪装成可用：不发布 UDP 中继端口。
 
-SOCKS5 端口默认不发布。启动时加 `--profile socks5` 才会发布：
+这是同一份 Compose 文件，不需要 profile 或第二份覆盖文件。`SOCKS5_PORT` 始终映射到宿主机；当 `ENABLE_SOCKS5=0` 时 Dante 不启动，连接该端口会被拒绝而不是提供未认证代理。启用 SOCKS 时只需：
 
 ```bash
-docker compose --profile socks5 up -d
+docker compose up -d
 ```
 
 客户端代理 URI：
@@ -293,7 +293,7 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 | `WARP_REGISTER_TIMEOUT` | `240` | MDM Service Token 注册超时秒数 |
 | `WARP_CONNECT_TIMEOUT` | `120` | WARP Connected 等待秒数 |
 | `ZT_RESTART_HOURS` | `12` | 整个容器/WARP 会话的定期干净重启周期 |
-| `ENABLE_SOCKS5` | `0` | `1` 启用可选 SOCKS5；启动时用 `--profile socks5` |
+| `ENABLE_SOCKS5` | `0` | `1` 启用同一 Compose 中的可选 SOCKS5 服务 |
 | `SOCKS5_PORT` | `1080` | SOCKS5 TCP 控制端口 |
 | `SOCKS5_USERNAME` / `SOCKS5_PASSWORD` | 无 | SOCKS5 用户名/密码，启用时必填 |
 | `SOCKS5_ALLOWED_IPS` | 无 | SOCKS5 独立 CIDR 白名单，启用时必填，不继承 `ALLOWED_IPS` |
