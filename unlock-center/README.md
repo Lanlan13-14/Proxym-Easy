@@ -112,7 +112,9 @@ CF_DNS_API_TOKEN=...   # Zone:Read + DNS:Edit
 手动输入版本号发布（默认 `v1.0.0`）：
 
 - Workflow：`.github/workflows/build-unlock-center-image.yml`
+- 仅 `workflow_dispatch` 手动触发
 - Actions → **publish-unlock-center-image** → 填 `version`（默认 `v1.0.0`）→ Run
+- **每次发布同时推送** `<version>` **与** `latest`（与 unlock 镜像相同）
 
 镜像：
 
