@@ -1,5 +1,20 @@
-# Unlock node registry. region values are free-form (us/jp/hk/uk/...).
-# Add a new region: deploy unlock VM + append [[nodes]] with that region id.
+# =============================================================================
+# unlock-center 节点表示例
+# 用法：cp nodes.example.toml nodes.toml，把 unlock_ip / dns_upstream 改成真实公网 IP
+# 每个 [[nodes]] = 一台区域解锁机（跑 unlock 镜像、单区 WARP）
+#
+# 字段说明：
+#   id            节点唯一名，仅日志/排障用
+#   region        逻辑区名：须与 domain-region.map 的 regional 区、DoH path（/us）一致
+#                 可自定义，如 uk、sg、foo；中心 allow_regions 里也要有
+#   unlock_ip     返回给客户端的 A 记录 IP = 客户端去连 sniproxy 的地址（公网）
+#   dns_upstream  中心「未命中域名」代查时问谁，格式 IP:53；通常与 unlock_ip 同机
+#                 该机 ENABLE_DNS=1，且 ALLOWED_IPS 必须包含中心出口 IP
+#   weight        同 region 多机时加权（整数，越大越容易被选中）
+#   lat / lon     经纬度，供 GeoIP nearest 算「离客户端最近」；建议填准
+#
+# 多区并发：下面 us/jp/hk/uk 可同时存在；查 dmm→jp、查 mytv→hk、查 netflix→path 全局区
+# =============================================================================
 
 [[nodes]]
 id = "us-1"
@@ -28,7 +43,7 @@ weight = 10
 lat = 22.32
 lon = 114.17
 
-# Example: UK unlock region (add real machine IP when ready)
+# 英区示例：部署英区 unlock 后改成真实 IP；map 里 regional uk 的域名会指到这里
 [[nodes]]
 id = "uk-1"
 region = "uk"
@@ -37,3 +52,13 @@ dns_upstream = "203.0.113.40:53"
 weight = 10
 lat = 51.51
 lon = -0.13
+
+# 新区示例（按需取消注释并改 IP）
+# [[nodes]]
+# id = "sg-1"
+# region = "sg"
+# unlock_ip = "203.0.113.50"
+# dns_upstream = "203.0.113.50:53"
+# weight = 10
+# lat = 1.35
+# lon = 103.82

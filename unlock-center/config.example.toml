@@ -1,74 +1,113 @@
-# unlock-center example config
-# copy to config.toml and edit nodes_file / domain map paths
+# =============================================================================
+# unlock-center 配置示例（本地 cargo 运行或自定义挂载时用）
+# 用法：cp config.example.toml config.toml 后修改
+# Docker 生产更常用 .env + entrypoint 生成配置；本文件字段与 env 含义一致。
+# 查询逻辑详见 README.md §2.1
+# =============================================================================
 
+# ----- 监听：明文 / DoT / DoH 独立开关，至少开一个 -----
 [listen]
+# 是否监听明文 DNS（开发可 true+高端口；生产多 false，只开 DoT/DoH）
 enable_dns = true
 dns_host = "0.0.0.0"
-dns_port = 5353          # use 53 in production
+dns_port = 5353              # 生产明文常用 53
+
 enable_dot = true
 dot_host = "0.0.0.0"
-dot_port = 8853
+dot_port = 8853              # 生产常用 853
+
 enable_doh = true
 doh_host = "0.0.0.0"
-doh_port = 8443
-# Custom DoH path (camouflage). Not limited to /dns-query.
+doh_port = 8443              # 生产常用 443
+
+# DoH 路径前缀（伪装）。完整规则见 README：
+#   {base} | {base}/{全局区} | {base}/ai/{AI区} | {base}/{全局区}/ai/{AI区}
+# 只影响 global/AI；regional 区锁按域名表，多区可同时解锁。
 doh_base_path = "/api/v2/weather"
+# 额外兼容路径，例如 ["/dns-query"]；一般保持空
 doh_extra_paths = []
 
+# ----- TLS：DoT/DoH 需要；仅明文 DNS 可忽略 -----
 [tls]
-mode = "selfsigned"      # selfsigned | files | letsencrypt
+# selfsigned=自签测试 | files=已有文件 | letsencrypt=由 cert-manager 写到 cert/key 路径
+mode = "selfsigned"
 domain = "dns.example.com"
 cert_file = "/data/tls/cert.pem"
 key_file = "/data/tls/key.pem"
 
+# ----- 解锁策略 -----
 [policy]
-unlock_scope = "all"     # global | regional | all
+# all=全球向+区锁+AI | global=只全球向(+AI) | regional=只区锁
+unlock_scope = "all"
+# false 时 AI 域名当普通站代查，不劫持
 enable_ai_unlock = true
+# DoH 未带 /us 等 path 时，Netflix 等 global 默认去哪个区（须在 nodes 与 allow_regions 中）
 default_global_region = "us"
-default_ai_region = ""   # empty = follow global
-# Custom regions: add here, deploy matching unlock nodes, classify domains as regional.
+# 空字符串 = AI 跟随 global；非空则 AI 默认钉死该区
+default_ai_region = ""
+# 允许出现在 path / 默认区里的区名；可自行加 "sg" 等，并部署对应 unlock
 allow_regions = ["us", "jp", "hk", "sg", "tw", "uk", "kr", "eu", "sea", "au", "cn"]
+# 解锁 A 记录 TTL（秒），短 TTL 便于换节点
 unlock_answer_ttl_secs = 45
+# 解锁命中时 AAAA：empty=空应答防绕过 | passthrough=代查真实 AAAA | soa
 aaaa_mode = "empty"
+# 非 A/AAAA：refused=拒绝 | passthrough=代查
 other_qtype_mode = "refused"
 
+# ----- 域名分类表 -----
 [tables]
+# 远程 map（优先可填 URL）；空则只用本地 domain_map_file
 domain_map_url = ""
+# 本地/镜像内分类表：域名<TAB>global|regional|ai<TAB>区或-
 domain_map_file = "domains/domain-region.map"
+# 定时重新加载间隔（秒）
 refresh_interval_secs = 3600
+# map 条目数少于此则拒绝加载（防拉到空文件）
 min_entries = 100
 
+# ----- 解锁机节点表路径 -----
 [nodes]
-# path relative to process cwd, or absolute
+# 相对 cwd 或绝对路径；Docker 下多为 /etc/unlock-center/nodes.toml
 file = "nodes.example.toml"
 
+# ----- 非解锁代查如何选机 -----
 [schedule]
+# true：按客户端 GeoIP 经纬度选最近 unlock 当 DNS 上游
 nearest_for_passthrough = true
+# GeoIP 失败时用该区节点代查
 default_passthrough_region = "us"
+# true：某 region 无健康节点时落到任意区（易错区，生产建议 false）
 allow_region_fallback = false
 
+# ----- GeoIP 城市库 -----
 [geoip]
-# City MMDB for client IP → lat/lon → nearest unlock node (passthrough).
+# 客户端 IP → lat/lon，用于 other 代查 nearest（不决定 Netflix 区）
 db_path = "/data/geoip/GeoLite2-City.mmdb"
 enabled = true
-# Built-in default download URL (no MaxMind key). Override only if you must.
+# 内置默认下载 URL（无需 MaxMind key）
 update_url = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb"
-# In Docker, scripts/geoip-updater.sh does the daily pull; keep auto_update false there.
+# Docker 里由 scripts/geoip-updater.sh 日更，进程内 auto_update 建议 false
 auto_update = false
-# Used by scripts/geoip-updater.sh (container); hour/minute in container TZ.
+# 若 auto_update=true：每天何时由进程自己下（容器更推荐脚本 + 下面两个变量给脚本）
 update_hour = 4
 update_minute = 0
 
+# ----- 代查超时与兜底上游 -----
 [passthrough]
 timeout_ms = 800
+# unlock:53 失败时再问这些（host:port）
 fallback_upstreams = ["1.1.1.1:53", "8.8.8.8:53"]
 
+# ----- 代查结果缓存 -----
 [cache]
 passthrough_max_entries = 500000
 passthrough_max_ttl_secs = 300
 
+# ----- 访问控制（可选） -----
 [access]
+# 非空则只允许这些客户端 CIDR（生产建议配置）
 allowed_cidrs = []
+# DoH Bearer，非空则要求 Authorization 头
 bearer_token = ""
 
 log_level = "info"
