@@ -51,8 +51,9 @@ allow_region_fallback = false
 # City MMDB for client IP → lat/lon → nearest unlock node (passthrough).
 db_path = "/data/geoip/GeoLite2-City.mmdb"
 enabled = true
-# Optional in-process download URL (.mmdb or .mmdb.gz). Prefer scripts/geoip-updater.sh in Docker.
-update_url = ""
+# Built-in default download URL (no MaxMind key). Override only if you must.
+update_url = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb"
+# In Docker, scripts/geoip-updater.sh does the daily pull; keep auto_update false there.
 auto_update = false
 # Used by scripts/geoip-updater.sh (container); hour/minute in container TZ.
 update_hour = 4

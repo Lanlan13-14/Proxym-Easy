@@ -23,6 +23,11 @@ export ENABLE_DNS="${ENABLE_DNS:-${CENTER_ENABLE_DNS:-0}}"
 export DOT_TLS_MODE="${DOT_TLS_MODE:-${CENTER_TLS_MODE:-letsencrypt}}"
 export DOT_DOMAIN="${DOT_DOMAIN:-${CENTER_DOT_DOMAIN:-}}"
 export GEOIP_DB_PATH="${GEOIP_DB_PATH:-$DATA_DIR/geoip/GeoLite2-City.mmdb}"
+# Built-in default download URL — always set unless user overrides.
+export GEOIP_DB_URL="${GEOIP_DB_URL:-https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb}"
+export GEOIP_ENABLE_AUTO_UPDATE="${GEOIP_ENABLE_AUTO_UPDATE:-1}"
+export GEOIP_UPDATE_HOUR="${GEOIP_UPDATE_HOUR:-4}"
+export GEOIP_UPDATE_MINUTE="${GEOIP_UPDATE_MINUTE:-0}"
 
 log "ensuring TLS certificates"
 "$ROOT/scripts/cert-manager.sh" ensure
@@ -91,7 +96,7 @@ allow_region_fallback = false
 [geoip]
 db_path = "$GEOIP_DB_PATH"
 enabled = true
-update_url = "${GEOIP_DB_URL:-}"
+update_url = "$GEOIP_DB_URL"
 auto_update = false
 update_hour = ${GEOIP_UPDATE_HOUR:-4}
 update_minute = ${GEOIP_UPDATE_MINUTE:-0}

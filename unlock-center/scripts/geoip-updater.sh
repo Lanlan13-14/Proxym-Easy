@@ -11,11 +11,12 @@ GEOIP_DB_PATH="${GEOIP_DB_PATH:-$DATA_DIR/geoip/GeoLite2-City.mmdb}"
 GEOIP_ENABLE_AUTO_UPDATE="${GEOIP_ENABLE_AUTO_UPDATE:-1}"
 GEOIP_UPDATE_HOUR="${GEOIP_UPDATE_HOUR:-4}"
 GEOIP_UPDATE_MINUTE="${GEOIP_UPDATE_MINUTE:-0}"
-GEOIP_DB_URL="${GEOIP_DB_URL:-}"
+# Built-in default City MMDB (no license key required). Override with GEOIP_DB_URL
+# or MAXMIND_LICENSE_KEY if you prefer official MaxMind.
+GEOIP_BUILTIN_URL="https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb"
+GEOIP_DB_URL="${GEOIP_DB_URL:-$GEOIP_BUILTIN_URL}"
 MAXMIND_LICENSE_KEY="${MAXMIND_LICENSE_KEY:-}"
 MAXMIND_EDITION_ID="${MAXMIND_EDITION_ID:-GeoLite2-City}"
-# Community mirror used when no MaxMind key and no custom URL (override in production).
-GEOIP_DEFAULT_URL="${GEOIP_DEFAULT_URL:-https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb}"
 CENTER_PID_FILE="${CENTER_PID_FILE:-/run/unlock-center/unlock-center.pid}"
 RUNTIME_DIR="${RUNTIME_DIR:-/run/unlock-center}"
 
@@ -39,14 +40,13 @@ notify_center() {
 download_once() {
   mkdir -p "$(dirname "$GEOIP_DB_PATH")" "$RUNTIME_DIR"
   tmp="$(mktemp "$RUNTIME_DIR/geoip.XXXXXX")"
-  url=""
-  if [ -n "$GEOIP_DB_URL" ]; then
-    url="$GEOIP_DB_URL"
-  elif [ -n "$MAXMIND_LICENSE_KEY" ]; then
+  # Priority: MaxMind license (official) > GEOIP_DB_URL (defaults to built-in).
+  if [ -n "$MAXMIND_LICENSE_KEY" ]; then
     url="https://download.maxmind.com/app/geoip_download?edition_id=${MAXMIND_EDITION_ID}&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz"
   else
-    url="$GEOIP_DEFAULT_URL"
+    url="$GEOIP_DB_URL"
   fi
+  [ -n "$url" ] || url="$GEOIP_BUILTIN_URL"
 
   log "downloading: $url"
   if ! curl -fsSL --retry 3 --connect-timeout 20 --max-time 600 -o "$tmp" "$url"; then

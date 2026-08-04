@@ -82,17 +82,25 @@ https://dns.example.com:8443/api/v2/weather/us/ai/jp
 
 ## GeoIP nearest（可自定义更新时间）
 
-非解锁域名按 **客户端 IP → 经纬度 → 最近解锁机** 代查：
+非解锁域名按 **客户端 IP → 经纬度 → 最近解锁机** 代查。
+
+**内置默认下载地址**（无需 MaxMind key，开箱即用）：
+
+```text
+https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
+```
+
+容器启动缺库会自动拉；之后按下面时刻日更。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
+| `GEOIP_DB_URL` | 上面内置 URL | 可改镜像；不填也用内置 |
 | `GEOIP_ENABLE_AUTO_UPDATE` | `1` | 是否定时更新 MMDB |
 | `GEOIP_UPDATE_HOUR` / `GEOIP_UPDATE_MINUTE` | `4` / `0` | 每天更新时刻（容器 `TZ`） |
-| `GEOIP_DB_PATH` | `/data/geoip/GeoLite2-City.mmdb` | 数据库路径 |
-| `GEOIP_DB_URL` | 可选 | 直链 `.mmdb` / `.mmdb.gz` |
-| `MAXMIND_LICENSE_KEY` | 可选 | 官方 GeoLite2 下载 |
+| `GEOIP_DB_PATH` | `/data/geoip/GeoLite2-City.mmdb` | 本地路径 |
+| `MAXMIND_LICENSE_KEY` | 空 | 若设置则改走官方 GeoLite2（覆盖 URL） |
 
-脚本：`scripts/geoip-updater.sh`（boot 缺库下载 + 日更 + `SIGUSR1` 通知进程热加载）。
+脚本：`scripts/geoip-updater.sh`（boot 下载 + 日更 + `SIGUSR1` 热加载）。
 
 ## TLS（LE + Cloudflare DNS-01）
 

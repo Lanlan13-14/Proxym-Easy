@@ -30,7 +30,7 @@ pub struct GeoIpConfig {
     pub db_path: PathBuf,
     /// Enable loading/using MMDB for nearest.
     pub enabled: bool,
-    /// Download URL for plain .mmdb or .mmdb.gz (empty = use shell updater defaults).
+    /// Built-in default City MMDB URL (override if needed).
     pub update_url: String,
     pub auto_update: bool,
     pub update_hour: u32,
@@ -212,7 +212,9 @@ impl Default for GeoIpConfig {
         Self {
             db_path: PathBuf::from("/data/geoip/GeoLite2-City.mmdb"),
             enabled: true,
-            update_url: String::new(),
+            // Same built-in as scripts/geoip-updater.sh (no MaxMind key required).
+            update_url: "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb"
+                .into(),
             auto_update: true,
             update_hour: 4,
             update_minute: 0,
