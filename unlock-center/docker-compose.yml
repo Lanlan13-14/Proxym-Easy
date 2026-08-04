@@ -1,27 +1,44 @@
-# unlock-center — DNS control plane
-# Usage:
-#   cp .env.example .env && cp nodes.example.toml nodes.toml
-#   # edit .env + nodes.toml with real unlock IPs
-#   docker compose up -d
+# unlock-center — DNS 控制面（无 WARP / 无 sniproxy）
+#
+# 准备：
+#   cp .env.example .env
+#   cp nodes.example.toml nodes.toml
+#   # 编辑 .env（域名/证书/策略）与 nodes.toml（各区 unlock 公网 IP）
+#   docker compose pull && docker compose up -d
+#
+# 镜像仅含 unlock-center/ 构建上下文；与 unlock 数据面分离部署。
 
 services:
   unlock-center:
-    image: ghcr.io/lanlan13-14/proxym-easy-unlock-center:latest
+    image: ghcr.io/lanlan13-14/proxym-easy-unlock-center:${CENTER_IMAGE_TAG:-latest}
     container_name: unlock-center
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - ${ENV_FILE:-.env}
     environment:
       TZ: ${TZ:-Asia/Shanghai}
+      # entrypoint 读节点表路径
       NODES_FILE: /etc/unlock-center/nodes.toml
+      CENTER_PID_FILE: /run/unlock-center/unlock-center.pid
+      DATA_DIR: /data
+      CONF_DIR: /etc/unlock-center
+      RUNTIME_DIR: /run/unlock-center
     volumes:
       - ./nodes.toml:/etc/unlock-center/nodes.toml:ro
+      # 证书 + GeoIP MMDB 持久化
       - center-data:/data
     ports:
+      # 明文 DNS：仅当 CENTER_ENABLE_DNS=1 时容器内监听有效
       - "${DNS_UDP_PORT:-53}:53/udp"
       - "${DNS_UDP_PORT:-53}:53/tcp"
       - "${DOT_PORT:-853}:853/tcp"
       - "${DOH_PORT:-443}:443/tcp"
-    # No /dev/net/tun — center does not run WARP/sniproxy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # 中心不需要 TUN / NET_ADMIN（对比 unlock 数据面）
 
 volumes:
   center-data:

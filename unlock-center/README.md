@@ -726,16 +726,177 @@ DoT：主机 `dns.example.com:853`（MVP 用默认全局区；区锁仍按 map�
 |---|---|---|
 | 镜像 | `ghcr.io/lanlan13-14/proxym-easy-unlock:latest` | `ghcr.io/lanlan13-14/proxym-easy-unlock-center:latest` |
 | 目录 | [../unlock](../unlock/) | 本目录 |
+| Compose 文件 | [../unlock/docker-compose.yml](../unlock/docker-compose.yml) | [docker-compose.yml](./docker-compose.yml) |
 | 必填 | WARP + `UNLOCK_IP` + `ALLOWED_IPS` | `nodes.toml` + 域名/证书（若 DoT/DoH） |
 | 发布 | `build-unlock-image.yml`（version+latest） | `build-unlock-center-image.yml`（version+latest，默认 v1.0.0） |
 
-中心本地 Compose：
+---
+
+### 4.8 Docker Compose 配置示例（可复制）
+
+两边 **分开部署**（不同机器或不同 compose 项目）。不要把 center 和 unlock 强行塞进同一个无 cap 的 compose，除非你清楚网络/权限差异。
+
+#### 4.8.1 解锁机（每一台区域机一份）
+
+目录：`unlock/`。仓库已提供 [docker-compose.yml](../unlock/docker-compose.yml)。
 
 ```bash
-cp .env.example .env && cp nodes.example.toml nodes.toml
-# 改真实 IP 与证书变量
-docker compose up -d && docker compose logs -f
+cd unlock
+cp .env.example .env
+# 编辑 .env：UNLOCK_IP、ALLOWED_IPS（含客户端+中心 IP）、WARP_*、ENABLE_DNS=1 等
+docker compose pull
+docker compose up -d
+docker compose logs -f
 ```
+
+`docker-compose.yml` 要点（与仓库文件一致）：
+
+```yaml
+services:
+  unlock:
+    image: ghcr.io/lanlan13-14/proxym-easy-unlock:latest
+    container_name: proxym-unlock
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${DNS_UDP_PORT:-53}:${DNS_UDP_PORT:-53}/udp"
+      - "${DNS_UDP_PORT:-53}:${DNS_UDP_PORT:-53}/tcp"
+      - "${DOT_PORT:-853}:${DOT_PORT:-853}/tcp"
+      - "${DOH_PORT:-4430}:${DOH_PORT:-4430}/tcp"
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "${SOCKS5_PORT:-1080}:${SOCKS5_PORT:-1080}/tcp"
+    volumes:
+      - unlock-data:/etc/unlock
+      - warp-data:/var/lib/cloudflare-warp
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - MKNOD
+      - AUDIT_WRITE
+      - SYS_PTRACE
+    device_cgroup_rules:
+      - "c 10:200 rwm"
+    sysctls:
+      - net.ipv4.ip_forward=0
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=0
+
+volumes:
+  unlock-data:
+  warp-data:
+```
+
+配合中心时，该机 `.env` 最小关键项：
+
+```bash
+UNLOCK_IP=203.0.113.20          # 本机公网 IP
+ALLOWED_IPS=198.51.100.0/24,203.0.113.1/32   # 客户端 + 中心 IP
+ENABLE_ACL=1
+ENABLE_DNS=1                    # 给中心 dns_upstream 代查
+ENABLE_DOT=0
+ENABLE_DOH=0                    # 客户端只连中心 DoH 时可关
+# WARP_* 必填（该区出口）
+ENABLE_DOMAIN_AUTO_UPDATE=1
+DOMAIN_LIST_URL=https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock/domains/all.txt
+DOMAIN_UPDATE_HOUR=4
+DOMAIN_UPDATE_MINUTE=0
+MIN_DOMAIN_COUNT=800
+```
+
+日区 / 港区 / 美区 / 新区：同一份 compose，只改 `.env` 里的 `UNLOCK_IP`、WARP 与 ACL。
+
+#### 4.8.2 中心机（仅一份）
+
+目录：`unlock-center/`。仓库已提供 [docker-compose.yml](./docker-compose.yml)。
+
+```bash
+cd unlock-center
+cp .env.example .env
+cp nodes.example.toml nodes.toml
+# 编辑 .env（CENTER_DOT_DOMAIN / LE / 策略）
+# 编辑 nodes.toml（所有区域 unlock 的公网 IP）
+docker compose pull
+docker compose up -d
+docker compose logs -f
+```
+
+完整 `docker-compose.yml` 示例：
+
+```yaml
+services:
+  unlock-center:
+    image: ghcr.io/lanlan13-14/proxym-easy-unlock-center:latest
+    container_name: unlock-center
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      NODES_FILE: /etc/unlock-center/nodes.toml
+      CENTER_PID_FILE: /run/unlock-center/unlock-center.pid
+      DATA_DIR: /data
+      CONF_DIR: /etc/unlock-center
+      RUNTIME_DIR: /run/unlock-center
+    volumes:
+      - ./nodes.toml:/etc/unlock-center/nodes.toml:ro
+      - center-data:/data
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "853:853/tcp"
+      - "443:443/tcp"
+    # 不需要 cap_add / TUN
+
+volumes:
+  center-data:
+```
+
+中心 `.env` 最小关键项（完整见 [.env.example](./.env.example)）：
+
+```bash
+CENTER_ENABLE_DNS=0
+CENTER_ENABLE_DOT=1
+CENTER_ENABLE_DOH=1
+DOH_PORT=443
+DOH_BASE_PATH=/api/v2/weather
+UNLOCK_SCOPE=all
+DEFAULT_GLOBAL_REGION=us
+DOMAIN_MAP_URL=https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock-center/domains/domain-region.map
+CENTER_TLS_MODE=letsencrypt
+CENTER_DOT_DOMAIN=dns.example.com
+LE_EMAIL=admin@example.com
+CF_DNS_API_TOKEN=...
+GEOIP_ENABLE_AUTO_UPDATE=1
+GEOIP_UPDATE_HOUR=4
+GEOIP_UPDATE_MINUTE=0
+GEOIP_DB_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
+```
+
+`nodes.toml` 必须与各解锁机 `UNLOCK_IP` 一致（示例见 §4.3.2）。
+
+#### 4.8.3 两台机器上的命令对照
+
+| 步骤 | 日本解锁机 | 中心机 |
+|---|---|---|
+| 目录 | `unlock/` | `unlock-center/` |
+| 配置 | `.env`（UNLOCK_IP=日机 IP） | `.env` + `nodes.toml`（含 jp/us/…） |
+| 启动 | `docker compose up -d` | `docker compose up -d` |
+| 看日志 | `docker compose logs -f` | `docker compose logs -f` |
+| 测 DNS | `dig @日机IP netflix.com +short` | `dig @中心IP dmm.co.jp +short` |
+
+指定镜像版本：
+
+```bash
+# 解锁机
+UNLOCK_IMAGE_TAG=v1.0.8 docker compose pull && UNLOCK_IMAGE_TAG=v1.0.8 docker compose up -d
+
+# 中心
+CENTER_IMAGE_TAG=v1.0.0 docker compose pull && CENTER_IMAGE_TAG=v1.0.0 docker compose up -d
+```
+
+（需在对应 `docker-compose.yml` 的 `image:` 使用 `${UNLOCK_IMAGE_TAG:-latest}` / `${CENTER_IMAGE_TAG:-latest}`；仓库文件已支持。）
 
 ---
 

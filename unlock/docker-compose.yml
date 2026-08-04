@@ -2,10 +2,11 @@
 # Build context is this unlock/ directory only.
 services:
   unlock:
+    # 默认拉 GHCR；本地改镜像可: docker compose build
+    image: ghcr.io/lanlan13-14/proxym-easy-unlock:${UNLOCK_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
-    image: proxym-easy-unlock:latest
     container_name: proxym-unlock
     restart: unless-stopped
     env_file:

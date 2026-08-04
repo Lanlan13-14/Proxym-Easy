@@ -487,6 +487,32 @@ GitHub Action `update-unlock-domains.yml`（约上海 **03:00**）在 **仓库**
 
 ---
 
+## 8.1 Docker Compose 示例（解锁机）
+
+仓库文件：[docker-compose.yml](./docker-compose.yml)（构建上下文仅 `unlock/`）。
+
+```bash
+cd unlock
+cp .env.example .env
+# 必填 WARP_*、UNLOCK_IP、ALLOWED_IPS；配合中心时建议 ENABLE_DNS=1 且 ACL 含中心 IP
+docker compose pull
+docker compose up -d
+docker compose logs -f unlock
+```
+
+使用已发布镜像（compose 默认 `ghcr.io/lanlan13-14/proxym-easy-unlock:latest`）：
+
+```bash
+# 固定版本
+UNLOCK_IMAGE_TAG=v1.0.8 docker compose pull
+UNLOCK_IMAGE_TAG=v1.0.8 docker compose up -d
+```
+
+与 **unlock-center** 联调时的完整对照（中心 compose、nodes.toml、双端 ACL）见：  
+[../unlock-center/README.md §4](../unlock-center/README.md)（端到端教程 + §4.8 Compose 可复制示例）。
+
+---
+
 ## 9. GitHub Actions / 镜像边界
 
 根工作流 `.github/workflows/build-unlock-image.yml`：
