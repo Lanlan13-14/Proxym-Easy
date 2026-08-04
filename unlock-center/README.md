@@ -93,23 +93,58 @@ dig @center netflix.com +short     # → 美国 unlock 公网 IP（path=/us）
 | `UNLOCK_SCOPE` | 配置 | 哪些 class 允许劫持 |
 | `enable_ai_unlock` | 配置 | ai 类是否当解锁 |
 
-### 总流程图
+### 总流程图（含未命中）
+
+「命中」= 在 `domain-region.map` 最长后缀匹配到条目，且 `UNLOCK_SCOPE` 允许劫持该类。  
+「未命中」= 表里没有，或有但被 SCOPE 关掉 → 一律当 **other**，走 **代查真实 DNS**（答案不是 unlock IP）。
 
 ```text
 收到查询
   │
-  ├─ 无 question ──────────────────────────────► SERVFAIL
+  ├─ 无 question ──────────────────────────────────────► SERVFAIL
   │
-  ├─ qtype 不是 A/AAAA
-  │     ├─ other_qtype_mode=refused（默认）──────► REFUSED
-  │     └─ passthrough ─────────────────────────► 当 other 代查
+  ├─ qtype 不是 A / AAAA
+  │     ├─ other_qtype_mode=refused（默认）─────────────► REFUSED
+  │     └─ passthrough ────────────────────────────────► 【未命中通道】代查真实记录
   │
   ├─ qtype = AAAA
-  │     ├─ 域名算作「解锁命中」(global/regional/ai 且 scope 允许)
-  │     │     └─ aaaa_mode=empty（默认）────────► NOERROR 空答案（防 IPv6 绕过）
-  │     └─ 域名算 other 或 aaaa_mode=passthrough ► 代查真实 AAAA
+  │     │
+  │     ├─ 先做与 A 相同的「分类」（见下）
+  │     │
+  │     ├─ 命中解锁 (global/regional/ai 且 scope 允许)
+  │     │     └─ aaaa_mode=empty|soa（默认 empty）─────► NOERROR 空答案（防 IPv6 绕过 sniproxy）
+  │     │
+  │     └─ 未命中 (other) 或 aaaa_mode=passthrough ───► 【未命中通道】代查真实 AAAA
   │
-  └─ qtype = A  ──► 进入「分类 + 选区」（见下）
+  └─ qtype = A
+        │
+        ▼
+     规范化 qname
+        │
+        ▼
+     domain-region.map 最长后缀匹配
+        │
+        ├─ 未匹配到任何后缀 ──────────────────────────► class = other ──┐
+        │                                                              │
+        └─ 匹配到 class + region?                                      │
+              │                                                        │
+              ▼                                                        │
+           UNLOCK_SCOPE 是否允许该类？                                   │
+              │                                                        │
+              ├─ 不允许（降级）─────────────────────────────────────────► class = other ──┤
+              │                                                        │
+              └─ 允许 ──► class = regional / global / ai               │
+                            │                                          │
+          ┌─────────────────┼─────────────────┐                        │
+          ▼                 ▼                 ▼                        ▼
+     ① regional        ② global           ③ ai              ④【未命中通道】other
+     map 强制区         path/默认全局区     path AI 或跟随 global    代查真实 DNS
+     A = 该区 unlock_ip  A = 该池 unlock_ip  A = 该池 unlock_ip     A/AAAA = 真实结果
+          │                 │                 │                        │
+          └─────────────────┴─────────────────┴── 客户端去连 unlock 80/443
+                                                                   │
+                                                                   └─ 客户端去连真实 CDN
+                                                                      （不经 sniproxy）
 ```
 
 ### A 记录：分类怎么来
@@ -118,9 +153,9 @@ dig @center netflix.com +short     # → 美国 unlock 公网 IP（path=/us）
 2. 在 `domain-region.map` 做 **最长后缀匹配**  
    - 查 `a.b.dmm.co.jp` → 试 `a.b.dmm.co.jp` → `b.dmm.co.jp` → `dmm.co.jp` → …  
    - 命中则得到 `class` + 可选 `region`（regional 必有 region）。  
-   - 全不中 → 视为 **other**。  
-3. 套 `UNLOCK_SCOPE`（见下表）。不允许劫持的 class **降级为 other**。  
-4. 按最终 class 分支。
+   - **整条后缀链都匹配不到 → 未命中 → class = other（不是丢弃查询）。**  
+3. 套 `UNLOCK_SCOPE`（见下表）。不允许劫持的 class **降级为 other**（同样走未命中通道）。  
+4. 按最终 class 分支：命中三类回 unlock IP；**other 只走代查**。
 
 **SCOPE 与 class（谁会被劫持）：**
 
@@ -181,23 +216,66 @@ pool = profile.ai_region
 | `/api/v2/weather/us/ai/jp` | us | **jp** |
 | `/api/v2/weather/ai/jp` | DEFAULT | **jp** |
 
-#### ④ class = other（表外，或被 SCOPE 关掉的原解锁域名）
+#### ④ class = other（**未命中**，或被 SCOPE 关掉）
+
+这是流程图里原先容易漏画的一支：**表里没有 / 被 scope 降级，不会拒绝查询，也不会乱指到某台 unlock 当网站 IP。**
+
+**哪些情况会进 other（未命中通道）**
+
+| 情况 | 例子 |
+|---|---|
+| map 完全没有该后缀 | `example.com`、`github.com`、任意普通站 |
+| map 有，但 `UNLOCK_SCOPE` 不允许该类 | `SCOPE=global` 时查 `dmm.co.jp`（regional 被关） |
+| map 标 ai，但 `enable_ai_unlock=false` | `openai.com` → 当 other |
+| AAAA 且域名 other | 代查真实 AAAA |
+| 非 A/AAAA 且 `other_qtype_mode=passthrough` | 少见；默认是 REFUSED 不进这里 |
+
+**未命中处理流程（passthrough）**
 
 ```text
-目的：返回「真实解析」，客户端直连网站 CDN，不进 sniproxy
-
-1) 选一台解锁机做 DNS 上游（代查，不是返回它的 unlock_ip 当答案）
-   - nearest_for_passthrough=true（默认）：
-       有 GeoIP 且查到 client 经纬度 → 按节点 lat/lon 最近
-       否则 → default_passthrough_region 池
-   - 再失败 → 任意健康节点
-2) 向该节点 dns_upstream（如 203.0.113.20:53）发同样 DNS 查询
-3) 把上游答案原样返回（TTL 可截断）；失败则试 fallback_upstreams（1.1.1.1:53 等）
-4) 可缓存 (qname,qtype,节点)
+class = other
+  │
+  │  目的：答案 = 公网真实解析，客户端直连 CDN（不经 unlock sniproxy）
+  │
+  ▼
+选「代查用」解锁机（只当 DNS 上游，答案里不会填它的 unlock_ip）
+  │
+  ├─ nearest_for_passthrough=true（默认）
+  │     ├─ GeoIP 根据 client_ip 得到 lat/lon
+  │     │     └─ 在 nodes 里按 lat/lon 选最近机
+  │     └─ GeoIP 失败/未加载
+  │           └─ default_passthrough_region 池（如 us）
+  └─ nearest_for_passthrough=false
+        └─ 只用 default_passthrough_region
+  │
+  ├─ 该选择失败 → 任意 healthy 节点
+  │
+  ▼
+向节点 dns_upstream（例 203.0.113.20:53）发【相同 qname/qtype】
+  │
+  ├─ 成功 → 把上游 DNS 应答原样回给客户端（TTL 可截断到 passthrough_max_ttl）
+  │         可缓存 key=(qname, qtype, 节点id)
+  │
+  └─ 失败 → 试 fallback_upstreams（默认 1.1.1.1:53、8.8.8.8:53）
+        ├─ 成功 → 同样原样返回
+        └─ 全失败 → SERVFAIL
 ```
 
-**要点：** 答案里的 IP 是 **example.com 的真实地址**，不是 解锁机公网 IP。  
-代查走哪台机只影响「递归视角/延迟」，解锁机需对中心放行 53。
+**和「命中」的对比（务必分清）**
+
+| | 命中 global/regional/ai | **未命中 other** |
+|---|---|---|
+| DNS 答案里的 A | **unlock 公网 IP** | **网站真实 IP** |
+| 客户端接下来连谁 | 该区 sniproxy → WARP | 真实 CDN/源站 |
+| 用不用 path 定区 | global/ai 用 | **不用** |
+| 用不用 GeoIP | 否（regional/global/ai 定区） | **是**（只选代查从哪台机出去） |
+| 解锁机 53 | 不必须给客户端 | **必须给中心**访问 `dns_upstream` |
+
+**要点：**
+
+- 未命中 **不是** 丢弃，也 **不是** 把 example.com 解析成某台 unlock_ip。  
+- 代查从哪台 unlock 出去，只影响解析视角/延迟；答案仍是真实 RRset。  
+- 若解锁机 53 未对中心放行，且 fallback 也挂 → 普通站会 SERVFAIL。
 
 ### Profile 从哪来（和协议有关）
 
@@ -223,13 +301,15 @@ pool = profile.ai_region
 | 6 | `/…/us` | `openai.com` | A | **us** unlock_ip（ai 跟随 global） |
 | 7 | `/…/us/ai/jp` | `openai.com` | A | **jp** unlock_ip |
 | 8 | `/…/us/ai/jp` | `netflix.com` | A | **us** unlock_ip（global 仍是 us） |
-| 9 | `/…/us` | `example.com` | A | **真实 IP**（other 代查） |
-| 10 | `/…/us` | `dmm.co.jp` | MX 等 | **REFUSED**（默认） |
-| 11 | SCOPE=`global` | `dmm.co.jp` A | A | **真实/代查**（regional 被 scope 关掉） |
-| 12 | SCOPE=`regional` | `netflix.com` A | A | **真实/代查**（global 被关掉） |
-| 13 | path 乱写 | 任意 | — | DoH **HTTP 404** |
-| 14 | map 有 `uk` 但 nodes 无 uk 机 | `bbc.co.uk` A | A | **SERVFAIL**（默认不跨区兜底） |
-| 15 | 同 path 连查 jp 站再查 hk 站 | 两条 A | A | 分别 jp IP、hk IP，**同时成立** |
+| 9 | `/…/us` | `example.com` | A | **未命中** → 真实 IP（other 代查，**不是** unlock_ip） |
+| 10 | `/…/us` | `github.com` | A | 同上，表外域名一律未命中代查 |
+| 11 | `/…/us` | `dmm.co.jp` | MX 等 | **REFUSED**（默认，未走代查） |
+| 12 | SCOPE=`global` | `dmm.co.jp` | A | map 有但 scope 关 regional → **降级未命中** → 真实/代查 |
+| 13 | SCOPE=`regional` | `netflix.com` | A | map 有但 scope 关 global → **降级未命中** → 真实/代查 |
+| 14 | path 乱写 | 任意 | — | DoH **HTTP 404**（请求未进入 DNS 逻辑） |
+| 15 | map 有 `uk` 但 nodes 无 uk 机 | `bbc.co.uk` | A | **命中 regional** 但无节点 → **SERVFAIL**（不是未命中代查） |
+| 16 | 同 path 连查 jp 站再查 hk 站 | 两条 A | A | 分别 jp/hk unlock_ip，**同时成立** |
+| 17 | 代查：unlock:53 全不通且 fallback 挂 | `example.com` | A | **未命中通道失败** → SERVFAIL |
 
 ### 和「客户端连上以后」的关系
 
