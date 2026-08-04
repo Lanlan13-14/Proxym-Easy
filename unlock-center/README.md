@@ -1,11 +1,17 @@
 # unlock-center
 
-**DNS 解锁控制面**（Rust）：客户端只连这一台中心的 **明文 DNS / DoT / DoH**，中心按「域名分类 + 路径指定区域 + 客户端 GeoIP」决定返回哪台区域解锁机的 IP；视频流量与 sniproxy / WARP **不经过中心**，仍由各区域 [unlock](../unlock/) 镜像处理。
+**DNS 解锁控制面**（Rust）：客户端只连 **一个** 中心 DoH/DoT/53；**每一次 DNS 查询按域名独立选区**，可同时把日本限定、香港限定、英国限定等解析到不同解锁机。视频与 sniproxy / WARP **不经过中心**，由各区域 [unlock](../unlock/) 数据面处理。
+
+> **重要（请先读）：**  
+> - **支持多区并发。** 同一 DoH、同一时刻：`dmm.co.jp` → 日本机，`mytvsuper.com` → 香港机，`bbc.co.uk` → 英国机，互不排斥。  
+> - **不是**「整台中心只能开一个地域」。  
+> - `DEFAULT_GLOBAL_REGION` / DoH path 里的 `/us` **只钉 global（如 Netflix）和 AI 的默认出口**，**不会**关掉其它 regional 区锁。  
+> - 要同时看日+港限定：中心 1 台 + **至少** jp、hk 各一台 unlock，并在 `nodes.toml` 登记即可。
 
 | 组件 | 职责 |
 |---|---|
-| **unlock-center（本目录）** | 聪明 DNS：匹配域名、选区、选节点、非解锁就近代查 |
-| **unlock（兄弟目录）** | 傻数据面：SmartDNS + sniproxy + 区出口 WARP，**保持原样** |
+| **unlock-center（本目录）** | 聪明 DNS：按 **单次查询的域名** 匹配分类、选区、选节点；非解锁就近代查 |
+| **unlock（兄弟目录）** | 傻数据面：SmartDNS + sniproxy + **单区** WARP 出口；一区一机（或一区多机） |
 
 设计规格全文：[DEVELOPMENT.md](./DEVELOPMENT.md)
 
@@ -13,15 +19,16 @@
 
 ## 1. 它解决什么问题
 
-单台解锁机只能固定一个出口区。多台解锁机（美/日/港/英…）时需要：
+单台解锁机只有一个 WARP 出口区。多台解锁机（美/日/港/英…）时需要：
 
 1. **一个入口**给客户端（不要每个 App 配一堆 DoH）
-2. **区锁内容**（DMM、BBC、myTV 等）自动进对应区的机
-3. **全局流媒体**（Netflix 等）由用户/路径钉死出口区，**不要**用客户端 IP 库瞎猜导致区漂
+2. **多种区锁内容同时可用**：日区 DMM、港区 myTV、英区 BBC… **同一条 DoH 上按域名自动分流到不同机**
+3. **全局流媒体**（Netflix 等）由路径/默认区钉死出口，**不要**用客户端 IP 库猜导致区漂
 4. **AI** 默认跟全局区，也可路径单独指定
-5. **普通网站**不要解析成解锁机 IP，而是真实 CDN；DNS 代查尽量走离用户近的解锁机
+5. **普通网站**解析成真实 CDN；DNS 代查尽量走离用户近的解锁机
 
-`unlock-center` 就是做上面这些的控制面。
+`unlock-center` 就是做这些的控制面。  
+**「一个全局默认 + 任意多个 regional 区」同时生效** 是默认能力，不是阉割模式。
 
 ---
 
@@ -33,28 +40,40 @@
         ▼
 ┌───────────────────┐
 │  unlock-center    │  无 sniproxy / 无 WARP
-│  三端口 DNS 入口   │
-│  域名表 + 选节点   │
+│  每个查询独立选区  │
 └─────────┬─────────┘
-          │
+          │  例：同一客户端连续查询
+          │  dmm.co.jp      → jp 机 IP
+          │  mytvsuper.com  → hk 机 IP
+          │  netflix.com    → us 机 IP（path/默认全局）
    ┌──────┼──────────────┐
    ▼      ▼              ▼
 unlock-us  unlock-jp  unlock-hk / uk …
 (WARP US)  (WARP JP)  (区出口)
    │
-   └─ 客户端 80/443 直连被返回的那台机（sniproxy）
+   └─ 客户端 80/443 直连「该次 DNS 返回的那台」机（sniproxy）
 ```
 
-**决策顺序（核心）：**
+**决策（每个查询单独算一遍）：**
 
 | 域名类型 | 如何定区 | 返回什么 |
 |---|---|---|
-| **regional**（区锁） | `domain-region.map` 强制区；path/Geo **不能改** | 该区 `unlock_ip` |
-| **global**（全球向流媒体） | DoH path 或 `DEFAULT_GLOBAL_REGION` | 该区 `unlock_ip` |
-| **ai** | path 的 AI 区，否则跟随 global | 该区 `unlock_ip` |
-| **other**（不在表内） | 客户端 IP → GeoIP 经纬度 → **最近**解锁机 DNS 代查 | **真实** A/AAAA（不是 unlock IP） |
+| **regional**（区锁） | `domain-region.map` 里该域名绑定的区；**path/Geo 不能改** | **该区** `unlock_ip`（可同时存在 jp+hk+uk+…） |
+| **global**（全球向流媒体） | **仅此项** 受 DoH path / `DEFAULT_GLOBAL_REGION` 影响 | 指定全局池的 `unlock_ip` |
+| **ai** | path 的 AI 区，否则跟随 global | 对应池 `unlock_ip` |
+| **other**（不在表内） | 客户端 IP → GeoIP → **最近**解锁机 DNS 代查 | **真实** A/AAAA（不是 unlock IP） |
 
-`UNLOCK_SCOPE` 可限制只解锁全局、只解锁区域、或两者都开。
+`UNLOCK_SCOPE`：只开 global / 只开 regional / 全开（`all`）。  
+在 `all` 下：**所有已登记节点对应的 regional 区同时有效**，不存在「选了 us 全局就丢了 jp/hk 区锁」。
+
+**同一 DoH 上的并发示例：**
+
+```bash
+# 客户端只配一个 DoH：https://dns.example.com/api/v2/weather/us
+dig @center dmm.co.jp +short       # → 日本 unlock 公网 IP
+dig @center mytvsuper.com +short   # → 香港 unlock 公网 IP
+dig @center netflix.com +short     # → 美国 unlock 公网 IP（path=/us）
+```
 
 ---
 
@@ -62,9 +81,9 @@ unlock-us  unlock-jp  unlock-hk / uk …
 
 - 明文 DNS / DoT / DoH **独立开关**，各最多一个端口
 - DoH **可自定义路径**（伪装，不限于 `/dns-query`）
-- 路径指定全局区 / AI 区：`/us`、`/us/ai/jp`、`/ai/jp`
+- 路径 **只** 指定全局区 / AI 区：`/us`、`/us/ai/jp`、`/ai/jp`（**不影响**其它 regional）
 - 域名分类：`global` / `regional` / `ai`（日更 map）
-- **可自定义区域**（如 `uk`）：节点 + map + `allow_regions`
+- **多区并发 + 可自定义区域**（jp/hk/uk/… 同时在线）：节点 + map + `allow_regions`
 - GeoIP City MMDB：**内置默认下载 URL**，可自定义日更时刻
 - TLS：自签 或 **Let’s Encrypt + Cloudflare DNS-01 only**（与 unlock 同思路）
 - 域名表定时拉取热更新；GeoIP `SIGUSR1` 热加载
@@ -277,8 +296,8 @@ dig @127.0.0.1 -p 5353 dmm.co.jp +short
 
 **注意：**
 
-- 路径只影响 **global / ai**
-- **regional 域名永远跟 map**，即使用 `/us` 查 `dmm.co.jp` 仍回日本机
+- 路径只影响 **global / ai** 的默认出口
+- **regional 永远跟 map，且多区同时生效**：即使用 `/us`，查 `dmm.co.jp` 仍回日本机、查港区域名仍回香港机
 - 自定义 path **不能代替** IP 白名单 / Token；生产仍建议 ACL
 
 ---
@@ -434,11 +453,14 @@ unlock-center/
 **Q: 中心和 unlock 装同一台可以吗？**  
 可以，但区出口仍是该机 WARP 区；多区仍要多机或多出口。中心进程本身不跑 WARP。
 
-**Q: 为什么 DMM 走了日本，Netflix 却是美国？**  
-DMM 是 regional→jp；Netflix 是 global→path/默认全局区。这是预期行为。
+**Q: 是不是只能解锁「一个全局 + 一个地域」？**  
+**不是。** 那是文档曾写糊导致的误解。默认 `UNLOCK_SCOPE=all` 时，map 里所有 regional 区（jp/hk/uk/…）只要 `nodes.toml` 有对应机，就 **同时** 可解锁；`DEFAULT_GLOBAL_REGION` / path 只钉 Netflix 一类 global，不关掉其它区锁。
+
+**Q: 为什么 DMM 走了日本，Netflix 却是美国，港区也能看？**  
+同一 DoH 上按域名分流：DMM=regional→jp，港区站=regional→hk，Netflix=global→path/默认区。这是预期行为。
 
 **Q: 想全家默认日区 Netflix？**  
-`DEFAULT_GLOBAL_REGION=jp`，或客户端 DoH 固定 `.../jp`。
+`DEFAULT_GLOBAL_REGION=jp`，或客户端 DoH 固定 `.../jp`。日区/港区等 **regional 不受影响**。
 
 **Q: 非解锁网站很慢？**  
 DNS 会先到中心再代查；中心与用户的 RTT 占大头。可接受则保持单中心；要更低延迟需多中心 GeoDNS（非本 MVP）。
