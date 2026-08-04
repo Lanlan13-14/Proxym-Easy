@@ -91,173 +91,397 @@ dig @center netflix.com +short     # → 美国 unlock 公网 IP（path=/us）
 
 ---
 
-## 4. 生产部署（Docker，推荐）
+## 4. 端到端配置教程（解锁机 + 中心机）
 
-### 4.1 镜像
+下面按 **真实联调顺序**：先多台区域解锁机，再中心，再客户端。  
+假设你要同时：
+
+- **日本限定**（DMM 等）→ 日本 unlock  
+- **香港限定**（myTV 等）→ 香港 unlock  
+- **新加坡机器看 Netflix** → path `/sg` → 新加坡 unlock  
+- **美国机器看 Netflix** → path `/us` → 美国 unlock  
+
+需要机器示例：
+
+| 角色 | 公网 IP（示例） | 说明 |
+|---|---|---|
+| 中心 center | `203.0.113.1` | 只跑 unlock-center；域名 `dns.example.com` → 此 IP |
+| 解锁 us | `203.0.113.10` | WARP 出口美国 |
+| 解锁 jp | `203.0.113.20` | WARP 出口日本 |
+| 解锁 hk | `203.0.113.30` | WARP 出口香港 |
+| 解锁 sg | `203.0.113.50` | WARP 出口新加坡 |
+
+客户端：新加坡家宽 `198.51.100.10`、美国家宽 `198.51.100.20`（按你实际改 ACL）。
+
+---
+
+### 4.1 总览：谁开什么端口、谁连谁
+
+```text
+[客户端]
+  DoH → center:443  (或 DoT:853 / DNS:53)
+  80/443 → 中心返回的那台 unlock 公网 IP（sniproxy）
+
+[center]
+  出站 UDP/TCP → 各 unlock:53   （非解锁代查；必须放行中心 IP）
+  不连 unlock 的 80/443 做视频
+
+[unlock-xx]
+  53   ：可只给中心 IP（代查）+ 可选自己测试
+  80/443：给「会看流媒体的客户端 IP」（sniproxy）
+  DoT/DoH：可选；给中心当数据面时客户端通常只连中心 DoH，unlock 上 DoT/DoH 可关
+```
+
+防火墙/安全组最小集：
+
+| 机器 | 放行入站 | 来源 |
+|---|---|---|
+| center | 443（DoH）、可选 853/53 | 你的客户端网段 |
+| 每台 unlock | 80, 443 | 客户端网段 |
+| 每台 unlock | 53/udp+tcp | **仅中心 IP** `203.0.113.1`（推荐） |
+
+---
+
+### 4.2 解锁机配置（每一台区域机各做一遍）
+
+目录：[../unlock](../unlock/)。镜像：
+
+```text
+ghcr.io/lanlan13-14/proxym-easy-unlock:latest
+```
+
+#### 4.2.1 日区机 `unlock-jp` 示例 `.env`
+
+在 **日本 VPS** 上 `unlock/` 目录：
+
+```bash
+cp .env.example .env
+# 编辑 .env
+```
+
+```bash
+TZ=Asia/Shanghai
+
+# 本机公网 IP（DNS 解锁返回给客户端的地址，必须填对）
+UNLOCK_IP=203.0.113.20
+
+# ACL：客户端网段 + 中心 IP（中心要查 53 代查）
+# 不要只写自己测试 IP 却漏掉中心，否则 center passthrough 失败
+ALLOWED_IPS=198.51.100.0/24,203.0.113.1/32
+ENABLE_ACL=1
+
+# 给中心当数据面时：建议开明文 DNS 供中心代查；DoT/DoH 可关（客户端走中心）
+ENABLE_DNS=1
+DNS_UDP_PORT=53
+ENABLE_DOT=0
+ENABLE_DOH=0
+# 若仍开 DoT/DoH，勿占 443（443 给 sniproxy）
+# ENABLE_DOT=1
+# DOT_PORT=853
+# ENABLE_DOH=1
+# DOH_PORT=4430
+# DOT_DOMAIN=jp-dot.example.com
+# DOT_TLS_MODE=letsencrypt
+# LE_EMAIL=...
+# CF_DNS_API_TOKEN=...
+
+UPSTREAM_DNS=1.1.1.1,1.0.0.1
+FORCE_AAAA_SOA=yes
+PLATFORMS=all
+REGIONS=
+
+# 域名日更（解锁机自己的 all.txt）
+ENABLE_DOMAIN_AUTO_UPDATE=1
+DOMAIN_LIST_URL=https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock/domains/all.txt
+DOMAIN_UPDATE_HOUR=4
+DOMAIN_UPDATE_MINUTE=0
+MIN_DOMAIN_COUNT=800
+
+# Cloudflare Zero Trust WARP（出口必须是日本策略）
+WARP_ORGANIZATION=your-team
+WARP_CLIENT_ID=...
+WARP_CLIENT_SECRET=...
+WARP_REGISTER_TIMEOUT=240
+WARP_CONNECT_TIMEOUT=120
+ZT_RESTART_HOURS=12
+
+ENABLE_SOCKS5=0
+```
+
+启动：
+
+```bash
+cd unlock
+docker compose pull   # 或 build
+docker compose up -d
+docker compose logs -f
+# 确认 WARP warp=on、smartdns/sniproxy 正常
+```
+
+**自检（在解锁机或你电脑上）：**
+
+```bash
+# 本机 DNS 是否把流媒体指到 UNLOCK_IP
+dig @203.0.113.20 netflix.com +short
+# 应接近 203.0.113.20
+
+# 中心 IP 必须能打到 53（在中心机上测）
+dig @203.0.113.20 example.com +short
+```
+
+#### 4.2.2 港区 / 美区 / 新区机
+
+复制同一套，只改：
+
+| 项 | us | hk | sg |
+|---|---|---|---|
+| `UNLOCK_IP` | `203.0.113.10` | `203.0.113.30` | `203.0.113.50` |
+| `ALLOWED_IPS` | 同样含客户端网段 + **中心 IP** | 同左 | 同左 |
+| WARP 组织/策略 | 美国出口 | 香港出口 | 新加坡出口 |
+
+**每一台都是完整 unlock 镜像**，不是「中心附属进程」。WARP 失败则该机 fail-closed，中心只是选不到健康节点。
+
+#### 4.2.3 解锁机端口对照（compose 默认）
+
+| 端口 | 用途 | 中心联调时 |
+|---|---|---|
+| 53/udp+tcp | SmartDNS 明文 | **建议开**，给中心 `dns_upstream` |
+| 80/443 | sniproxy | **必须开**，给客户端播流 |
+| 853 / 4430 | DoT / DoH | 可选；客户端只连中心时可关 |
+| 1080 | SOCKS5 | 可选，与中心无关 |
+
+详细 unlock 变量见 [../unlock/README.md](../unlock/README.md) 与 [../unlock/.env.example](../unlock/.env.example)。
+
+---
+
+### 4.3 中心机配置（unlock-center）
+
+镜像：
 
 ```text
 ghcr.io/lanlan13-14/proxym-easy-unlock-center:latest
-ghcr.io/lanlan13-14/proxym-easy-unlock-center:<version>
 ```
 
-手动发布（Actions → **publish-unlock-center-image**）：
+#### 4.3.1 准备文件
 
-- 仅 `workflow_dispatch`
-- 输入 `version`（**默认 `v1.0.0`**）
-- **每次同时推送** `<version>` 与 `latest`
-
-### 4.2 前置条件
-
-1. 至少一台区域 [unlock](../unlock/) 已跑通（WARP、ACL、公网 IP 可用）
-2. 若启用 DoT/DoH + Let’s Encrypt：域名 DNS 在 Cloudflare，Token 具备 **Zone:Read + DNS:Edit**（建议限制到该 Zone）
-3. 域名 A/AAAA 指向中心机（DoH/DoT 用）
-
-### 4.3 一键 Compose
-
-在 `unlock-center/` 目录：
+在中心机 `unlock-center/`（或任意部署目录）：
 
 ```bash
 cp .env.example .env
 cp nodes.example.toml nodes.toml
-
-# 必改：nodes.toml 里每台 unlock 的公网 IP
-# 必改：.env 里 CENTER_DOT_DOMAIN / LE_EMAIL / CF_DNS_API_TOKEN（若用 LE）
-# 可选：DEFAULT_GLOBAL_REGION、DOH_BASE_PATH、GEOIP_* 时间
-
-docker compose up -d
-docker compose logs -f
 ```
 
-`docker-compose.yml` 默认映射：
-
-| 宿主机 | 容器 | 用途 |
-|---|---|---|
-| 53/udp+tcp | 53 | 明文 DNS（默认关，见 `.env`） |
-| 853/tcp | 853 | DoT |
-| 443/tcp | 443 | DoH |
-
-数据卷 `center-data`：证书、`/data/geoip` MMDB。
-
-### 4.4 节点文件 `nodes.toml`（必填真实 IP）
+#### 4.3.2 `nodes.toml`（把所有解锁机登记进来）
 
 ```toml
 [[nodes]]
 id = "us-1"
-region = "us"                 # 与 map / path 使用的区名一致
-unlock_ip = "你的美区解锁机公网IP"   # 返回给客户端的 A 记录
-dns_upstream = "你的美区解锁机IP:53" # 非解锁代查用（可与 unlock_ip 同机）
+region = "us"
+unlock_ip = "203.0.113.10"          # 客户端最终连这个播 Netflix(美)
+dns_upstream = "203.0.113.10:53"    # 中心代查普通域名
 weight = 10
-lat = 37.77                   # 建议填；GeoIP nearest 用
+lat = 37.77
 lon = -122.42
 
 [[nodes]]
 id = "jp-1"
 region = "jp"
-unlock_ip = "x.x.x.x"
-dns_upstream = "x.x.x.x:53"
+unlock_ip = "203.0.113.20"
+dns_upstream = "203.0.113.20:53"
 weight = 10
 lat = 35.68
 lon = 139.69
+
+[[nodes]]
+id = "hk-1"
+region = "hk"
+unlock_ip = "203.0.113.30"
+dns_upstream = "203.0.113.30:53"
+weight = 10
+lat = 22.32
+lon = 114.17
+
+[[nodes]]
+id = "sg-1"
+region = "sg"
+unlock_ip = "203.0.113.50"
+dns_upstream = "203.0.113.50:53"
+weight = 10
+lat = 1.35
+lon = 103.82
 ```
 
-说明：
+字段含义：
 
-- `region` 可自定义：`uk`、`sg`、`foo` 均可，只要 map / `allow_regions` / 节点三处一致
-- 中心访问各机 `dns_upstream` 时，解锁机 ACL 需放行 **中心出口 IP**
-- 客户端访问 `unlock_ip:80/443` 时，解锁机 ACL 需放行 **客户端网段**（或按你现有 unlock 策略）
+| 字段 | 含义 |
+|---|---|
+| `region` | 逻辑区名，与 map / DoH path 一致（`us`/`jp`/`hk`/`sg`/`uk`/自定义） |
+| `unlock_ip` | 写入 DNS A 记录、客户端去连 sniproxy 的地址 |
+| `dns_upstream` | 中心做 **非解锁代查** 时问谁；通常 `unlock_ip:53` |
+| `lat`/`lon` | GeoIP nearest 用；建议填准 |
 
-### 4.5 环境变量（`.env`）要点
+#### 4.3.3 中心 `.env` 完整示例
 
 ```bash
-# 监听
+TZ=Asia/Shanghai
+
+# —— 客户端入口：建议只开 DoH（或 DoT），明文按需 ——
 CENTER_ENABLE_DNS=0
+DNS_UDP_PORT=53
 CENTER_ENABLE_DOT=1
+DOT_PORT=853
 CENTER_ENABLE_DOH=1
 DOH_PORT=443
-DOH_BASE_PATH=/api/v2/weather    # 可改成任意伪装路径
+DOH_BASE_PATH=/api/v2/weather
 
-# 策略
-UNLOCK_SCOPE=all                 # global | regional | all
-DEFAULT_GLOBAL_REGION=us         # path 未指定时全局/AI 默认区
-DEFAULT_AI_REGION=               # 空 = AI 跟随全局
+# —— 策略：多区 regional 全开；默认全局区仅影响 Netflix 等 ——
+UNLOCK_SCOPE=all
+DEFAULT_GLOBAL_REGION=us
+DEFAULT_AI_REGION=
+DEFAULT_PASSTHROUGH_REGION=us
 DOMAIN_MAP_URL=https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock-center/domains/domain-region.map
 
-# 证书（DoT/DoH）
-CENTER_TLS_MODE=letsencrypt      # 或 selfsigned / files
+# —— 证书（中心自己的 dns.example.com）——
+CENTER_TLS_MODE=letsencrypt
 CENTER_DOT_DOMAIN=dns.example.com
 LE_EMAIL=admin@example.com
-CF_DNS_API_TOKEN=...
+CF_DNS_API_TOKEN=你的CF_Token
+RENEW_CHECK_HOURS=12
+RENEW_BEFORE_DAYS=30
 
-# GeoIP（内置默认 URL，可不改）
+# —— GeoIP（内置 URL，可不改）——
+GEOIP_ENABLE=1
 GEOIP_ENABLE_AUTO_UPDATE=1
 GEOIP_UPDATE_HOUR=4
 GEOIP_UPDATE_MINUTE=0
+GEOIP_DB_PATH=/data/geoip/GeoLite2-City.mmdb
 GEOIP_DB_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
+
+CENTER_LOG_LEVEL=info
 ```
 
-完整列表见 [.env.example](./.env.example)。
+DNS：`dns.example.com` 的 A 记录 → `203.0.113.1`（中心），Cloudflare **DNS only 灰云**（DoT/DoH 证书用 DNS-01，代理橙云按你网络习惯自行取舍；LE DNS-01 不依赖 80）。
 
-### 4.6 客户端怎么配
+#### 4.3.4 启动中心
 
-**DoH（推荐）**
+```bash
+cd unlock-center   # 含 docker-compose.yml 的目录
+docker compose pull
+docker compose up -d
+docker compose logs -f
+
+# 应看到：domain index loaded、nodes loaded、geoip、证书 ensure
+```
+
+Compose 映射：`53`（若开 DNS）、`853` DoT、`443` DoH；卷持久化证书与 GeoIP。
+
+#### 4.3.5 中心侧自检
+
+```bash
+# 在中心或任意能访问中心 DNS 的机器（明文需 ENABLE_DNS=1 时）
+# 或 dig 走 DoT/DoH 工具
+
+# 区锁：多区同时正确
+dig @203.0.113.1 dmm.co.jp +short          # → 203.0.113.20 (jp)
+dig @203.0.113.1 mytvsuper.com +short      # → 203.0.113.30 (hk)
+
+# 全局：默认 us（未带 path 的明文/DoT 默认 profile）
+dig @203.0.113.1 netflix.com +short        # → 203.0.113.10 (us)
+
+# 普通站：真实 IP，不是 203.0.113.x 解锁机
+dig @203.0.113.1 example.com +short
+```
+
+DoH 用 path 区分 Netflix 区（见下节客户端）。
+
+---
+
+### 4.4 客户端配置（对照）
+
+| 客户端位置 | DoH URL | Netflix 去哪 | 日/港区锁 |
+|---|---|---|---|
+| 新加坡机器 | `https://dns.example.com/api/v2/weather/sg` | **sg** 机 | 仍按 map → jp/hk 机 |
+| 美国机器 | `https://dns.example.com/api/v2/weather/us` | **us** 机 | 同上 |
+| 只关心默认全局 | `https://dns.example.com/api/v2/weather` | `DEFAULT_GLOBAL_REGION` | 同上 |
 
 ```text
-# 默认全局区 = DEFAULT_GLOBAL_REGION（如 us）
-https://dns.example.com/api/v2/weather
-
-# 全局强制美区
-https://dns.example.com/api/v2/weather/us
-
-# 全局美区 + AI 走日本
+# 全局美区 + AI 日本（区锁仍多区并发）
 https://dns.example.com/api/v2/weather/us/ai/jp
-
-# 仅钉 AI 区，全局仍用默认
-https://dns.example.com/api/v2/weather/ai/jp
 ```
 
-把上面的 `dns.example.com` 换成你的 `CENTER_DOT_DOMAIN`，路径换成你的 `DOH_BASE_PATH`。
+DoT：主机 `dns.example.com:853`（MVP 用默认全局区；区锁仍按 map）。
 
-**DoT**
+系统 / 路由 / Clash 把 **DNS 指到中心** 即可；**不要**再把流媒体域名手动指到某一台 unlock（否则绕过中心调度）。
 
-```text
-主机: dns.example.com
-端口: 853
-# MVP：DoT 使用默认 profile（DEFAULT_GLOBAL_REGION），区锁域名仍按 map
-```
+---
 
-**明文 DNS**
+### 4.5 联调检查清单（务必按序勾）
+
+**解锁机（每台）**
+
+- [ ] `UNLOCK_IP` = 该机公网 IP  
+- [ ] WARP 已连接且出口区正确（日机日本、港机香港…）  
+- [ ] `ENABLE_DNS=1`，中心 `dig @unlockIP example.com` 通  
+- [ ] `ALLOWED_IPS` 含 **客户端网段 + 中心 IP**  
+- [ ] 80/443 对客户端可达；容器 sniproxy 在跑  
+
+**中心**
+
+- [ ] `nodes.toml` 每区至少一节点，IP 与上表一致  
+- [ ] `region` 名与 path / map 一致（`sg` 不要写成 `singapore` 却 path 用 `/sg` 对不上）  
+- [ ] 证书签发成功（`letsencrypt` 时）  
+- [ ] GeoIP 文件已下载（日志无长期 missing）  
+- [ ] 从中心能访问各 `dns_upstream:53`  
+
+**客户端**
+
+- [ ] DoH/DoT 指向中心域名  
+- [ ] 新机 `/sg`、美机 `/us`（若要 Netflix 分区）  
+- [ ] 播流时抓 DNS：奈飞 A 记录应是对应区 `unlock_ip`，不是中心 IP  
+
+**常见翻车**
+
+| 现象 | 原因 |
+|---|---|
+| 中心查区锁 SERVFAIL | `nodes.toml` 缺该 `region` 或节点全 unhealthy |
+| 代查失败 / 普通站解析慢失败 | 解锁机 53 未放行中心 IP，或 `ENABLE_DNS=0` |
+| 能解析到 unlock IP 但播不了 | 解锁机 80/443 ACL 没放行客户端，或 WARP 挂了 |
+| 新机 Netflix 仍是美区 | DoH 仍用 `/us` 或默认 `DEFAULT_GLOBAL_REGION=us`，应改 `/sg` |
+| 所有流媒体都进同一台机 | 只有一台 unlock 登记，或 map/节点 region 写错 |
+
+---
+
+### 4.6 最小拓扑（只有日+美）
+
+若暂时没有港/新：
+
+1. 只部署 `unlock-us` + `unlock-jp`  
+2. `nodes.toml` 只留 us、jp  
+3. 客户端 DoH：`.../us` 或 `.../jp` 选 Netflix 区  
+4. 日区锁仍然只靠 jp 机；港区 map 有但无节点 → 该区查询会失败/降级（可补机或先不管）
+
+---
+
+### 4.7 镜像与 Compose 速查
+
+| | 解锁机 | 中心 |
+|---|---|---|
+| 镜像 | `ghcr.io/lanlan13-14/proxym-easy-unlock:latest` | `ghcr.io/lanlan13-14/proxym-easy-unlock-center:latest` |
+| 目录 | [../unlock](../unlock/) | 本目录 |
+| 必填 | WARP + `UNLOCK_IP` + `ALLOWED_IPS` | `nodes.toml` + 域名/证书（若 DoT/DoH） |
+| 发布 | `build-unlock-image.yml`（version+latest） | `build-unlock-center-image.yml`（version+latest，默认 v1.0.0） |
+
+中心本地 Compose：
 
 ```bash
-# 需 CENTER_ENABLE_DNS=1
-dig @中心IP netflix.com +short
-# → 美区 unlock 公网 IP（若 default_global=us）
-
-dig @中心IP dmm.co.jp +short
-# → 日区 unlock 公网 IP
-```
-
-### 4.7 自检
-
-```bash
-# 区锁 → 应对应区 IP
-dig @中心 dmm.co.jp +short          # jp 节点
-dig @中心 bbc.co.uk +short          # uk 节点（map 有则）
-
-# 全局 → 默认全局区 IP
-dig @中心 netflix.com +short
-
-# 普通域名 → 不应是 unlock 文档里的假 IP，而是真实解析
-dig @中心 example.com +short
-
-# DoH（LE 证书用系统信任；自签加 -k）
-curl -H 'content-type: application/dns-message' \
-  --data-binary @query.bin \
-  "https://dns.example.com/api/v2/weather/us"
+cp .env.example .env && cp nodes.example.toml nodes.toml
+# 改真实 IP 与证书变量
+docker compose up -d && docker compose logs -f
 ```
 
 ---
 
-## 5. 本地开发（Cargo）
+## 5. 本地开发（Cargo，无 Docker 时）
 
 依赖：Rust **stable ≥ 1.85**（推荐 rustup，勿用过旧系统 rustc）。
 
