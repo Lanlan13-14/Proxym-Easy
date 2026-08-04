@@ -9,7 +9,7 @@
 - Fail closed：Zero Trust 注册/连接/`warp=on` 任一步失败，SmartDNS/sniproxy/SOCKS5 不启动或容器退出
 - Let’s Encrypt：仅在启用 DoT/DoH 时签发共用 TLS 证书；纯明文 DNS **不需要**域名/证书
 - IP/CIDR 白名单：DNS、DoT、DoH、80、443、SOCKS5，并保证 WARP 全隧道下的回程
-- 域名规则：每日从 MetaCubeX geosite 合并发布 `domains/all.txt`（固定 raw URL），容器 04:00 自动拉取热更新；不含 Google / YouTube
+- 域名规则：镜像内嵌 `all.txt` 打底；默认从本仓库 raw 日更（**URL/时刻可改**，可关）；不含 Google / YouTube
 - GitHub Actions：仅手动发布，多架构 amd64/arm64，版本号必填
 
 > `cloudflared Tunnel` 只解决入站连接，不能把 sniproxy 的源站出站流量送入 WARP，因此本方案不使用它实现解锁。这里使用官方 `warp-svc` 的 Zero Trust Traffic-only 隧道。
@@ -365,38 +365,86 @@ docker compose exec unlock cat /run/unlock/warp-trace.log
 
 ---
 
-## 7. 域名规则（geosite 日更）
+## 7. 域名规则（可配置日更，不是写死）
 
-发布清单（固定 URL，容器默认识别）：
+解锁机劫持列表 **不是** 编译进二进制写死的一份。运行时是：
+
+1. 镜像内自带一份 `domains/all.txt`（构建时快照，**打底**）
+2. 容器里 `scripts/domain-updater.sh` 按你配置的 **URL + 时刻** 拉取远程清单并热重载
+3. 远程校验失败则 **保留当前列表**，不会清空
+
+### 7.1 环境变量（都可以改）
+
+| 变量 | 默认 | 含义 |
+|---|---|---|
+| `ENABLE_DOMAIN_AUTO_UPDATE` | `1` | `0/false` 关闭远程拉取，只用镜像内 / 已 seed 的列表 |
+| `DOMAIN_LIST_URL` | 见下 | **远程清单 URL，可改成你自己的** |
+| `DOMAIN_UPDATE_HOUR` | `4` | 每天几点拉（0–23，容器 `TZ`） |
+| `DOMAIN_UPDATE_MINUTE` | `0` | 分钟 |
+| `MIN_DOMAIN_COUNT` | `800` | 远程行数少于此则拒绝更新 |
+
+**默认 URL**（仅默认值，可覆盖）：
 
 ```text
 https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock/domains/all.txt
 ```
 
-### 上游构建（GitHub Actions，每天 03:00 上海时区）
+示例：关日更 / 改时刻 / 用自建列表：
 
-工作流：`.github/workflows/update-unlock-domains.yml`（`0 19 * * *` UTC）
+```bash
+# 只用镜像内列表，永不拉远程
+ENABLE_DOMAIN_AUTO_UPDATE=0
 
-1. 拉取 `MetaCubeX/meta-rules-dat` 的 `meta` 分支 `geo/geosite`
-2. 按 `domains/geosite-sources.txt` 合并 geosite `.list`
-3. 按 `domains/rules-domain-sources.txt` 拉取 `Lanlan13-14/Rules` 的 Clash Domain YAML（`streaming_hk/sg/tw/uk`、`tvb`；`*.example.com` / `*.*.example.com` → 裸 FQDN）
-4. 再并入 `StreamConfig.yaml` + `domains/1stream.txt` 补充
-5. 规范化标记、**全局去重**、**剔除** Google / YouTube 族后写回 `domains/all.txt` 并 push `main`
+# 每天 06:30（TZ=Asia/Shanghai）拉官方 raw
+ENABLE_DOMAIN_AUTO_UPDATE=1
+DOMAIN_UPDATE_HOUR=6
+DOMAIN_UPDATE_MINUTE=30
 
-### 容器热更新（默认 04:00）
+# 拉你自己托管的清单（一行一个 FQDN）
+DOMAIN_LIST_URL=https://example.com/my-unlock-domains.txt
+MIN_DOMAIN_COUNT=100
+```
 
-`scripts/domain-updater.sh`：
+### 7.2 容器里实际怎么更新
 
-- 启动时用镜像内嵌 `domains/all.txt` 打底，并 best-effort 拉一次远程
-- 每天 `DOMAIN_UPDATE_HOUR:DOMAIN_UPDATE_MINUTE`（默认 4:00，跟随容器 `TZ`）再拉
-- 变更后重建配置：SmartDNS `SIGHUP`，sniproxy 重启
-- 远程列表过小 / 含 Google/YouTube / 缺核心域名 → **拒绝并保留旧表**
+`scripts/domain-updater.sh`（entrypoint 会 seed → boot 拉一次 → 后台 loop）：
 
-相关环境变量见 `.env.example` 的 `ENABLE_DOMAIN_AUTO_UPDATE` / `DOMAIN_LIST_URL` / `MIN_DOMAIN_COUNT`。
+| 时机 | 行为 |
+|---|---|
+| 启动 | 若 runtime 列表空，从镜像 `domains/all.txt` **seed** |
+| 启动 | `ENABLE_DOMAIN_AUTO_UPDATE=1` 时 **best-effort** 拉 `DOMAIN_LIST_URL`；失败继续用本地 |
+| 每天 H:M | 再拉；有变更则写 runtime 列表并 **热重载** |
+| 热重载 | 重建 sniproxy/SmartDNS 配置：SmartDNS `SIGHUP`，sniproxy 重启 |
 
-匹配语义：列表存裸 FQDN；SmartDNS `address /domain/ip` 与 sniproxy `(^|\.)domain$` 覆盖本域及子域。详情与来源见 `domains/SOURCES.md`。
+远程列表校验（任一失败则 **不替换** 旧表）：
 
-默认 `FORCE_AAAA_SOA=yes`，防止 IPv4 解锁机上的客户端通过 AAAA 直连真实流媒体源站绕过 sniproxy。
+- 行数 ≥ `MIN_DOMAIN_COUNT`
+- 不得含 Google/YouTube 族
+- 须含核心域名（如 `netflix.com`、`disneyplus.com`、`bamgrid.com` 等，见脚本）
+
+匹配语义：列表为裸 FQDN；SmartDNS `address /domain/ip` 与 sniproxy `(^|\.)domain$` 覆盖本域及子域。
+
+### 7.3 上游「官方」清单怎么生成（仓库侧，不是容器写死）
+
+GitHub Action `update-unlock-domains.yml`（约上海 **03:00**）在 **仓库** 里重建并 push `unlock/domains/all.txt`，供默认 `DOMAIN_LIST_URL` 使用：
+
+1. MetaCubeX `geo/geosite`（`geosite-sources.txt`）
+2. Rules Domain YAML（`rules-domain-sources.txt`）
+3. `StreamConfig.yaml` + `1stream.txt` 补充
+4. 去重、剔 Google/YouTube
+
+你完全可以：**不改容器代码**，只把 `DOMAIN_LIST_URL` 指到自己的 raw/文件服务器；或 fork 后改 Action 产物 URL。
+
+与 **unlock-center** 的关系：
+
+| 组件 | 列表 | 日更变量 |
+|---|---|---|
+| 解锁机 unlock | 劫持用 `all.txt`（扁平域名） | `DOMAIN_LIST_URL` 等（本节） |
+| 中心 unlock-center | 分类 `domain-region.map` | `DOMAIN_MAP_URL` 等（见 unlock-center README） |
+
+两边默认都指向本仓库 raw，但是 **两套文件、两套 env，都可改**。
+
+默认 `FORCE_AAAA_SOA=yes`，防止 IPv4 解锁机上客户端用 AAAA 绕过 sniproxy。来源细节见 `domains/SOURCES.md`。
 
 ---
 
@@ -430,10 +478,10 @@ https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock/domains/al
 | `FORCE_AAAA_SOA` | `yes` | IPv4 部署防止 AAAA 绕过 |
 | `PLATFORMS` | `all` | StreamConfig 平台过滤（仅 streamconfig 回退路径） |
 | `REGIONS` | 空 | StreamConfig 地区过滤（仅 streamconfig 回退路径） |
-| `ENABLE_DOMAIN_AUTO_UPDATE` | `1` | 是否按 `DOMAIN_LIST_URL` 日更域名 |
-| `DOMAIN_LIST_URL` | raw `.../unlock/domains/all.txt` | 发布清单固定 URL |
-| `DOMAIN_UPDATE_HOUR` / `DOMAIN_UPDATE_MINUTE` | `4` / `0` | 容器内日更时刻（`TZ`） |
-| `MIN_DOMAIN_COUNT` | `800` | 远程清单最小行数，过小则拒绝 |
+| `ENABLE_DOMAIN_AUTO_UPDATE` | `1` | 是否远程日更；`0` 则只用镜像内/已 seed 列表 |
+| `DOMAIN_LIST_URL` | 本仓库 `.../unlock/domains/all.txt`（**默认值，可改**） | 远程域名清单 URL |
+| `DOMAIN_UPDATE_HOUR` / `DOMAIN_UPDATE_MINUTE` | `4` / `0` | 每天拉取时刻（容器 `TZ`，可改） |
+| `MIN_DOMAIN_COUNT` | `800` | 远程行数下限，过小拒绝更新 |
 
 至少启用 `ENABLE_DNS` / `ENABLE_DOT` / `ENABLE_DOH` 之一。
 

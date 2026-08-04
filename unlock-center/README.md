@@ -367,7 +367,8 @@ FORCE_AAAA_SOA=yes
 PLATFORMS=all
 REGIONS=
 
-# 域名日更（解锁机自己的 all.txt）
+# 域名日更（解锁机劫持列表；URL/时刻可改，不是写死）
+# 默认拉仓库 all.txt；可改 DOMAIN_LIST_URL 或 ENABLE_DOMAIN_AUTO_UPDATE=0 只用镜像内列表
 ENABLE_DOMAIN_AUTO_UPDATE=1
 DOMAIN_LIST_URL=https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock/domains/all.txt
 DOMAIN_UPDATE_HOUR=4
