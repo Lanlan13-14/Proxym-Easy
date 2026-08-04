@@ -1,0 +1,34 @@
+[package]
+name = "unlock-center"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "unlock-center"
+path = "src/main.rs"
+
+[dependencies]
+domain-index = { path = "../domain-index" }
+schedule = { path = "../schedule" }
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+dashmap = { workspace = true }
+hickory-proto = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+rcgen = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }

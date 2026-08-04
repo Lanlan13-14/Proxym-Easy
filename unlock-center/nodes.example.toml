@@ -1,0 +1,39 @@
+# Unlock node registry. region values are free-form (us/jp/hk/uk/...).
+# Add a new region: deploy unlock VM + append [[nodes]] with that region id.
+
+[[nodes]]
+id = "us-1"
+region = "us"
+unlock_ip = "203.0.113.10"
+dns_upstream = "203.0.113.10:53"
+weight = 10
+lat = 37.77
+lon = -122.42
+
+[[nodes]]
+id = "jp-1"
+region = "jp"
+unlock_ip = "203.0.113.20"
+dns_upstream = "203.0.113.20:53"
+weight = 10
+lat = 35.68
+lon = 139.69
+
+[[nodes]]
+id = "hk-1"
+region = "hk"
+unlock_ip = "203.0.113.30"
+dns_upstream = "203.0.113.30:53"
+weight = 10
+lat = 22.32
+lon = 114.17
+
+# Example: UK unlock region (add real machine IP when ready)
+[[nodes]]
+id = "uk-1"
+region = "uk"
+unlock_ip = "203.0.113.40"
+dns_upstream = "203.0.113.40:53"
+weight = 10
+lat = 51.51
+lon = -0.13

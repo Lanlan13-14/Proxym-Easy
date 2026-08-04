@@ -1,0 +1,8 @@
+/target/
+/config.toml
+/nodes.toml
+/data/
+**/*.pem
+**/*.key
+.Cargo/
+target/

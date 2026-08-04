@@ -1,0 +1,62 @@
+# unlock-center example config
+# copy to config.toml and edit nodes_file / domain map paths
+
+[listen]
+enable_dns = true
+dns_host = "0.0.0.0"
+dns_port = 5353          # use 53 in production
+enable_dot = true
+dot_host = "0.0.0.0"
+dot_port = 8853
+enable_doh = true
+doh_host = "0.0.0.0"
+doh_port = 8443
+# Custom DoH path (camouflage). Not limited to /dns-query.
+doh_base_path = "/api/v2/weather"
+doh_extra_paths = []
+
+[tls]
+mode = "selfsigned"      # selfsigned | files | letsencrypt
+domain = "dns.example.com"
+cert_file = "/data/tls/cert.pem"
+key_file = "/data/tls/key.pem"
+
+[policy]
+unlock_scope = "all"     # global | regional | all
+enable_ai_unlock = true
+default_global_region = "us"
+default_ai_region = ""   # empty = follow global
+# Custom regions: add here, deploy matching unlock nodes, classify domains as regional.
+allow_regions = ["us", "jp", "hk", "sg", "tw", "uk", "kr", "eu", "sea", "au", "cn"]
+unlock_answer_ttl_secs = 45
+aaaa_mode = "empty"
+other_qtype_mode = "refused"
+
+[tables]
+domain_map_url = ""
+domain_map_file = "domains/domain-region.map"
+refresh_interval_secs = 3600
+min_entries = 100
+
+[nodes]
+# path relative to process cwd, or absolute
+file = "nodes.example.toml"
+
+[schedule]
+nearest_for_passthrough = true
+default_passthrough_region = "us"
+allow_region_fallback = false
+
+[passthrough]
+timeout_ms = 800
+fallback_upstreams = ["1.1.1.1:53", "8.8.8.8:53"]
+
+[cache]
+passthrough_max_entries = 500000
+passthrough_max_ttl_secs = 300
+
+[access]
+allowed_cidrs = []
+bearer_token = ""
+
+log_level = "info"

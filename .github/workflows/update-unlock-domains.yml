@@ -72,6 +72,28 @@ jobs:
             exit 1
           }
 
+      - name: Build unlock-center classified domain map
+        working-directory: unlock-center
+        env:
+          MIN_ENTRIES: "100"
+        run: |
+          set -euo pipefail
+          sh scripts/build-domain-map.sh
+          test -s domains/domain-region.map
+          test -s domains/global.txt
+          test -s domains/regional.txt
+          # AI may be small but file must exist
+          test -f domains/ai.txt
+          echo "center_map=$(grep -cvE '^\s*(#|$)' domains/domain-region.map)" >> "$GITHUB_STEP_SUMMARY"
+          # required classifications
+          grep -E $'^netflix\.com\tglobal\t' domains/domain-region.map
+          grep -E $'^dmm\.co\.jp\tregional\tjp$' domains/domain-region.map
+          grep -E $'^openai\.com\tai\t' domains/domain-region.map
+          if grep -qiE $'\t(google|youtube)' domains/domain-region.map; then
+            echo "ERROR: google/youtube leaked into domain-region.map" >&2
+            exit 1
+          fi
+
       - name: Unit tests with new list
         working-directory: unlock
         env:
@@ -79,6 +101,13 @@ jobs:
         run: |
           set -euo pipefail
           sh tests/run.sh
+
+      - name: unlock-center cargo test
+        working-directory: unlock-center
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo test --workspace
 
       - name: Commit and push if changed
         env:
@@ -89,6 +118,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add unlock/domains/all.txt unlock/domains/SOURCES.md unlock/domains/geosite-sources.txt 2>/dev/null || true
           git add unlock/domains/all.txt
+          git add unlock-center/domains/domain-region.map \
+                  unlock-center/domains/global.txt \
+                  unlock-center/domains/regional.txt \
+                  unlock-center/domains/ai.txt \
+                  unlock-center/domains/SOURCES.md 2>/dev/null || true
           if git diff --cached --quiet; then
             if [ "$FORCE" = "true" ]; then
               echo "No domain changes; force requested but nothing to commit."
@@ -98,5 +132,6 @@ jobs:
             exit 0
           fi
           count="$(wc -l < unlock/domains/all.txt | tr -d ' ')"
-          git commit -m "chore(unlock): refresh geosite domain list (${count})"
+          cmap="$(grep -cvE '^\s*(#|$)' unlock-center/domains/domain-region.map | tr -d ' ')"
+          git commit -m "chore(unlock): refresh domain lists (all=${count}, center-map=${cmap})"
           git push origin HEAD:main

@@ -1,0 +1,9 @@
+anthropic.com
+chatgpt.com
+claude.ai
+claude.com
+copilot.microsoft.com
+oaistatic.com
+oaiusercontent.com
+openai.com
+sora.com
