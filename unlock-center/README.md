@@ -1038,17 +1038,88 @@ sh scripts/build-domain-map.sh
 
 ---
 
-## 10. TLS 证书
+## 10. TLS 证书（Let’s Encrypt 完整说明）
 
 | `CENTER_TLS_MODE` / `tls.mode` | 说明 |
 |---|---|
-| `letsencrypt` | lego + **仅 Cloudflare DNS-01**（`CF_DNS_API_TOKEN`） |
-| `selfsigned` | 测试用 |
-| `files` | 自备 cert/key 路径 |
+| `letsencrypt` | **lego + 仅 Cloudflare DNS-01**（生产推荐） |
+| `selfsigned` | openssl 自签，仅测试 |
+| `files` | 自备文件：`/data/tls/cert.pem` + `key.pem` |
 
-- 仅明文 DNS：可 `CENTER_ENABLE_DOT=0` `CENTER_ENABLE_DOH=0`，**不需要**域名和证书  
-- 脚本：`scripts/cert-manager.sh`（ensure + renew-loop）  
-- 续期成功：`SIGHUP` 通知中心（当前实现优先重载 GeoIP；完整 TLS 热替换以容器重启/后续增强为准，证书文件路径不变时多数场景续期后新连接可读新文件）
+- 仅明文 DNS：`CENTER_ENABLE_DOT=0` 且 `CENTER_ENABLE_DOH=0` → **不需要**域名和证书，cert-manager 跳过  
+- DoT 与 DoH **共用一张证**（与 unlock 数据面相同模型）  
+- 脚本：`scripts/cert-manager.sh`（`ensure` + `renew-loop`）
+
+### 10.1 letsencrypt 必填变量
+
+| 变量 | 说明 |
+|---|---|
+| `CENTER_TLS_MODE=letsencrypt` | 或 `DOT_TLS_MODE`（脚本兼容别名） |
+| `CENTER_DOT_DOMAIN` | 证书域名 / DoT SNI / 客户端访问的 DoH 主机名 |
+| `LE_EMAIL` | Let’s Encrypt 注册邮箱 |
+| `CF_DNS_API_TOKEN` | Cloudflare API Token（见下） |
+| `DOT_EXTRA_DOMAINS` | 可选，额外 SAN，逗号分隔 |
+| `LEGO_CA_SERVER` | 可选，默认生产 CA；staging 见下 |
+| `RENEW_CHECK_HOURS` | 默认 12 |
+| `RENEW_BEFORE_DAYS` | 默认 30 |
+
+### 10.2 Cloudflare 配置步骤
+
+1. 域名 NS 已在 Cloudflare。  
+2. **A/AAAA**：`CENTER_DOT_DOMAIN` → **中心公网 IP**。申请证书时建议 **仅 DNS（灰云）**。DNS-01 **不依赖** 80 端口。  
+3. 创建 Token：  
+   - 我的个人资料 → API 令牌 → 创建令牌  
+   - 权限：`Zone / Zone / Read` + `Zone / DNS / Edit`  
+   - 区域资源：**特定区域** = 该域名所在 zone  
+4. 填入 `.env` 的 `CF_DNS_API_TOKEN`。
+
+### 10.3 容器内签发与续期
+
+```text
+entrypoint
+  → cert-manager.sh ensure
+       无 lego --dns cloudflare -d CENTER_DOT_DOMAIN
+       证书：/data/letsencrypt/certificates/<域名>.crt|.key
+       软链：/data/tls/cert.pem 、 key.pem
+  → 后台 cert-manager.sh renew-loop
+       每 RENEW_CHECK_HOURS 检查；≤ RENEW_BEFORE_DAYS 天则 renew
+       成功后 SIGHUP unlock-center（CENTER_PID_FILE）
+```
+
+测试环境避免触达生产限额：
+
+```bash
+LEGO_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
+```
+
+测通后再改回默认生产 CA（去掉该变量或设为  
+`https://acme-v02.api.letsencrypt.org/directory`）。
+
+### 10.4 与解锁机证书的区别
+
+| | unlock 数据面 | unlock-center |
+|---|---|---|
+| 域名变量 | `DOT_DOMAIN` | `CENTER_DOT_DOMAIN` |
+| 典型用途 | 客户端直连该机 DoT/DoH（可选） | 客户端 **只连中心** DoH/DoT |
+| 443 | **sniproxy**，DoH 勿占 443 | 中心 DoH **可用 443**（无 sniproxy） |
+| 证书是否必须相同 | 否，可完全不同域名 | 否 |
+
+联调时解锁机可 `ENABLE_DOT=0 ENABLE_DOH=0`，只开 `ENABLE_DNS=1` 给中心代查，**解锁机可以不申请 LE**。
+
+### 10.5 自检与排错
+
+```bash
+docker compose exec unlock-center ls -l /data/letsencrypt/certificates/
+docker compose exec unlock-center ls -l /data/tls/
+docker compose logs unlock-center 2>&1 | grep -i cert-manager
+```
+
+| 现象 | 处理 |
+|---|---|
+| token invalid | 权限/Zone 范围错误或复制损坏 |
+| DNS record not found / timeout | A 记录未建、NS 未切到 CF、或出站访问 CF/LE API 被墙 |
+| unauthorized | Token 缺 DNS Edit 或 Zone Read |
+| 证书是 staging 不受系统信任 | 去掉 staging `LEGO_CA_SERVER` 后清数据卷再 ensure |
 
 ---
 

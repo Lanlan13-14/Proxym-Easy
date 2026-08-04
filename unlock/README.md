@@ -133,7 +133,7 @@ nslookup netflix.com UNLOCK_IP
 
 ### 3.2 DoT / DoH（需要 TLS）
 
-DoT 与 DoH 共用同一张 TLS 证书与 `DOT_DOMAIN` SNI。任一开启时：
+DoT 与 DoH **共用同一张证书** 与 `DOT_DOMAIN` SNI。任一开启时必须配置 TLS。
 
 ```env
 DOT_TLS_MODE=letsencrypt
@@ -160,23 +160,68 @@ ENABLE_DOH=0
 # DOH_PORT=4430
 ```
 
-Cloudflare API Token 最小权限：
+#### 3.2.1 Let’s Encrypt + Cloudflare DNS-01（完整步骤）
 
-- Zone / Zone / Read
-- Zone / DNS / Edit
-- 资源限制到 `DOT_DOMAIN` 所属单一 Zone
+本镜像 **只实现 Cloudflare DNS-01**（`lego --dns cloudflare`），没有 HTTP-01 / 其它 DNS 厂商。
 
-`dot.example.com` 建 A 记录指向 `UNLOCK_IP`，设为 DNS only（灰云）。DNS-01 不需要开放 HTTP-01，因此 `DOT_PORT` / `DOH_PORT` 都可以自定义。
+| 变量 | 是否必填 | 说明 |
+|---|---|---|
+| `DOT_TLS_MODE=letsencrypt` | 是 | 启用 LE 流程 |
+| `DOT_DOMAIN` | 是 | 证书主域名 = DoT SNI = DoH 主机名 |
+| `LE_EMAIL` | 是 | LE 账号与到期邮件 |
+| `CF_DNS_API_TOKEN` | 是 | 见下方 Token 权限 |
+| `DOT_EXTRA_DOMAINS` | 否 | 额外 SAN，逗号分隔 |
+| `LEGO_CA_SERVER` | 否 | 默认生产 CA；可改 staging 测签发 |
+| `RENEW_CHECK_HOURS` | 否 | 默认 12：后台多久检查一次 |
+| `RENEW_BEFORE_DAYS` | 否 | 默认 30：剩余 ≤ 该天数则续期 |
 
-**DoH 不占用 443**：443 专供 sniproxy 做流媒体 SNI 解锁。DoH 默认 `4430`，端点固定：
+**Cloudflare 准备：**
+
+1. 域名 NS 已切到 Cloudflare。  
+2. 为 `DOT_DOMAIN` 建 **A/AAAA → `UNLOCK_IP`**。证书申请阶段建议 **仅 DNS（灰云）**。  
+3. 创建 API Token：  
+   - 路径：My Profile → API Tokens → Create Token  
+   - 权限：`Zone` → `Zone` → **Read**；`Zone` → `DNS` → **Edit**  
+   - Zone Resources：**Include → Specific zone → 选中该域名所在 zone**  
+4. Token 写入 `.env` 的 `CF_DNS_API_TOKEN`（权限过大或 Global Key 不推荐）。
+
+**容器内流程（`scripts/cert-manager.sh`）：**
+
+1. 启动 `ensure`：若本地还没有 `$DOT_DOMAIN.crt/key`，执行 `lego run --dns cloudflare`。  
+2. 证书落盘：`/etc/unlock/letsencrypt/certificates/<DOT_DOMAIN>.crt` 与 `.key`（在 compose 数据卷内）。  
+3. 后台 `renew-loop`：每 `RENEW_CHECK_HOURS` 小时执行续期检查；剩余天数 ≤ `RENEW_BEFORE_DAYS` 时 `lego renew`。  
+4. 续期成功 → **SIGHUP** SmartDNS，重载 TLS。  
+
+**DoH 不占用 443**：443 专供 sniproxy。DoH 默认端口 `4430`，路径固定：
 
 ```text
 https://DOT_DOMAIN:DOH_PORT/dns-query
 ```
 
-证书每 `RENEW_CHECK_HOURS` 检查一次，剩余不高于 `RENEW_BEFORE_DAYS` 时续期，成功后向 SmartDNS monitor 发 SIGHUP。
+**自检：**
 
-未启用 DoT/DoH 时，`cert-manager` 直接跳过，不会要求 `DOT_DOMAIN`。
+```bash
+# 证书是否生成
+docker compose exec unlock ls -l /etc/unlock/letsencrypt/certificates/
+
+# DoT（需系统信任 LE）
+# openssl s_client -connect DOT_DOMAIN:DOT_PORT -servername DOT_DOMAIN
+
+# DoH
+curl -fsS --doh-url https://DOT_DOMAIN:4430/dns-query https://example.com -o /dev/null && echo ok
+```
+
+**常见失败：**
+
+| 现象 | 处理 |
+|---|---|
+| `CF_DNS_API_TOKEN` invalid | Token 权限/Zone 范围不对或复制多余空格 |
+| lego timeout / DNS 未传播 | 等 CF 记录生效；确认灰云；勿挡出站 443 到 LE/CF API |
+| 权限不足 | 缺 Zone Read 或 DNS Edit |
+| 想试跑怕限频 | `LEGO_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory` 测通后再改回生产 |
+
+`DOT_TLS_MODE=selfsigned` 仅测试；`custom` 需自备证书文件。  
+未启用 DoT/DoH 时 cert-manager **跳过**，不要求 `DOT_DOMAIN`。
 
 ---
 

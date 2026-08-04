@@ -29,7 +29,13 @@ doh_extra_paths = []
 
 # ----- TLS：DoT/DoH 需要；仅明文 DNS 可忽略 -----
 [tls]
-# selfsigned=自签测试 | files=已有文件 | letsencrypt=由 cert-manager 写到 cert/key 路径
+# mode:
+#   selfsigned  — 进程内/脚本自签，仅测试
+#   files       — 使用下面 cert_file / key_file（你已放好的 PEM）
+#   letsencrypt — 不由本 toml 直接调 LE；Docker 里由 scripts/cert-manager.sh
+#                 使用环境变量 CENTER_DOT_DOMAIN / LE_EMAIL / CF_DNS_API_TOKEN
+#                 签发后写入 cert_file/key_file（通常是 /data/tls 软链）
+# 完整 LE 步骤见 README §10 与 .env.example 第三节
 mode = "selfsigned"
 domain = "dns.example.com"
 cert_file = "/data/tls/cert.pem"
