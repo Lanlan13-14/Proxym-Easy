@@ -14,12 +14,14 @@ use schedule::{Node, NodeTable};
 use tracing::{debug, warn};
 
 use crate::config::Config;
+use crate::geoip::GeoIp;
 use crate::profile::Profile;
 
 pub struct AppState {
     pub cfg: Config,
     pub index: ArcSwap<DomainIndex>,
     pub nodes: ArcSwap<NodeTable>,
+    pub geoip: Arc<GeoIp>,
     pub passthrough_cache: DashMap<String, CacheEntry>,
 }
 
@@ -37,11 +39,12 @@ pub enum ResolveResult {
 }
 
 impl AppState {
-    pub fn new(cfg: Config, index: DomainIndex, nodes: NodeTable) -> Arc<Self> {
+    pub fn new(cfg: Config, index: DomainIndex, nodes: NodeTable, geoip: GeoIp) -> Arc<Self> {
         Arc::new(Self {
             cfg,
             index: ArcSwap::from_pointee(index),
             nodes: ArcSwap::from_pointee(nodes),
+            geoip: Arc::new(geoip),
             passthrough_cache: DashMap::new(),
         })
     }
@@ -159,19 +162,29 @@ impl AppState {
         request: &Message,
         qname: &str,
         qtype: RecordType,
-        _client_ip: Option<IpAddr>,
+        client_ip: Option<IpAddr>,
     ) -> ResolveResult {
-        // _client_ip reserved for GeoIP nearest (Phase 2).
         let nodes = self.nodes.load();
+        let (lat, lon) = if self.cfg.geoip.enabled {
+            client_ip
+                .and_then(|ip| self.geoip.lookup(ip))
+                .map(|ll| (Some(ll.lat), Some(ll.lon)))
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
         let node = if self.cfg.schedule.nearest_for_passthrough {
-            // Without GeoIP DB in MVP, use default_passthrough_region then any.
-            nodes
-                .nearest_or_region(
+            // Prefer lat/lon nearest when GeoIP hits; else default region pool.
+            if lat.is_some() && lon.is_some() {
+                nodes.nearest(lat, lon)
+            } else {
+                nodes.nearest_or_region(
                     Some(self.cfg.schedule.default_passthrough_region.as_str()),
                     None,
                     None,
                 )
-                .or_else(|_| nodes.nearest(None, None))
+            }
+            .or_else(|_| nodes.nearest(None, None))
         } else {
             nodes.pick_region(
                 &self.cfg.schedule.default_passthrough_region,

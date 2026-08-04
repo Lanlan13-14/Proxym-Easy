@@ -36,6 +36,7 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
-
+maxminddb = "0.24"
+flate2 = "1"
 # Force older zeroize (1.9 needs edition2024 / rustc 1.85+)
 zeroize = "=1.8.1"

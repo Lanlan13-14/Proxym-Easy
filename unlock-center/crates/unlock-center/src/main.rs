@@ -1,5 +1,6 @@
 mod config;
 mod dns_plain;
+mod geoip;
 mod profile;
 mod resolve;
 mod serve_tls;
@@ -17,6 +18,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
+use crate::geoip::GeoIp;
 use crate::resolve::AppState;
 
 #[tokio::main]
@@ -56,6 +58,7 @@ async fn main() -> Result<()> {
         scope = %cfg.policy.unlock_scope,
         default_global = %cfg.policy.default_global_region,
         doh_path = %cfg.listen.doh_base_path,
+        geoip = cfg.geoip.enabled,
         "starting unlock-center"
     );
 
@@ -70,12 +73,57 @@ async fn main() -> Result<()> {
         "nodes loaded"
     );
 
-    let state = AppState::new(cfg.clone(), index, nodes);
+    let geo = if cfg.geoip.enabled {
+        GeoIp::open(&cfg.geoip.db_path)
+    } else {
+        GeoIp::open("/dev/null")
+    };
+    crate::geoip::warn_if_missing(&geo);
+
+    let state = AppState::new(cfg.clone(), index, nodes, geo);
+
+    // Write pid for cert-manager / geoip-updater signals.
+    if let Ok(pid_path) = std::env::var("CENTER_PID_FILE") {
+        if let Some(parent) = std::path::Path::new(&pid_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&pid_path, format!("{}\n", std::process::id()));
+    }
 
     {
         let st = Arc::clone(&state);
         tokio::spawn(async move {
             refresh_loop(st).await;
+        });
+    }
+
+    // Optional in-process geoip download schedule (shell updater preferred in Docker).
+    if cfg.geoip.enabled && cfg.geoip.auto_update && !cfg.geoip.update_url.is_empty() {
+        let st = Arc::clone(&state);
+        let url = cfg.geoip.update_url.clone();
+        let path = cfg.geoip.db_path.clone();
+        let hour = cfg.geoip.update_hour;
+        let minute = cfg.geoip.update_minute;
+        tokio::spawn(async move {
+            crate::geoip::daily_at_loop(hour, minute, || {
+                match crate::geoip::download_mmdb(&url, &path) {
+                    Ok(()) => {
+                        if let Err(e) = st.geoip.reload() {
+                            warn!(error = %e, "geoip reload after download");
+                        }
+                    }
+                    Err(e) => warn!(error = %e, "geoip download failed"),
+                }
+            })
+            .await;
+        });
+    }
+
+    // Signal handlers: SIGHUP reload TLS+geoip, SIGUSR1 reload geoip only.
+    {
+        let st = Arc::clone(&state);
+        tokio::spawn(async move {
+            signal_loop(st).await;
         });
     }
 
@@ -133,13 +181,52 @@ async fn main() -> Result<()> {
     }
 
     info!("unlock-center ready");
-    // Stay up until Ctrl-C. Individual listener failures are logged by tasks.
     tokio::signal::ctrl_c().await.ok();
     info!("shutdown signal");
-    // prevent unused warning if all listeners detached
     let _ = handles.len();
-    let _ = Duration::from_secs(1);
     Ok(())
+}
+
+async fn signal_loop(state: Arc<AppState>) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut hup = match signal(SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "SIGHUP handler unavailable");
+                return;
+            }
+        };
+        let mut usr1 = match signal(SignalKind::user_defined1()) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "SIGUSR1 handler unavailable");
+                return;
+            }
+        };
+        loop {
+            tokio::select! {
+                _ = hup.recv() => {
+                    info!("SIGHUP: reload geoip (+ TLS requires process restart for rustls identity today)");
+                    if let Err(e) = state.geoip.reload() {
+                        warn!(error = %e, "geoip reload on SIGHUP");
+                    }
+                }
+                _ = usr1.recv() => {
+                    info!("SIGUSR1: reload geoip database");
+                    if let Err(e) = state.geoip.reload() {
+                        warn!(error = %e, "geoip reload on SIGUSR1");
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = state;
+        std::future::pending::<()>().await;
+    }
 }
 
 fn load_index(cfg: &Config) -> Result<DomainIndex> {

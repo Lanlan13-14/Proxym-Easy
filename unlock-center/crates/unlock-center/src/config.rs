@@ -16,10 +16,25 @@ pub struct Config {
     pub tables: TablesConfig,
     pub nodes: NodesConfig,
     pub schedule: ScheduleConfig,
+    pub geoip: GeoIpConfig,
     pub passthrough: PassthroughConfig,
     pub cache: CacheConfig,
     pub access: AccessConfig,
     pub log_level: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct GeoIpConfig {
+    /// Path to City MMDB (GeoLite2-City / DB-IP).
+    pub db_path: PathBuf,
+    /// Enable loading/using MMDB for nearest.
+    pub enabled: bool,
+    /// Download URL for plain .mmdb or .mmdb.gz (empty = use shell updater defaults).
+    pub update_url: String,
+    pub auto_update: bool,
+    pub update_hour: u32,
+    pub update_minute: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -192,6 +207,19 @@ impl Default for ScheduleConfig {
     }
 }
 
+impl Default for GeoIpConfig {
+    fn default() -> Self {
+        Self {
+            db_path: PathBuf::from("/data/geoip/GeoLite2-City.mmdb"),
+            enabled: true,
+            update_url: String::new(),
+            auto_update: true,
+            update_hour: 4,
+            update_minute: 0,
+        }
+    }
+}
+
 impl Default for PassthroughConfig {
     fn default() -> Self {
         Self {
@@ -231,6 +259,7 @@ impl Default for Config {
             tables: TablesConfig::default(),
             nodes: NodesConfig::default(),
             schedule: ScheduleConfig::default(),
+            geoip: GeoIpConfig::default(),
             passthrough: PassthroughConfig::default(),
             cache: CacheConfig::default(),
             access: AccessConfig::default(),
@@ -317,6 +346,28 @@ impl Config {
         }
         if let Ok(v) = env::var("CENTER_LOG_LEVEL") {
             self.log_level = v;
+        }
+        if let Ok(v) = env::var("GEOIP_DB_PATH") {
+            self.geoip.db_path = PathBuf::from(v);
+        }
+        if let Ok(v) = env::var("GEOIP_ENABLE") {
+            self.geoip.enabled = parse_bool(&v);
+        }
+        if let Ok(v) = env::var("GEOIP_DB_URL") {
+            self.geoip.update_url = v;
+        }
+        if let Ok(v) = env::var("GEOIP_ENABLE_AUTO_UPDATE") {
+            self.geoip.auto_update = parse_bool(&v);
+        }
+        if let Ok(v) = env::var("GEOIP_UPDATE_HOUR") {
+            if let Ok(h) = v.parse() {
+                self.geoip.update_hour = h;
+            }
+        }
+        if let Ok(v) = env::var("GEOIP_UPDATE_MINUTE") {
+            if let Ok(m) = v.parse() {
+                self.geoip.update_minute = m;
+            }
         }
     }
 

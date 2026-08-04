@@ -1,0 +1,105 @@
+# Manual, versioned GHCR release for unlock-center (DNS control plane).
+# Build context is ONLY ./unlock-center.
+name: publish-unlock-center-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version, e.g. v1.0.0"
+        required: true
+        default: "v1.0.0"
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: proxym-easy-unlock-center
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Validate version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ inputs.version }}'
+          if [[ ! "$version" =~ ^v?[0-9]+(\.[0-9]+){0,2}(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Invalid version: $version" >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: unlock-center
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Shell syntax
+        run: |
+          set -e
+          for f in scripts/*.sh; do sh -n "$f"; done
+      - name: Build domain map
+        run: |
+          set -euo pipefail
+          sh scripts/build-domain-map.sh
+          test -s domains/domain-region.map
+      - name: Cargo test
+        run: cargo test --workspace
+      - name: Cargo release build
+        run: cargo build -p unlock-center --release
+      - name: Docs consistency
+        run: |
+          set -e
+          grep -q 'doh_base_path' config.example.toml
+          grep -q 'geoip' config.example.toml
+          grep -q 'domain-region.map' README.md
+          test -f scripts/cert-manager.sh
+          test -f scripts/geoip-updater.sh
+          test -f Dockerfile
+
+  publish:
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest
+      - name: Build and publish multi-architecture image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./unlock-center
+          file: ./unlock-center/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

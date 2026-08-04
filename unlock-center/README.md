@@ -80,6 +80,49 @@ https://dns.example.com:8443/api/v2/weather/us/ai/jp
 4. map 中英区域名为 `regional` + `uk`（`build-domain-map` 已从 Rules `streaming_uk` / 1-stream Europe 等生成；可手改 map）  
 5. 全局走英区出口：客户端 DoH path `.../uk`
 
+## GeoIP nearest（可自定义更新时间）
+
+非解锁域名按 **客户端 IP → 经纬度 → 最近解锁机** 代查：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `GEOIP_ENABLE_AUTO_UPDATE` | `1` | 是否定时更新 MMDB |
+| `GEOIP_UPDATE_HOUR` / `GEOIP_UPDATE_MINUTE` | `4` / `0` | 每天更新时刻（容器 `TZ`） |
+| `GEOIP_DB_PATH` | `/data/geoip/GeoLite2-City.mmdb` | 数据库路径 |
+| `GEOIP_DB_URL` | 可选 | 直链 `.mmdb` / `.mmdb.gz` |
+| `MAXMIND_LICENSE_KEY` | 可选 | 官方 GeoLite2 下载 |
+
+脚本：`scripts/geoip-updater.sh`（boot 缺库下载 + 日更 + `SIGUSR1` 通知进程热加载）。
+
+## TLS（LE + Cloudflare DNS-01）
+
+与 unlock 同模型：`scripts/cert-manager.sh`
+
+```text
+CENTER_TLS_MODE=letsencrypt
+CENTER_DOT_DOMAIN=dns.example.com
+LE_EMAIL=...
+CF_DNS_API_TOKEN=...   # Zone:Read + DNS:Edit
+```
+
+纯明文 DNS 可关 DoT/DoH，无需证书。续期后 `SIGHUP` 通知中心（GeoIP 用 `SIGUSR1`）。
+
+## Docker 镜像
+
+手动输入版本号发布（默认 `v1.0.0`）：
+
+- Workflow：`.github/workflows/build-unlock-center-image.yml`
+- Actions → **publish-unlock-center-image** → 填 `version`（默认 `v1.0.0`）→ Run
+
+镜像：
+
+```text
+ghcr.io/lanlan13-14/proxym-easy-unlock-center:<version>
+ghcr.io/lanlan13-14/proxym-easy-unlock-center:latest
+```
+
+本地 Compose：见 `docker-compose.yml` + `.env.example`。
+
 ## 构建
 
 ```sh

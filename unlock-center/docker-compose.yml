@@ -1,0 +1,27 @@
+# unlock-center — DNS control plane
+# Usage:
+#   cp .env.example .env && cp nodes.example.toml nodes.toml
+#   # edit .env + nodes.toml with real unlock IPs
+#   docker compose up -d
+
+services:
+  unlock-center:
+    image: ghcr.io/lanlan13-14/proxym-easy-unlock-center:latest
+    container_name: unlock-center
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      NODES_FILE: /etc/unlock-center/nodes.toml
+    volumes:
+      - ./nodes.toml:/etc/unlock-center/nodes.toml:ro
+      - center-data:/data
+    ports:
+      - "${DNS_UDP_PORT:-53}:53/udp"
+      - "${DNS_UDP_PORT:-53}:53/tcp"
+      - "${DOT_PORT:-853}:853/tcp"
+      - "${DOH_PORT:-443}:443/tcp"
+    # No /dev/net/tun — center does not run WARP/sniproxy
+
+volumes:
+  center-data:

@@ -32,3 +32,5 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true }
+maxminddb = { workspace = true }
+flate2 = { workspace = true }

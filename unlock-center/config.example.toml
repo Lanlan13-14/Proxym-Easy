@@ -47,6 +47,17 @@ nearest_for_passthrough = true
 default_passthrough_region = "us"
 allow_region_fallback = false
 
+[geoip]
+# City MMDB for client IP → lat/lon → nearest unlock node (passthrough).
+db_path = "/data/geoip/GeoLite2-City.mmdb"
+enabled = true
+# Optional in-process download URL (.mmdb or .mmdb.gz). Prefer scripts/geoip-updater.sh in Docker.
+update_url = ""
+auto_update = false
+# Used by scripts/geoip-updater.sh (container); hour/minute in container TZ.
+update_hour = 4
+update_minute = 0
+
 [passthrough]
 timeout_ms = 800
 fallback_upstreams = ["1.1.1.1:53", "8.8.8.8:53"]
