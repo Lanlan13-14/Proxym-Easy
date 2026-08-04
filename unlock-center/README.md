@@ -77,6 +77,183 @@ dig @center netflix.com +short     # → 美国 unlock 公网 IP（path=/us）
 
 ---
 
+## 2.1 DNS 查询逻辑（逐步 + 各种情况）
+
+下面按 **代码真实顺序** 说明：中心每收到 **一条** DNS 查询，只根据这一条的「问谁、什么类型、从哪来、path 是什么」算答案。  
+**上一条查日区、下一条查港区，互不影响。**
+
+### 输入有哪些
+
+| 输入 | 从哪来 | 干什么用 |
+|---|---|---|
+| `qname` | 查询名，如 `www.dmm.co.jp` | 匹配域名表（最长后缀） |
+| `qtype` | A / AAAA / 其它 | A 完整调度；AAAA 默认解锁命中给空；其它默认拒绝 |
+| `client_ip` | UDP/TCP/DoT/DoH 连接对端 | **仅** other 代查时 GeoIP nearest；**不**决定 Netflix 区 |
+| `profile` | DoH path 解析；明文/DoT 用默认 | **仅** global / ai 选区 |
+| `UNLOCK_SCOPE` | 配置 | 哪些 class 允许劫持 |
+| `enable_ai_unlock` | 配置 | ai 类是否当解锁 |
+
+### 总流程图
+
+```text
+收到查询
+  │
+  ├─ 无 question ──────────────────────────────► SERVFAIL
+  │
+  ├─ qtype 不是 A/AAAA
+  │     ├─ other_qtype_mode=refused（默认）──────► REFUSED
+  │     └─ passthrough ─────────────────────────► 当 other 代查
+  │
+  ├─ qtype = AAAA
+  │     ├─ 域名算作「解锁命中」(global/regional/ai 且 scope 允许)
+  │     │     └─ aaaa_mode=empty（默认）────────► NOERROR 空答案（防 IPv6 绕过）
+  │     └─ 域名算 other 或 aaaa_mode=passthrough ► 代查真实 AAAA
+  │
+  └─ qtype = A  ──► 进入「分类 + 选区」（见下）
+```
+
+### A 记录：分类怎么来
+
+1. 规范化 `qname`（小写、去尾点）。  
+2. 在 `domain-region.map` 做 **最长后缀匹配**  
+   - 查 `a.b.dmm.co.jp` → 试 `a.b.dmm.co.jp` → `b.dmm.co.jp` → `dmm.co.jp` → …  
+   - 命中则得到 `class` + 可选 `region`（regional 必有 region）。  
+   - 全不中 → 视为 **other**。  
+3. 套 `UNLOCK_SCOPE`（见下表）。不允许劫持的 class **降级为 other**。  
+4. 按最终 class 分支。
+
+**SCOPE 与 class（谁会被劫持）：**
+
+| UNLOCK_SCOPE | global | regional | ai（enable_ai=true） | 表外 other |
+|---|---|---|---|---|
+| `all`（默认） | 劫持 | 劫持 | 劫持 | 代查 |
+| `global` | 劫持 | **不劫持→代查** | 劫持 | 代查 |
+| `regional` | **不劫持→代查** | 劫持 | **不劫持→代查** | 代查 |
+
+`enable_ai_unlock=false` 时：ai 一律当 other（代查），即使 scope=all。
+
+### A 记录：四类结果分别怎么做
+
+#### ① class = regional（区锁，如 DMM / myTV / BBC）
+
+```text
+pool = map 里该域名的 region          # 例 dmm.co.jp → jp
+忽略：DoH path、DEFAULT_GLOBAL、客户端 IP/GeoIP
+节点 = nodes 里 region==pool 且 healthy 的机（可加权）
+返回：A = 该节点 unlock_ip，TTL≈45s
+若该 region 无健康节点：
+  allow_region_fallback=false（默认）→ SERVFAIL
+  true → 任意健康节点（一般不要开）
+```
+
+**要点：** path 写 `/us` 也 **不能** 把 DMM 派去美国。  
+**多区：** map 里 jp/hk/uk 各有域名时，只要 nodes 都有对应机，**全部同时有效**。
+
+#### ② class = global（如 Netflix）
+
+```text
+pool = profile.global_region
+     = DoH path 里的 {g}   若 path 是 /{base}/{g} 或 /{base}/{g}/ai/{a}
+     = DEFAULT_GLOBAL_REGION  若 path 是 /{base} 或明文/DoT 默认 profile
+节点 = region==pool 的 unlock
+返回：A = unlock_ip
+```
+
+**要点：**  
+- 只影响 global（和下面的 ai 跟随逻辑），**不影响** regional。  
+- 新机用 `/sg`、美机用 `/us` → 同一中心、同一时刻 Netflix 可去不同区。  
+- **默认不用** 客户端 IP 猜 global 区（防漂）。
+
+#### ③ class = ai（如 openai.com）
+
+```text
+pool = profile.ai_region
+     若 path 含 /ai/{a} → a
+     否则若 DEFAULT_AI_REGION 非空 → 该值
+     否则 → 与 global 相同（跟随 profile.global_region）
+返回：A = 该 pool 的 unlock_ip
+```
+
+| path 示例 | global 池 | ai 池 |
+|---|---|---|
+| `/api/v2/weather` | DEFAULT（如 us） | 跟随 us |
+| `/api/v2/weather/sg` | sg | 跟随 sg |
+| `/api/v2/weather/us/ai/jp` | us | **jp** |
+| `/api/v2/weather/ai/jp` | DEFAULT | **jp** |
+
+#### ④ class = other（表外，或被 SCOPE 关掉的原解锁域名）
+
+```text
+目的：返回「真实解析」，客户端直连网站 CDN，不进 sniproxy
+
+1) 选一台解锁机做 DNS 上游（代查，不是返回它的 unlock_ip 当答案）
+   - nearest_for_passthrough=true（默认）：
+       有 GeoIP 且查到 client 经纬度 → 按节点 lat/lon 最近
+       否则 → default_passthrough_region 池
+   - 再失败 → 任意健康节点
+2) 向该节点 dns_upstream（如 203.0.113.20:53）发同样 DNS 查询
+3) 把上游答案原样返回（TTL 可截断）；失败则试 fallback_upstreams（1.1.1.1:53 等）
+4) 可缓存 (qname,qtype,节点)
+```
+
+**要点：** 答案里的 IP 是 **example.com 的真实地址**，不是 解锁机公网 IP。  
+代查走哪台机只影响「递归视角/延迟」，解锁机需对中心放行 53。
+
+### Profile 从哪来（和协议有关）
+
+| 协议 | profile 怎么定 |
+|---|---|
+| **DoH** | 解析 URL path（见 §6）；非法 path → **HTTP 404**，不进 DNS 逻辑 |
+| **DoT** | MVP：固定 `Profile::default`（`DEFAULT_GLOBAL` + 可选 `DEFAULT_AI`） |
+| **明文 DNS** | 同上默认 Profile |
+
+因此：**「新机 Netflix→sg、美机 Netflix→us」靠 DoH path 区分**；只开 DoT 时两边 global 默认相同，除非你改默认或上多 SNI（未做）。
+
+### 一张表看完「各种情况」
+
+约定：nodes 有 us/jp/hk/sg；map 含下表域名；`DEFAULT_GLOBAL=us`；`SCOPE=all`；`aaaa_mode=empty`。
+
+| # | 客户端 DoH path | 查询 | qtype | 结果 |
+|---|---|---|---|---|
+| 1 | `/…/us` | `dmm.co.jp` | A | **jp** unlock_ip（regional，忽略 path） |
+| 2 | `/…/us` | `mytvsuper.com` | A | **hk** unlock_ip |
+| 3 | `/…/us` | `netflix.com` | A | **us** unlock_ip |
+| 4 | `/…/sg` | `netflix.com` | A | **sg** unlock_ip |
+| 5 | `/…/us` | `netflix.com` | AAAA | **空** NOERROR（防 v6 绕过） |
+| 6 | `/…/us` | `openai.com` | A | **us** unlock_ip（ai 跟随 global） |
+| 7 | `/…/us/ai/jp` | `openai.com` | A | **jp** unlock_ip |
+| 8 | `/…/us/ai/jp` | `netflix.com` | A | **us** unlock_ip（global 仍是 us） |
+| 9 | `/…/us` | `example.com` | A | **真实 IP**（other 代查） |
+| 10 | `/…/us` | `dmm.co.jp` | MX 等 | **REFUSED**（默认） |
+| 11 | SCOPE=`global` | `dmm.co.jp` A | A | **真实/代查**（regional 被 scope 关掉） |
+| 12 | SCOPE=`regional` | `netflix.com` A | A | **真实/代查**（global 被关掉） |
+| 13 | path 乱写 | 任意 | — | DoH **HTTP 404** |
+| 14 | map 有 `uk` 但 nodes 无 uk 机 | `bbc.co.uk` A | A | **SERVFAIL**（默认不跨区兜底） |
+| 15 | 同 path 连查 jp 站再查 hk 站 | 两条 A | A | 分别 jp IP、hk IP，**同时成立** |
+
+### 和「客户端连上以后」的关系
+
+```text
+DNS 只负责告诉客户端「去连哪个 IP」
+  ├─ 解锁命中 → 连 unlock_ip:443（sniproxy → 该区 WARP）
+  └─ other    → 连真实 CDN IP（不经 unlock）
+
+中心 绝不代理视频；也不会因为你在新加坡就把 DMM 改成新区。
+```
+
+### 错误码怎么理解
+
+| 应答 | 常见原因 |
+|---|---|
+| A = 某 203.x unlock_ip | 解锁命中，去播流 |
+| A = 公网 CDN IP | other 代查成功 |
+| NOERROR 无 AAAA | 解锁域名的 AAAA 被策略掏空 |
+| SERVFAIL | 该 region 无节点 / 代查全失败 |
+| REFUSED | 非 A/AAAA 且未开 passthrough |
+| HTTP 404 | DoH path 不是合法 base/profile |
+
+---
+
 ## 3. 功能清单
 
 - 明文 DNS / DoT / DoH **独立开关**，各最多一个端口
