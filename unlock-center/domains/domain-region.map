@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 643 (global=59 regional=575 ai=9)
+# generated entries: 643 (global=98 regional=536 ai=9)
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
 10play.com.au	regional	au
@@ -17,10 +17,10 @@
 4gtvpcvod-cds.cdn.hinet.net	regional	tw
 567852.xyz	regional	hk
 5a929471-madman-com-au.akamaized.net	regional	au
-71.am	regional	cn
-71.am.com	regional	cn
-71edge.com	regional	cn
-71edge.net	regional	cn
+71.am	global	-
+71.am.com	global	-
+71edge.com	global	-
+71edge.net	global	-
 7plus-sevennetwork.akamaized.net	regional	au
 7plus.com.au	regional	au
 879ed873-madman-com-au.akamaized.net	regional	au
@@ -41,11 +41,11 @@ abema.tv	regional	jp
 acorn.tv	regional	us
 aetv.com	regional	us
 afreecatv.com	regional	kr
-aianno.cn	regional	cn
-aianno.com	regional	cn
-aiqiyicloud-mgmt.com	regional	cn
-aiqiyicloud.com	regional	cn
-aiqiyicloud.net	regional	cn
+aianno.cn	global	-
+aianno.com	global	-
+aiqiyicloud-mgmt.com	global	-
+aiqiyicloud.com	global	-
+aiqiyicloud.net	global	-
 airspace-cdn.cbsviedo.com	regional	au
 ais-vidnt.com	regional	sea
 aisplay.ais.co.th	regional	sea
@@ -64,7 +64,7 @@ aod-hls-uk-live.akamaized.net	regional	uk
 api-animefesta.iowl.jp	regional	jp
 api.biliapi.com	regional	hk
 api.biliapi.net	regional	hk
-api.bilibili.com	regional	tw
+api.bilibili.com	regional	hk
 api.games.umamusume.jp	regional	jp
 api.rlje.net	regional	us
 app.biliapi.com	regional	hk
@@ -84,7 +84,7 @@ atv-ps-fe.amazon.co.jp	global	-
 atv-ps-fe.amazon.com	global	-
 atv-ps.amazon.com	global	-
 bahamut.com.tw	regional	tw
-baiying.com	regional	cn
+baiying.com	global	-
 bats.video.yahoo.com	regional	tw
 bats.yahoodns.net	regional	tw
 bbc.co	regional	uk
@@ -106,8 +106,8 @@ beesport.livednow.com	regional	hk
 bidi.net.uk	regional	uk
 bigbigchannel.com.hk	regional	hk
 bigbigshop.com	regional	hk
-bilibili.com	regional	cn
-bilibili.tv	regional	sea
+bilibili.com	regional	hk
+bilibili.tv	regional	hk
 bln1.yospace.com	regional	au
 boltdns.net	regional	us
 bootstrapcdn.com	regional	hk
@@ -278,8 +278,8 @@ gamer2-cds.cdn.hinet.net	regional	tw
 geo-id-media-001-vidio-com.akamaized.net	regional	sea
 geolocation.onetrust.com	regional	us
 getblueshift.com	regional	eu
-gitv.cn	regional	cn
-gitv.tv	regional	cn
+gitv.cn	global	-
+gitv.tv	global	-
 glxplay.io	regional	sea
 go-mpulse.net	regional	ca
 gorin.jp	regional	jp
@@ -326,7 +326,7 @@ huluad.com	regional	us
 huluqa.com	regional	us
 hulustream.com	regional	us
 i-viaplay-com.akamaized.net	regional	eu
-ibkstore.com	regional	cn
+ibkstore.com	global	-
 ibytedtos.com	global	-
 id.zaq.ne.jp	regional	jp
 if.lemino.docomo.ne.jp	regional	jp
@@ -338,12 +338,12 @@ infinity-c12.youboranqs01.com	regional	tw
 infinity-c15.youboranqs01.com	regional	hk
 instagram.com	global	-
 ipstatp.com	global	-
-iq.com	regional	cn
-iqiyi.com	regional	cn
-iqiyi.demo.uwp	regional	cn
-iqiyiedge.com	regional	cn
-iqiyiedge.net	regional	cn
-iqiyipic.com	regional	cn
+iq.com	global	-
+iqiyi.com	global	-
+iqiyi.demo.uwp	global	-
+iqiyiedge.com	global	-
+iqiyiedge.net	global	-
+iqiyipic.com	global	-
 itv-hub.cdn-v3.conductrics.com	regional	uk
 itv.com	regional	uk
 itvdotcom.2cnt.net	regional	uk
@@ -351,7 +351,7 @@ itvpnp.live.ott.irdeto.com	regional	uk
 itvpnpmobile-a.akamaihd.net	regional	eu
 itvstatic.com	regional	uk
 iview.abc.net.au	regional	au
-jiangbing.cn	regional	cn
+jiangbing.cn	global	-
 joyn.de	regional	eu
 jtbc.co.kr	regional	kr
 jujutsuphanpara.jp	regional	jp
@@ -406,8 +406,8 @@ movetv.com	regional	us
 mtg-api.com	regional	eu
 muscdn.com	global	-
 music-book.jp	regional	jp
-music.126.net	regional	cn
-music.163.com	regional	cn
+music.126.net	global	-
+music.163.com	global	-
 music.jp	regional	jp
 musical.ly	global	-
 mxplayer.in	regional	sea
@@ -491,24 +491,24 @@ pooq.co.kr	regional	kr
 popcornflix-prod.cloud.seachange.com	regional	us
 popcornflix.com	regional	us
 pplusstatic.com	regional	us
-pps.tv	regional	cn
-ppsimg.com	regional	cn
-ppstream.cn	regional	cn
-ppstream.com	regional	cn
-ppstream.com.cn	regional	cn
-ppstream.net	regional	cn
-ppstream.net.cn	regional	cn
-ppsurl.com	regional	cn
+pps.tv	global	-
+ppsimg.com	global	-
+ppstream.cn	global	-
+ppstream.com	global	-
+ppstream.com.cn	global	-
+ppstream.net	global	-
+ppstream.net.cn	global	-
+ppsurl.com	global	-
 primevideo.com	global	-
 prod-skyonelive.akamaized.net	regional	au
 prod.hjholdings.tv	regional	jp
 pstatic.net	regional	kr
 pv-cdn.net	global	-
-qiyi.cn	regional	cn
-qiyi.com	regional	cn
-qiyipic.com	regional	cn
-qy.com	regional	cn
-qy.net	regional	cn
+qiyi.cn	global	-
+qiyi.com	global	-
+qiyipic.com	global	-
+qy.com	global	-
+qy.net	global	-
 radiko.jp	regional	jp
 radionikkei.jp	regional	jp
 rakuten.co.jp	regional	jp
@@ -546,7 +546,7 @@ sling.com	regional	us
 slinginternational.com	regional	us
 smartmediarep.com	regional	kr
 smartstream.ne.jp	regional	jp
-soku.com	regional	cn
+soku.com	global	-
 solocoo.tv	regional	sea
 sooka.my	regional	sea
 sora.com	ai	-
@@ -561,7 +561,7 @@ streaks.jp	regional	jp
 stream.ne.jp	regional	jp
 streamcoimg-a.akamaihd.net	regional	au
 streamotion.com.au	regional	au
-suike.cn	regional	cn
+suike.cn	global	-
 tataplay.com	regional	sea
 telasa.jp	regional	jp
 tglmp03.akamaized.net	regional	sg
@@ -638,10 +638,10 @@ x-live-fox-stgec.uplynk.com	regional	us
 yahoovod.hs.llnwd.net	regional	tw
 yb.uncn.jp	regional	jp
 yep.video.yahoo.com	regional	tw
-ykimg.com	regional	cn
+ykimg.com	global	-
 yospace.com	regional	uk
 youboranqs01.com	regional	hk
-youku.com	regional	cn
+youku.com	global	-
 yourtv.com.au	regional	au
 zahs.tv	regional	eu
 zdf.de	regional	eu

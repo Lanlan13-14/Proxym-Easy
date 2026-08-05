@@ -261,10 +261,10 @@ https://github.com/1-stream/1stream-public-utils/blob/main/stream.smartdns.list
 # ---------- > Europe Media       → class=regional, region=eu  # 或拆 uk
 # ---------- > North America Media→ class=regional, region=us
 # ---------- > Korean Media       → class=regional, region=kr
-# ---------- > SouthEastAsia media→ class=regional, region=sea # 可再细
+# ---------- > SouthEastAsia media→ class=regional, region=sea  # 东南亚
 # ---------- > AI Platform        → class=ai
 # ---------- > Others / ? media   → class=global 或 other（配置）
-# ---------- > China Media        → class=regional, region=cn 或 other
+# ---------- > China Media        → class=global（无 cn 节点）；bilibili* 强制 hk
 ```
 
 行格式：
@@ -1023,7 +1023,7 @@ https://dns.example.com/api/v2/weather/us
 | # | 问题 | 建议默认 |
 |---|---|---|
 | 1 | Europe 整段 vs 拆 uk | map 里 `eu`；Rules uk 覆盖为 `uk` |
-| 2 | China Media 是否解锁 | 默认不进入 map 或 `other` |
+| 2 | China Media 是否解锁 | 并入 global；bilibili* → hk |
 | 3 | 解锁机是否对中心单独开 DoH | MVP UDP 53 即可 |
 | 4 | AAAA 解锁命中 | `empty` |
 | 5 | 中心是否实现 DoQ | 不做 |

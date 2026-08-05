@@ -109,7 +109,9 @@ SECTION_RULES = [
     ("Korean Media", "regional", "kr"),
     ("SouthEastAsia media", "regional", "sea"),
     ("Southeast Asia", "regional", "sea"),
-    ("China Media", "regional", "cn"),
+    # China Media: no dedicated cn unlock node — fold into global (Netflix-style path)
+    # except bilibili* which is forced to hk below.
+    ("China Media", "global", None),
     ("Others", "global", None),
     ("? media", "global", None),
 ]
@@ -177,6 +179,13 @@ if Path(rules_path).is_file():
         parts = line.strip().split("\t")
         if len(parts) >= 3:
             put(parts[0], parts[1], parts[2], boost=1)
+
+# Bilibili family → always regional hk (overrides cn/tw/sea/hk splits from upstream)
+BILI_RE = re.compile(r"(^|\.)(bilibili|biliapi)(\.|$)")
+for d in list(table.keys()):
+    if BILI_RE.search(d):
+        # boost high enough to beat regional+Rules
+        put(d, "regional", "hk", boost=10)
 
 if len(table) < min_e:
     raise SystemExit(f"ERROR: only {len(table)} entries < min {min_e}")
