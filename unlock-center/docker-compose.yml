@@ -28,6 +28,9 @@ services:
       # pushed over the existing DoH TLS port to connected unlock nodes.
       CENTER_ALLOWED_IPS: ${CENTER_ALLOWED_IPS:-}
       CENTER_ALLOWED_IPS_FILE: /data/allowed-ips.txt
+      # Only these TCP peers may supply CF-Connecting-IP. Cloudflare Tunnel on
+      # the same host normally connects from 127.0.0.1/32.
+      CENTER_TRUSTED_PROXY_IPS: ${CENTER_TRUSTED_PROXY_IPS:-}
       CENTER_CONTROL_TOKEN: ${CENTER_CONTROL_TOKEN:-}
       CENTER_CONTROL_PATH: ${CENTER_CONTROL_PATH:-/unlock-control/v1/connect}
     volumes:

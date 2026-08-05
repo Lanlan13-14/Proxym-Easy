@@ -26,6 +26,7 @@ pub struct AppState {
     pub passthrough_cache: DashMap<String, CacheEntry>,
     pub control: Option<Arc<crate::control::ControlHub>>,
     pub acl_cidrs: ArcSwap<Vec<IpNet>>,
+    pub trusted_proxy_cidrs: Vec<IpNet>,
 }
 
 pub struct CacheEntry {
@@ -56,6 +57,12 @@ impl AppState {
             .iter()
             .map(|value| value.parse::<IpNet>().expect("validated CIDR"))
             .collect();
+        let trusted_proxy_cidrs = cfg
+            .access
+            .trusted_proxy_cidrs
+            .iter()
+            .map(|value| value.parse::<IpNet>().expect("validated CIDR"))
+            .collect();
         Arc::new(Self {
             cfg,
             index: ArcSwap::from_pointee(index),
@@ -64,6 +71,7 @@ impl AppState {
             passthrough_cache: DashMap::new(),
             control,
             acl_cidrs: ArcSwap::from_pointee(acl_cidrs),
+            trusted_proxy_cidrs,
         })
     }
 
@@ -78,6 +86,12 @@ impl AppState {
     pub fn access_allowed(&self, client_ip: IpAddr) -> bool {
         let cidrs = self.acl_cidrs.load();
         cidrs.is_empty() || cidrs.iter().any(|cidr| cidr.contains(&client_ip))
+    }
+
+    pub fn trusted_proxy(&self, peer_ip: IpAddr) -> bool {
+        self.trusted_proxy_cidrs
+            .iter()
+            .any(|cidr| cidr.contains(&peer_ip))
     }
 
     pub async fn reload_acl_from_file(&self) -> anyhow::Result<bool> {

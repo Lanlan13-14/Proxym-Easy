@@ -115,6 +115,9 @@ passthrough_max_ttl_secs = 300
 allowed_cidrs = []
 # DoH Bearer，非空则要求 Authorization 头
 bearer_token = ""
+# 只有列在这里的 TCP peer 才可提供 CF-Connecting-IP。Cloudflare Tunnel 与
+# center 同机时填 ["127.0.0.1/32"]；直连 DoH 必须保持 []，防止客户端伪造头。
+trusted_proxy_cidrs = []
 
 # ----- 到 unlock 数据面的单端口控制通道（可选） -----
 # 空 token = 不开放控制端点、维持旧的 node dns_upstream UDP 代查方式。

@@ -122,8 +122,12 @@ pub struct CacheConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AccessConfig {
+    /// Real client CIDRs allowed to make DNS requests.
     pub allowed_cidrs: Vec<String>,
     pub bearer_token: String,
+    /// TCP peers allowed to supply Cloudflare's CF-Connecting-IP header.
+    /// Keep empty unless the DoH listener is behind a trusted reverse proxy.
+    pub trusted_proxy_cidrs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -256,6 +260,7 @@ impl Default for AccessConfig {
         Self {
             allowed_cidrs: vec![],
             bearer_token: String::new(),
+            trusted_proxy_cidrs: vec![],
         }
     }
 }
@@ -336,6 +341,9 @@ impl Config {
         }
         if let Ok(v) = env::var("CENTER_ALLOWED_IPS") {
             self.access.allowed_cidrs = split_cidrs(&v);
+        }
+        if let Ok(v) = env::var("CENTER_TRUSTED_PROXY_IPS") {
+            self.access.trusted_proxy_cidrs = split_cidrs(&v);
         }
         if let Ok(v) = env::var("CENTER_UNLOCK_SCOPE") {
             self.policy.unlock_scope = v;
@@ -479,9 +487,17 @@ impl Config {
                 bail!("control.bearer_token requires non-empty access.allowed_cidrs");
             }
         }
-        for cidr in &self.access.allowed_cidrs {
+        if self.access.trusted_proxy_cidrs.iter().any(|cidr| cidr == "0.0.0.0/0" || cidr == "::/0") {
+            bail!("access.trusted_proxy_cidrs must not trust every address");
+        }
+        for cidr in self
+            .access
+            .allowed_cidrs
+            .iter()
+            .chain(self.access.trusted_proxy_cidrs.iter())
+        {
             cidr.parse::<IpNet>()
-                .map_err(|_| anyhow::anyhow!("invalid access.allowed_cidrs entry: {cidr}"))?;
+                .map_err(|_| anyhow::anyhow!("invalid access CIDR entry: {cidr}"))?;
         }
         Ok(())
     }
@@ -540,5 +556,12 @@ mod tests {
             split_cidrs(" 198.51.100.0/24, 2001:db8::/48 ,,"),
             vec!["198.51.100.0/24", "2001:db8::/48"]
         );
+    }
+
+    #[test]
+    fn trusted_proxy_must_not_include_all_addresses() {
+        let mut cfg = Config::default();
+        cfg.access.trusted_proxy_cidrs = vec!["0.0.0.0/0".into()];
+        assert!(cfg.validate().is_err());
     }
 }

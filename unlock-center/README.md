@@ -678,6 +678,10 @@ DOH_BASE_PATH=/api/v2/weather
 # —— 统一 ACL + 复用 DoH:443 的 WSS 控制通道 ——
 # 客户端 CIDR 只在中心维护：既限制中心入口，也热下发 unlock 的 DNS/SNI ACL。
 CENTER_ALLOWED_IPS=198.51.100.0/24
+# 若公开 DoH 经 Cloudflare Tunnel/同机反代进入：不要把 127.0.0.1 放进上面的
+# 客户端白名单；仅在这里信任 Tunnel 本地 peer，中心会安全读取 CF-Connecting-IP
+# 后再匹配 CENTER_ALLOWED_IPS。直连公网 DoH 时保持为空。不要填写 0.0.0.0/0。
+CENTER_TRUSTED_PROXY_IPS=127.0.0.1/32
 # 与每台 unlock 的 CONTROL_TOKEN 完全一致；为空则关闭控制通道并走旧 UDP 代查。
 CENTER_CONTROL_TOKEN=replace-with-a-long-random-secret
 CENTER_CONTROL_PATH=/unlock-control/v1/connect

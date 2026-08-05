@@ -39,6 +39,24 @@ def query_packet():
     )
 
 
+def encode_name(name):
+    return b"".join(bytes([len(label)]) + label.encode() for label in name.split(".")) + b"\0"
+
+
+def doh_query(port, client_ip):
+    import http.client
+    context = ssl._create_unverified_context()
+    conn = http.client.HTTPSConnection("127.0.0.1", port, context=context, timeout=3)
+    conn.request(
+        "POST", "/dns-query", query_packet(),
+        {"Content-Type": "application/dns-message", "CF-Connecting-IP": client_ip},
+    )
+    response = conn.getresponse()
+    body = response.read()
+    conn.close()
+    return response.status, body
+
+
 def response_for(request):
     if len(request) < 29:
         raise RuntimeError("unexpected DNS request")
@@ -62,7 +80,7 @@ async def node_client(port, ready):
         await websocket.send('{"type":"hello","protocol":"proxym-unlock-control-v1","node_id":"node-1"}')
         hello = await asyncio.wait_for(websocket.recv(), 3)
         acl = await asyncio.wait_for(websocket.recv(), 3)
-        if '"type":"hello"' not in hello or '"type":"acl"' not in acl or "127.0.0.0/8" not in acl:
+        if '"type":"hello"' not in hello or '"type":"acl"' not in acl or "198.51.100.0/24" not in acl or "127.0.0.0/8" not in acl:
             raise RuntimeError("center did not send expected hello/ACL snapshot")
         ready.set()
         while True:
@@ -126,7 +144,8 @@ file = "{nodes}"
 enabled = false
 
 [access]
-allowed_cidrs = ["127.0.0.0/8"]
+allowed_cidrs = ["127.0.0.0/8", "198.51.100.0/24"]
+trusted_proxy_cidrs = ["127.0.0.1/32"]
 
 [control]
 bearer_token = "e2e-secret"
@@ -138,6 +157,12 @@ path = "/unlock-control/v1/connect"
             ready = asyncio.Event()
             task = asyncio.create_task(node_client(18443, ready))
             await asyncio.wait_for(ready.wait(), 5)
+            allowed_status, allowed_body = await asyncio.to_thread(doh_query, 18443, "198.51.100.8")
+            if allowed_status != 200 or allowed_body[3] & 15 != 0:
+                raise RuntimeError(f"trusted proxy allowed client failed: {allowed_status} {allowed_body.hex()}")
+            denied_status, denied_body = await asyncio.to_thread(doh_query, 18443, "203.0.113.8")
+            if denied_status != 200 or denied_body[3] & 15 != 5:
+                raise RuntimeError(f"trusted proxy denied client was accepted: {denied_status} {denied_body.hex()}")
             def udp_query():
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sock.settimeout(3)

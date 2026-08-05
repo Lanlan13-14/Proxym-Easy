@@ -1,4 +1,5 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -193,6 +194,12 @@ async fn handle_doh_http(
         }
     }
 
+    // Only a peer explicitly configured as a trusted reverse proxy may supply
+    // CF-Connecting-IP. This is required for cloudflared localhost tunnels:
+    // their TCP peer is 127.0.0.1, while Cloudflare supplies the real client IP.
+    // Direct clients cannot spoof this header because their peer is not trusted.
+    let client_ip = effective_client_ip(&req, peer.ip(), &state);
+
     let path = req.uri().path();
     let profile = match parse_doh_path(path, &state.cfg) {
         PathMatch::Profile(p) => p,
@@ -253,7 +260,7 @@ async fn handle_doh_http(
     };
 
     let resp = match state
-        .handle_query(&request, Some(peer.ip()), &profile)
+        .handle_query(&request, Some(client_ip), &profile)
         .await
     {
         ResolveResult::Message(m) => m,
@@ -270,6 +277,23 @@ async fn handle_doh_http(
         .header(hyper::header::CACHE_CONTROL, "max-age=45")
         .body(Full::new(Bytes::from(out)))
         .unwrap())
+}
+
+fn effective_client_ip<B>(req: &Request<B>, peer_ip: IpAddr, state: &AppState) -> IpAddr {
+    if !state.trusted_proxy(peer_ip) {
+        return peer_ip;
+    }
+    let Some(value) = req
+        .headers()
+        .get("cf-connecting-ip")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return peer_ip;
+    };
+    // Cloudflare provides exactly one plain IP. Reject comma-separated values,
+    // ports, whitespace-only values, and malformed content instead of treating
+    // arbitrary X-Forwarded-For input as authoritative.
+    IpAddr::from_str(value.trim()).unwrap_or(peer_ip)
 }
 
 fn is_control_upgrade(req: &Request<Incoming>, state: &AppState) -> bool {
@@ -293,6 +317,64 @@ fn is_control_upgrade(req: &Request<Incoming>, state: &AppState) -> bool {
                     .any(|item| item.trim() == crate::control::protocol())
             })
             .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::geoip::GeoIp;
+    use domain_index::DomainIndex;
+    use schedule::NodeTable;
+
+    fn state(proxy_cidrs: Vec<&str>) -> Arc<AppState> {
+        let mut cfg = Config::default();
+        cfg.access.trusted_proxy_cidrs = proxy_cidrs.into_iter().map(ToOwned::to_owned).collect();
+        let index = DomainIndex::load_str("", 0).unwrap();
+        let nodes = NodeTable::from_configs(vec![]).unwrap();
+        AppState::new(cfg, index, nodes, GeoIp::open("/dev/null"), None)
+    }
+
+    fn request(header: Option<&str>) -> Request<()> {
+        let mut builder = Request::builder().uri("/dns-query");
+        if let Some(value) = header {
+            builder = builder.header("cf-connecting-ip", value);
+        }
+        builder.body(()).unwrap()
+    }
+
+    #[test]
+    fn trusted_local_proxy_can_supply_cf_connecting_ip() {
+        let state = state(vec!["127.0.0.1/32"]);
+        let got = effective_client_ip(
+            &request(Some("203.0.113.9")),
+            "127.0.0.1".parse().unwrap(),
+            &state,
+        );
+        assert_eq!(got, "203.0.113.9".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn direct_client_cannot_spoof_cf_connecting_ip() {
+        let state = state(vec!["127.0.0.1/32"]);
+        let got = effective_client_ip(
+            &request(Some("198.51.100.10")),
+            "203.0.113.9".parse().unwrap(),
+            &state,
+        );
+        assert_eq!(got, "203.0.113.9".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn malformed_proxy_header_falls_back_to_peer() {
+        let state = state(vec!["127.0.0.1/32"]);
+        let got = effective_client_ip(
+            &request(Some("203.0.113.9, 198.51.100.10")),
+            "127.0.0.1".parse().unwrap(),
+            &state,
+        );
+        assert_eq!(got, "127.0.0.1".parse::<IpAddr>().unwrap());
+    }
 }
 
 fn websocket_accept(key: &str) -> String {

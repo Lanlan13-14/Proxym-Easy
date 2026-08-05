@@ -126,9 +126,11 @@ passthrough_max_ttl_secs = 300
 [access]
 # This is the single source of client ACL truth. CENTER_ALLOWED_IPS is parsed
 # directly by the Rust process; its atomically mirrored file is for SIGHUP hot
-# reload and control-node propagation.
+# reload and control-node propagation. CENTER_TRUSTED_PROXY_IPS is parsed by
+# the same process and is only for peers allowed to provide CF-Connecting-IP.
 allowed_cidrs = []
 bearer_token = "${CENTER_BEARER_TOKEN:-}"
+trusted_proxy_cidrs = []
 
 [control]
 # Empty token disables the WebSocket endpoint and preserves legacy UDP node DNS.
