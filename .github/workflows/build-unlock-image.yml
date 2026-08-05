@@ -46,6 +46,8 @@ jobs:
         working-directory: unlock
     steps:
       - uses: actions/checkout@v4
+      - name: Install control-channel test dependency
+        run: python3 -m pip install --user 'websockets>=14,<17'
       - name: Docs/config consistency
         run: |
           set -e
