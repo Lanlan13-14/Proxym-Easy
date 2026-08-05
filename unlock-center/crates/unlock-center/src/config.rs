@@ -240,7 +240,9 @@ impl Default for GeoIpConfig {
 impl Default for PassthroughConfig {
     fn default() -> Self {
         Self {
-            timeout_ms: 800,
+            // WSS control passthrough crosses center ↔ data-plane ↔ SmartDNS;
+            // 1600ms avoids dropping burst queries during reconnect/ACL apply.
+            timeout_ms: 1600,
             fallback_upstreams: vec!["1.1.1.1:53".into(), "8.8.8.8:53".into()],
         }
     }
@@ -381,6 +383,11 @@ impl Config {
         if let Ok(v) = env::var("CENTER_CONTROL_PATH") {
             self.control.path = v;
         }
+        if let Ok(v) = env::var("CENTER_PASSTHROUGH_TIMEOUT_MS") {
+            if let Ok(timeout_ms) = v.parse() {
+                self.passthrough.timeout_ms = timeout_ms;
+            }
+        }
         if let Ok(v) = env::var("CENTER_LOG_LEVEL") {
             self.log_level = v;
         }
@@ -476,6 +483,9 @@ impl Config {
                 other => bail!("unknown tls.mode: {other}"),
             }
         }
+        if self.passthrough.timeout_ms == 0 || self.passthrough.timeout_ms > 30_000 {
+            bail!("passthrough.timeout_ms must be between 1 and 30000");
+        }
         if !self.control.bearer_token.is_empty() {
             if !self.listen.enable_doh {
                 bail!("control.bearer_token requires listen.enable_doh=true (the control path reuses DoH TLS)");
@@ -487,7 +497,12 @@ impl Config {
                 bail!("control.bearer_token requires non-empty access.allowed_cidrs");
             }
         }
-        if self.access.trusted_proxy_cidrs.iter().any(|cidr| cidr == "0.0.0.0/0" || cidr == "::/0") {
+        if self
+            .access
+            .trusted_proxy_cidrs
+            .iter()
+            .any(|cidr| cidr == "0.0.0.0/0" || cidr == "::/0")
+        {
             bail!("access.trusted_proxy_cidrs must not trust every address");
         }
         for cidr in self

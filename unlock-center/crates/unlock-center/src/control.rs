@@ -150,6 +150,10 @@ impl ControlHub {
         }
 
         let (tx, mut rx) = mpsc::channel(1024);
+        // Keep an identity for this exact session. A replacement connection for
+        // the same node must never let the old session remove the new sender
+        // when its socket finishes closing.
+        let session_tx = tx.clone();
         if let Some(previous) = self.sessions.insert(node_id.clone(), tx) {
             drop(previous);
             warn!(%node_id, "replaced previous unlock control connection");
@@ -202,7 +206,11 @@ impl ControlHub {
                 }
             }
         }
-        self.sessions.remove(&node_id);
+        // If a new connection has already replaced this node ID, retain that
+        // new sender. Without this comparison, the old closing task can delete
+        // the healthy replacement and cause intermittent passthrough timeouts.
+        self.sessions
+            .remove_if(&node_id, |_, current| current.same_channel(&session_tx));
         for (_, reply) in pending {
             let _ = reply.send(Err("unlock control node disconnected".into()));
         }
@@ -293,5 +301,18 @@ mod tests {
             decode_query_result(None, Some("node failed".into())).unwrap_err(),
             "node failed"
         );
+    }
+
+    #[test]
+    fn old_session_close_does_not_remove_replacement() {
+        let hub = ControlHub::new("token".into(), "/control".into());
+        let (old_tx, _old_rx) = mpsc::channel(1);
+        let (new_tx, _new_rx) = mpsc::channel(1);
+        hub.sessions.insert("jp-1".into(), old_tx.clone());
+        hub.sessions.insert("jp-1".into(), new_tx.clone());
+        hub.sessions
+            .remove_if("jp-1", |_, current| current.same_channel(&old_tx));
+        let current = hub.sessions.get("jp-1").unwrap();
+        assert!(current.same_channel(&new_tx));
     }
 }

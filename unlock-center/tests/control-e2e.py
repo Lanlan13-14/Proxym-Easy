@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise center DNS -> WSS node control -> DNS response end to end."""
+"""Exercise center DNS -> WSS node control, proxy ACL, and missing-region fallback."""
 
 import asyncio
 import os
@@ -32,10 +32,12 @@ def wait_tcp(port, proc):
     raise RuntimeError("center TLS listener did not open")
 
 
-def query_packet():
+def query_packet(name="example.com", qtype=1):
     return (
         b"\xbe\xef\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
-        b"\x07example\x03com\x00\x00\x01\x00\x01"
+        + encode_name(name)
+        + qtype.to_bytes(2, "big")
+        + b"\x00\x01"
     )
 
 
@@ -43,12 +45,12 @@ def encode_name(name):
     return b"".join(bytes([len(label)]) + label.encode() for label in name.split(".")) + b"\0"
 
 
-def doh_query(port, client_ip):
+def doh_query(port, client_ip, wire=None):
     import http.client
     context = ssl._create_unverified_context()
     conn = http.client.HTTPSConnection("127.0.0.1", port, context=context, timeout=3)
     conn.request(
-        "POST", "/dns-query", query_packet(),
+        "POST", "/dns-query", wire or query_packet(),
         {"Content-Type": "application/dns-message", "CF-Connecting-IP": client_ip},
     )
     response = conn.getresponse()
@@ -60,10 +62,16 @@ def doh_query(port, client_ip):
 def response_for(request):
     if len(request) < 29:
         raise RuntimeError("unexpected DNS request")
-    # One fixed-question A response: example.com -> 203.0.113.9.
+    # Echo the requested A/AAAA type with a valid fixed real-DNS-style answer.
+    qtype = request[-4:-2]
     header = request[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00"
     question = request[12:]
-    answer = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x1e\x00\x04\xcb\x00\x71\x09"
+    if qtype == b"\x00\x1c":
+        rdata = bytes.fromhex("20010db8000000000000000000000009")
+    else:
+        qtype = b"\x00\x01"
+        rdata = b"\xcb\x00\x71\x09"
+    answer = b"\xc0\x0c" + qtype + b"\x00\x01\x00\x00\x00\x1e" + len(rdata).to_bytes(2, "big") + rdata
     return header + question + answer
 
 
@@ -83,6 +91,7 @@ async def node_client(port, ready):
         if '"type":"hello"' not in hello or '"type":"acl"' not in acl or "198.51.100.0/24" not in acl or "127.0.0.0/8" not in acl:
             raise RuntimeError("center did not send expected hello/ACL snapshot")
         ready.set()
+        handled_queries = 0
         while True:
             message = await websocket.recv()
             if '"type":"query"' not in message:
@@ -95,7 +104,9 @@ async def node_client(port, ready):
             await websocket.send(json.dumps({
                 "type": "query_result", "id": payload["id"], "dns_message_b64": answer,
             }, separators=(",", ":")))
-            return
+            handled_queries += 1
+            if handled_queries >= 3:
+                return
 
 
 async def run_e2e():
@@ -105,6 +116,8 @@ async def run_e2e():
         key = root / "key.pem"
         nodes = root / "nodes.toml"
         config = root / "config.toml"
+        domain_map = root / "domain-region.map"
+        domain_map.write_text("missing-region.test\tregional\tkr\n")
         subprocess.run([
             "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
             "-keyout", str(key), "-out", str(cert), "-subj", "/CN=localhost",
@@ -133,9 +146,13 @@ default_global_region = "us"
 allow_regions = ["us"]
 
 [tables]
-domain_map_file = "{root / 'none.map'}"
+domain_map_file = "{domain_map}"
 domain_map_url = ""
-min_entries = 0
+min_entries = 1
+
+[passthrough]
+timeout_ms = 1600
+fallback_upstreams = []
 
 [nodes]
 file = "{nodes}"
@@ -160,6 +177,16 @@ path = "/unlock-control/v1/connect"
             allowed_status, allowed_body = await asyncio.to_thread(doh_query, 18443, "198.51.100.8")
             if allowed_status != 200 or allowed_body[3] & 15 != 0:
                 raise RuntimeError(f"trusted proxy allowed client failed: {allowed_status} {allowed_body.hex()}")
+            missing_a_status, missing_a_body = await asyncio.to_thread(
+                doh_query, 18443, "198.51.100.8", query_packet("missing-region.test", 1)
+            )
+            if missing_a_status != 200 or missing_a_body[3] & 15 != 0 or not missing_a_body.endswith(b"\xcb\x00\x71\x09"):
+                raise RuntimeError(f"missing-region A did not use real DNS passthrough: {missing_a_status} {missing_a_body.hex()}")
+            missing_aaaa_status, missing_aaaa_body = await asyncio.to_thread(
+                doh_query, 18443, "198.51.100.8", query_packet("missing-region.test", 28)
+            )
+            if missing_aaaa_status != 200 or missing_aaaa_body[3] & 15 != 0 or not missing_aaaa_body.endswith(bytes.fromhex("20010db8000000000000000000000009")):
+                raise RuntimeError(f"missing-region AAAA did not use real DNS passthrough: {missing_aaaa_status} {missing_aaaa_body.hex()}")
             denied_status, denied_body = await asyncio.to_thread(doh_query, 18443, "203.0.113.8")
             if denied_status != 200 or denied_body[3] & 15 != 5:
                 raise RuntimeError(f"trusted proxy denied client was accepted: {denied_status} {denied_body.hex()}")

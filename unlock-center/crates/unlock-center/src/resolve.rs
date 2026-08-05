@@ -173,12 +173,17 @@ impl AppState {
         match class {
             Class::Regional => {
                 let region = region_hint.unwrap_or("us");
-                self.answer_unlock(request, qname, region)
+                self.answer_unlock_or_passthrough(request, qname, region, client_ip)
+                    .await
             }
-            Class::Global => self.answer_unlock(request, qname, &profile.global_region),
+            Class::Global => {
+                self.answer_unlock_or_passthrough(request, qname, &profile.global_region, client_ip)
+                    .await
+            }
             Class::Ai => {
                 let region = profile.effective_ai_region();
-                self.answer_unlock(request, qname, region)
+                self.answer_unlock_or_passthrough(request, qname, region, client_ip)
+                    .await
             }
             Class::Other => {
                 self.passthrough(request, qname, RecordType::A, client_ip)
@@ -194,9 +199,26 @@ impl AppState {
         client_ip: Option<IpAddr>,
         profile: &Profile,
     ) -> ResolveResult {
-        let _ = profile;
         let index = self.index.load();
-        let (class, _) = index.classify(qname, self.scope(), self.cfg.policy.enable_ai_unlock);
+        let (class, region_hint) =
+            index.classify(qname, self.scope(), self.cfg.policy.enable_ai_unlock);
+        // A matching rule only suppresses AAAA while its selected unlock region
+        // exists. A missing regional/global/AI node is deliberately treated as
+        // `other` so both A and AAAA retain real DNS connectivity.
+        let unlock_region = match class {
+            Class::Regional => region_hint,
+            Class::Global => Some(profile.global_region.as_str()),
+            Class::Ai => Some(profile.effective_ai_region()),
+            Class::Other => None,
+        };
+        if let Some(region) = unlock_region {
+            if self.nodes.load().pick_region(region, false).is_err() {
+                warn!(%qname, %region, "no regional unlock node; using real AAAA passthrough");
+                return self
+                    .passthrough(request, qname, RecordType::AAAA, client_ip)
+                    .await;
+            }
+        }
         match self.cfg.policy.aaaa_mode.as_str() {
             "passthrough" => {
                 self.passthrough(request, qname, RecordType::AAAA, client_ip)
@@ -214,9 +236,35 @@ impl AppState {
         }
     }
 
-    fn answer_unlock(&self, request: &Message, qname: &str, region: &str) -> ResolveResult {
+    async fn answer_unlock_or_passthrough(
+        &self,
+        request: &Message,
+        qname: &str,
+        region: &str,
+        client_ip: Option<IpAddr>,
+    ) -> ResolveResult {
+        if self.nodes.load().pick_region(region, false).is_err() {
+            // A curated regional suffix must not make an unrelated page fail
+            // simply because this deployment has not bought that region yet.
+            // Do not misroute it to a random unlock country; return its real
+            // DNS result through the normal node/WSS passthrough path instead.
+            warn!(%qname, %region, "no regional unlock node; using real DNS passthrough");
+            return self
+                .passthrough(request, qname, RecordType::A, client_ip)
+                .await;
+        }
+        self.answer_unlock(request, qname, region, false)
+    }
+
+    fn answer_unlock(
+        &self,
+        request: &Message,
+        qname: &str,
+        region: &str,
+        allow_region_fallback: bool,
+    ) -> ResolveResult {
         let nodes = self.nodes.load();
-        let node = match nodes.pick_region(region, self.cfg.schedule.allow_region_fallback) {
+        let node = match nodes.pick_region(region, allow_region_fallback) {
             Ok(n) => n,
             Err(e) => {
                 warn!(%region, error=%e, "no unlock node");
@@ -484,5 +532,27 @@ mod tests {
     fn empty_center_acl_preserves_legacy_open_behavior() {
         let state = state_with_acl(vec![]);
         assert!(state.access_allowed("203.0.113.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn missing_regional_node_is_detected_without_random_fallback() {
+        let mut cfg = Config::default();
+        let nodes = NodeTable::from_configs(vec![schedule::NodeConfig {
+            id: "jp-1".into(),
+            region: "jp".into(),
+            unlock_ip: "203.0.113.20".into(),
+            dns_upstream: "203.0.113.20:53".into(),
+            weight: 1,
+            lat: None,
+            lon: None,
+        }])
+        .unwrap();
+        let index = DomainIndex::load_str("", 0).unwrap();
+        cfg.schedule.allow_region_fallback = true;
+        let state = AppState::new(cfg, index, nodes, GeoIp::open("/dev/null"), None);
+        // The regional fallback decision intentionally ignores the legacy
+        // random-region flag; missing KR must use real DNS, never JP unlock.
+        assert!(state.nodes.load().pick_region("kr", false).is_err());
+        assert!(state.nodes.load().pick_region("kr", true).is_ok());
     }
 }
