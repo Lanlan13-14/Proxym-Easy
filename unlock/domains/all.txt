@@ -19,6 +19,7 @@
 188.com
 1fad96d91f4f519fc79753650a57dad992c44af2.cws.conviva.com
 1ok961aaca.execute-api.eu-west-1.amazonaws.com
+20thcenturystudios.com
 20thcenturystudios.com.au
 20thcenturystudios.com.br
 20thcenturystudios.jp
@@ -54,6 +55,7 @@ a753.w10.akamai.net
 abc-iview-mediapackagestreams-2.akamaized.net
 abc-studios.com
 abc.com
+abcnews.com
 abema-tv.com
 abema.adx.promo
 abema.io
@@ -160,6 +162,7 @@ bahamut.akamaized.net
 bahamut.com.tw
 baiying.com
 bamgrid.com
+bamtech.net
 band.us
 bats.video.yahoo.com
 bats.yahoodns.net
@@ -372,6 +375,7 @@ daznservices.com
 dcalivedazn.akamaized.net
 dcblivedazn.akamaized.net
 ddacn6pr5v0tl.cloudfront.net
+detpress.com
 dfp6rglgjqszk.cloudfront.net
 dgeft87wbj63p.cloudfront.net
 dicelaboratory.com
@@ -434,7 +438,9 @@ disney.ro
 disney.ru
 disney.se
 disney.sg
+disneyaccount.com
 disneyadsales.com
+disneyanimation.com
 disneyarena.com
 disneyaulani.com
 disneybaby.com
@@ -449,6 +455,7 @@ disneyinternational.com
 disneyinternationalhd.com
 disneyjunior.com
 disneyjuniortreataday.com
+disneylandparis.com
 disneylatino.com
 disneymagicmoments.co.il
 disneymagicmoments.co.uk
@@ -471,11 +478,13 @@ disneypeoplesurveys.com
 disneyplus.bn5x.net
 disneyplus.com
 disneyplus.com.ssl.sc.omtrdc.net
+disneyprivacycenter.com
 disneyredirects.com
 disneysrivieraresort.com
 disneystore.com
 disneystreaming.com
 disneysubscription.com
+disneytermsofuse.com
 disneytickets.co.uk
 disneyturkiye.com.tr
 disneytvajobs.com
@@ -728,6 +737,7 @@ foxtv.com
 foxtvdvd.com
 foxuv.com
 foxweatherwatch.com
+freeform.com
 freehulu.com
 freeviewplus.net.au
 friday.tw
@@ -852,6 +862,7 @@ hls-hamivideo.cdn.hinet.net
 hls.itunes.apple.com
 homebox.com
 homeboxoffice.com
+hongkongdisneyland.com
 hooloo.tv
 hoolu.com
 hoolu.tv
@@ -1062,6 +1073,7 @@ llama.com
 lnstagram-help.com
 lofter.com
 lstat.youku.com
+lucasfilm.com
 lv.queniujq.cn
 mainserver.567852.xyz
 maoer.com
@@ -1179,6 +1191,7 @@ nbaprop.sc.omtrdc.net
 nbaprop.tt.omtrdc.net
 ncloud.com
 nease.net
+neigbuy.com
 neontv.co.nz
 net10-livestream-keys.play.cbsi.video
 net10-livestream.play.cbsi.video
@@ -1294,6 +1307,7 @@ payhulu.com
 peacock.com
 peacocktv.com
 philo.com
+pixar.com
 pl.youku.com
 play-edge.itunes.apple.com
 playartifact.com
@@ -1391,11 +1405,13 @@ scdn.co
 screens-lab.jp
 scvm1sc0-ssm.anycast.nagra.com
 sdk.iad-03.braze.com
+searchlightpictures.com
 sentry.music.163.com
 servd-anthropic-website.b-cdn.net
 setantasports.com
 seven.demdex.net
 shahid.net
+shanghaidisneyresort.com
 sho.com
 shopdisney.com
 shops-disney.com
@@ -1537,6 +1553,7 @@ theinstagramhack.com
 themarvelexperiencetour.com
 theplatform.com
 thestationbymaker.com
+thewaltdisneycompany.com
 thisispolaris.com
 thumbnail-hamivideo.cdn.hinet.net
 tik-tokapi.com
@@ -1565,6 +1582,7 @@ tiktokw.us
 tlmr-hamivideo2.cdn.hinet.net
 tls1.yospace.com
 today.line.me
+tokyodisneyresort.jp
 tospotify.com
 tra-ww000-cp.akamaized.net
 tra-www000-cp.akamaized.net
@@ -1653,6 +1671,7 @@ vs-cmaf-push-uk-live.akamaized.net
 vs-cmaf-pushb-ww-live.akamaized.net
 vs-hls-push-uk-live.akamaized.net
 vs-hls-pushb-uk-live.akamaized.net
+waltdisneystudios.com
 watchdisneyfe.com
 watchespn.com
 watchnba.cdnfastly.endeavorstreaming.net
