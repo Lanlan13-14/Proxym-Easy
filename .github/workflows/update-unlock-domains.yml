@@ -89,10 +89,24 @@ jobs:
           grep -E $'^netflix\.com\tglobal\t' domains/domain-region.map
           grep -E $'^dmm\.co\.jp\tregional\tjp$' domains/domain-region.map
           grep -E $'^openai\.com\tai\t' domains/domain-region.map
+          # China Media → global; bilibili family forced regional hk
+          grep -E $'^youku\.com\tglobal\t' domains/domain-region.map
+          grep -E $'^iqiyi\.com\tglobal\t' domains/domain-region.map
+          grep -E $'^bilibili\.com\tregional\thk$' domains/domain-region.map
+          # SEA media folded into sg (no separate sea region)
+          grep -E $'^mewatch\.sg\tregional\tsg$' domains/domain-region.map
+          grep -E $'^hbogoasia\.com\tregional\tsg$' domains/domain-region.map
+          if awk -F'\t' 'NF>=3 && $1!~/^#/ && $2=="regional" && ($3=="cn" || $3=="sea") { found=1; print; } END { exit found?0:1 }' domains/domain-region.map; then
+            echo "ERROR: residual cn/sea regional rows in domain-region.map" >&2
+            exit 1
+          fi
           if grep -qiE $'\t(google|youtube)' domains/domain-region.map; then
             echo "ERROR: google/youtube leaked into domain-region.map" >&2
             exit 1
           fi
+
+      - name: Install control-channel test dependency
+        run: python3 -m pip install --user 'websockets>=14,<17'
 
       - name: Unit tests with new list
         working-directory: unlock
@@ -101,6 +115,12 @@ jobs:
         run: |
           set -euo pipefail
           sh tests/run.sh
+          # Explicit guard: control-agent unit path needs websockets (see tests/run.sh)
+          CONTROL_CENTER_URL="wss://dns.example.com/unlock-control/v1/connect" \
+            CONTROL_TOKEN=test CONTROL_NODE_ID=jp-1 \
+            UNLOCK_ROOT="$PWD" sh scripts/control-agent.sh env
+          python3 -c 'import websockets'
+          echo "control-agent websockets OK"
 
       - name: unlock-center cargo test
         working-directory: unlock-center

@@ -172,7 +172,7 @@ for line in Path(stream_path).read_text(encoding="utf-8", errors="ignore").split
             if key.lower() in title.lower() or title.lower() in key.lower():
                 section_cls, section_reg = cls, reg
                 break
-        # China default skip? still classify as cn regional; center can choose not to deploy cn nodes
+        # China Media is class=global above; bilibili* rewritten to regional hk after merge.
         continue
     m = re.match(r"^nameserver\s+/([^/]+)/", line, re.I)
     if m:
