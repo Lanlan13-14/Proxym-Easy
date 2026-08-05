@@ -800,6 +800,7 @@ DoT：主机 `dns.example.com:853`（MVP 用默认全局区；区锁仍按 map�
 |---|---|
 | 中心查区锁 SERVFAIL | `nodes.toml` 缺该 `region` 或节点全 unhealthy |
 | 代查失败 / 普通站解析慢失败 | 控制模式先查节点日志是否有 WSS 连接、Token/证书/`CONTROL_NODE_ID` 是否正确；旧模式则检查解锁机 53 是否放行中心 IP、`ENABLE_DNS=1` |
+| **YouTube / 普通站偶发打不开** | YouTube 族**故意不进 map**（始终 `other` 代查真实 IP）。旧版若节点 SmartDNS 经 WARP 返回 SERVFAIL，中心会原样回客户端甚至缓存最多 300s。现已：**节点/上游 SERVFAIL 不缓存，自动试下一个 fallback（1.1.1.1/8.8.8.8）**。仍失败时查：① 节点 WSS 是否断连抖动；② `passthrough.timeout_ms` 是否过短（建议 ≥1600）；③ fallback 是否被墙/被路由黑洞；④ 客户端是否把 DoH 设成「唯一 DNS」且中心 ACL 间歇拒绝 |
 | 能解析到 unlock IP 但播不了 | 解锁机 80/443 ACL 没收到 `CENTER_ALLOWED_IPS` 快照（或旧模式未放行客户端），或 WARP 挂了 |
 | 新机 Netflix 仍是美区 | DoH 仍用 `/us` 或默认 `DEFAULT_GLOBAL_REGION=us`，应改 `/sg` |
 | 所有流媒体都进同一台机 | 只有一台 unlock 登记，或 map/节点 region 写错 |

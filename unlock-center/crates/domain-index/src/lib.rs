@@ -148,9 +148,64 @@ pub fn normalize_domain(raw: &str) -> Option<String> {
     Some(s)
 }
 
-/// Google/YouTube family — never unlock.
+/// True when `needle` is an exact domain or a DNS label boundary match.
+///
+/// Important: bare labels like `youtube` must match apex `youtube.com`, not
+/// only `*.youtube` / `*.youtube.*`. The old ends_with(".{needle}") check
+/// missed every apex host (`youtube.com`, `ytimg.com`, `gstatic.com`, …).
+fn label_or_suffix(domain: &str, needle: &str) -> bool {
+    if domain == needle {
+        return true;
+    }
+    if domain.ends_with(&format!(".{needle}")) {
+        return true;
+    }
+    // needle as a leading label: youtube.com, youtube-nocookie.com (needle=youtube)
+    if let Some(rest) = domain.strip_prefix(needle) {
+        if rest.starts_with('.') {
+            return true;
+        }
+    }
+    // needle as a middle label: foo.youtube.cdn.example
+    domain.contains(&format!(".{needle}."))
+}
+
+/// Google/YouTube family — never unlock (always class=other / real DNS).
 pub fn is_blocked_domain(domain: &str) -> bool {
-    const NEEDLES: &[&str] = &[
+    // Full suffixes / multi-label needles first.
+    const SUFFIXES: &[&str] = &[
+        "youtube.com",
+        "youtube-nocookie.com",
+        "youtu.be",
+        "ytimg.com",
+        "googlevideo.com",
+        "ggpht.com",
+        "gstatic.com",
+        "googleapis.com",
+        "googleusercontent.com",
+        "google.com",
+        "googlemail.com",
+        "googleadservices.com",
+        "googlesyndication.com",
+        "google-analytics.com",
+        "googletagmanager.com",
+        "googletagservices.com",
+        "doubleclick.net",
+        "app-measurement.com",
+        "android.com",
+        "gvt1.com",
+        "gvt2.com",
+        "gvt3.com",
+        "1e100.net",
+        "withgoogle.com",
+        "blogspot.com",
+        "blogger.com",
+        "appspot.com",
+        "recaptcha.net",
+        "pik.goog",
+    ];
+    // Single DNS labels that must match apex + subdomains (youtube.com, *.youtube.com).
+    const LABELS: &[&str] = &[
         "google",
         "googleapis",
         "gstatic",
@@ -159,26 +214,26 @@ pub fn is_blocked_domain(domain: &str) -> bool {
         "ggpht",
         "youtube",
         "ytimg",
-        "youtu.be",
         "withgoogle",
         "blogspot",
         "blogger",
         "appspot",
         "doubleclick",
-        "app-measurement.com",
-        "pik.goog",
     ];
+
     let d = domain.to_ascii_lowercase();
-    for n in NEEDLES {
-        if d == *n || d.ends_with(&format!(".{n}")) || d.contains(&format!(".{n}.")) {
-            return true;
-        }
-        // also bare contains for google-ish labels
-        if *n == "google" && (d.contains("google") || d.ends_with(".goog")) {
+    for s in SUFFIXES {
+        if label_or_suffix(&d, s) {
             return true;
         }
     }
-    if d.ends_with(".goog") || d == "android.com" || d.ends_with(".android.com") {
+    for n in LABELS {
+        if label_or_suffix(&d, n) {
+            return true;
+        }
+    }
+    // catch-all google / .goog
+    if d.contains("google") || d.ends_with(".goog") || d == "goog" {
         return true;
     }
     false
@@ -391,6 +446,30 @@ openai.com\tai\t-
         assert!(is_blocked_domain("google.com"));
         assert!(is_blocked_domain("foo.googleapis.com"));
         assert!(!is_blocked_domain("netflix.com"));
+        // Apex hosts (the bug that made youtube.com look "unblocked" for tooling
+        // and would have let a poisoned map entry hijack it).
+        for d in [
+            "youtube.com",
+            "ytimg.com",
+            "ggpht.com",
+            "gstatic.com",
+            "youtube-nocookie.com",
+            "gvt1.com",
+            "redirector.gvt1.com",
+            "r1---sn-abc.googlevideo.com",
+            "i.ytimg.com",
+            "youtu.be",
+            "1e100.net",
+        ] {
+            assert!(is_blocked_domain(d), "expected blocked: {d}");
+        }
+        assert!(!is_blocked_domain("notyoutube.org"));
+        // blocked domains must never enter the index even if present in map text
+        let text = "youtube.com\tglobal\t-\nnetflix.com\tglobal\t-\n";
+        let idx = DomainIndex::load_str(text, 1).unwrap();
+        assert!(idx.lookup("youtube.com").is_none());
+        assert!(idx.lookup("www.youtube.com").is_none());
+        assert_eq!(idx.lookup("netflix.com").unwrap().class, Class::Global);
     }
 
     #[test]

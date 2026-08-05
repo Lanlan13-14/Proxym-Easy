@@ -345,9 +345,21 @@ impl AppState {
         // or unavailable, preserving old deployments exactly when unconfigured.
         if let (Some(hub), Ok(ref selected)) = (&self.control, &node) {
             match hub.query(&selected.id, request, timeout).await {
-                Ok(mut msg) => {
+                Ok(mut msg) if passthrough_rcode_ok(&msg) => {
                     msg.set_id(request.id());
                     return self.cache_passthrough(cache_key, msg, qname, "control");
+                }
+                Ok(msg) => {
+                    // Node SmartDNS can return SERVFAIL under WARP/upstream blips.
+                    // Do NOT cache or return that as a final answer — fall through
+                    // to the next upstream (public resolvers) so sites like YouTube
+                    // recover within one query instead of hanging on a 300s cache.
+                    warn!(
+                        %qname,
+                        node = %selected.id,
+                        rcode = ?msg.response_code(),
+                        "control passthrough non-success rcode; trying legacy upstreams"
+                    );
                 }
                 Err(e) => {
                     warn!(%qname, node=%selected.id, error=%e, "control passthrough failed; trying legacy upstreams")
@@ -357,9 +369,17 @@ impl AppState {
 
         for up in upstreams {
             match query_upstream(&up, qname, qtype, timeout).await {
-                Ok(mut msg) => {
+                Ok(mut msg) if passthrough_rcode_ok(&msg) => {
                     msg.set_id(request.id());
                     return self.cache_passthrough(cache_key, msg, qname, &up);
+                }
+                Ok(msg) => {
+                    warn!(
+                        %qname,
+                        %up,
+                        rcode = ?msg.response_code(),
+                        "passthrough non-success rcode; trying next upstream"
+                    );
                 }
                 Err(e) => {
                     warn!(%qname, %up, error=%e, "passthrough failed");
@@ -448,6 +468,15 @@ fn refused(request: &Message) -> Message {
     msg
 }
 
+/// Passthrough answers that are safe to return (and cache).
+/// SERVFAIL/REFUSED/FORMERR from a flaky unlock node must not poison the cache.
+fn passthrough_rcode_ok(msg: &Message) -> bool {
+    matches!(
+        msg.response_code(),
+        ResponseCode::NoError | ResponseCode::NXDomain
+    )
+}
+
 async fn query_upstream(
     upstream: &str,
     qname: &str,
@@ -532,6 +561,22 @@ mod tests {
     fn empty_center_acl_preserves_legacy_open_behavior() {
         let state = state_with_acl(vec![]);
         assert!(state.access_allowed("203.0.113.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn passthrough_accepts_only_noerror_and_nxdomain() {
+        let mut ok = Message::new();
+        ok.set_response_code(ResponseCode::NoError);
+        assert!(passthrough_rcode_ok(&ok));
+        let mut nx = Message::new();
+        nx.set_response_code(ResponseCode::NXDomain);
+        assert!(passthrough_rcode_ok(&nx));
+        let mut sf = Message::new();
+        sf.set_response_code(ResponseCode::ServFail);
+        assert!(!passthrough_rcode_ok(&sf));
+        let mut rf = Message::new();
+        rf.set_response_code(ResponseCode::Refused);
+        assert!(!passthrough_rcode_ok(&rf));
     }
 
     #[test]

@@ -120,8 +120,11 @@ SECTION_RULES = [
 
 BLOCK = re.compile(
     r"(^|\.)(google|googleapis|gstatic|googleusercontent|googlevideo|ggpht|"
-    r"youtube|ytimg|youtu\.be|withgoogle|blogspot|blogger|appspot|"
-    r"doubleclick|app-measurement\.com|android\.com)(\.|$)",
+    r"youtube|youtube-nocookie|ytimg|youtu\.be|withgoogle|blogspot|blogger|appspot|"
+    r"doubleclick|app-measurement\.com|android\.com|"
+    r"gvt1\.com|gvt2\.com|gvt3\.com|1e100\.net|"
+    r"googleadservices|googlesyndication|google-analytics|"
+    r"googletagmanager|googletagservices|recaptcha\.net)(\.|$)",
     re.I,
 )
 
