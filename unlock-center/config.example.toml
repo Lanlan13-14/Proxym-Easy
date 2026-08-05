@@ -52,7 +52,7 @@ default_global_region = "us"
 # 空字符串 = AI 跟随 global；非空则 AI 默认钉死该区
 default_ai_region = ""
 # 允许出现在 path / 默认区里的区名；可自行加 "sg" 等，并部署对应 unlock
-allow_regions = ["us", "jp", "hk", "sg", "tw", "uk", "kr", "eu", "sea", "au", "cn"]
+allow_regions = ["us", "jp", "hk", "sg", "tw", "uk", "kr", "eu", "au", "cn"]
 # 解锁 A 记录 TTL（秒），短 TTL 便于换节点
 unlock_answer_ttl_secs = 45
 # 解锁命中时 AAAA：empty=空应答防绕过 | passthrough=代查真实 AAAA | soa

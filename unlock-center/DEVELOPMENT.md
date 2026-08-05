@@ -261,7 +261,7 @@ https://github.com/1-stream/1stream-public-utils/blob/main/stream.smartdns.list
 # ---------- > Europe Media       → class=regional, region=eu  # 或拆 uk
 # ---------- > North America Media→ class=regional, region=us
 # ---------- > Korean Media       → class=regional, region=kr
-# ---------- > SouthEastAsia media→ class=regional, region=sea  # 东南亚
+# ---------- > SouthEastAsia media→ class=regional, region=sg  # 并入新加坡池
 # ---------- > AI Platform        → class=ai
 # ---------- > Others / ? media   → class=global 或 other（配置）
 # ---------- > China Media        → class=global（无 cn 节点）；bilibili* 强制 hk
@@ -563,7 +563,7 @@ unlock_scope = "all"          # global | regional | all
 enable_ai_unlock = true
 default_global_region = "us"
 # default_ai_region 省略 = 跟随 global
-allow_regions = ["us", "jp", "hk", "sg", "tw", "uk", "kr", "eu", "sea"]
+allow_regions = ["us", "jp", "hk", "sg", "tw", "uk", "kr", "eu", "au"]
 unlock_answer_ttl_secs = 45
 aaaa_mode = "empty"           # empty | passthrough | soa
 other_qtype_mode = "refused"  # refused | passthrough

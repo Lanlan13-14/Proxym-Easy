@@ -36,7 +36,7 @@ Inputs:
 2. **Lanlan13-14/Rules** Domain YAML: `streaming_hk/sg/tw/uk`, `tvb` → regional (hk/sg/tw/uk)  
 3. Google/YouTube family stripped  
 4. **China Media** → `global` (no dedicated cn unlock); **bilibili / biliapi** family forced → `regional` `hk`  
-5. **sea** = Southeast Asia (1-stream "SouthEastAsia media" + related) 
+5. **SouthEastAsia media** (1-stream) + Rules `streaming_sg` → **`sg`** (sea folded into sg; one SE Asia / Singapore unlock pool)
 
 ## Custom regions (e.g. `uk`)
 

@@ -184,7 +184,6 @@ impl Default for PolicyConfig {
                 "uk".into(),
                 "kr".into(),
                 "eu".into(),
-                "sea".into(),
             ],
             unlock_answer_ttl_secs: 45,
             aaaa_mode: "empty".into(),

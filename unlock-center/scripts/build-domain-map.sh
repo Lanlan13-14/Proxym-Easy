@@ -51,7 +51,8 @@ for name in $RULES_NAMES; do
       continue
     fi
   fi
-  region="sea"
+  # default for unknown RULES_NAMES; SEA media folds into sg (Singapore unlock pool)
+  region="sg"
   case "$name" in
     streaming_hk|tvb) region="hk" ;;
     streaming_sg) region="sg" ;;
@@ -107,8 +108,9 @@ SECTION_RULES = [
     ("South America Media", "regional", "sa"),
     ("Indian Media", "regional", "in"),
     ("Korean Media", "regional", "kr"),
-    ("SouthEastAsia media", "regional", "sea"),
-    ("Southeast Asia", "regional", "sea"),
+    # SEA media → sg (one unlock pool; no separate sea region)
+    ("SouthEastAsia media", "regional", "sg"),
+    ("Southeast Asia", "regional", "sg"),
     # China Media: no dedicated cn unlock node — fold into global (Netflix-style path)
     # except bilibili* which is forced to hk below.
     ("China Media", "global", None),
@@ -180,7 +182,7 @@ if Path(rules_path).is_file():
         if len(parts) >= 3:
             put(parts[0], parts[1], parts[2], boost=1)
 
-# Bilibili family → always regional hk (overrides cn/tw/sea/hk splits from upstream)
+# Bilibili family → always regional hk (overrides cn/tw/sg/hk splits from upstream)
 BILI_RE = re.compile(r"(^|\.)(bilibili|biliapi)(\.|$)")
 for d in list(table.keys()):
     if BILI_RE.search(d):
