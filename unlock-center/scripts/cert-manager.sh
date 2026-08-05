@@ -49,6 +49,17 @@ fi
 log() { echo " >> [cert-manager] $*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
 
+# The generated self-signed/files paths already are the stable paths consumed
+# by unlock-center. Never ln/cp a file onto itself: GNU cp rejects that and
+# `set -e` would restart-loop the container before the center starts.
+sync_stable_tls_paths() {
+  stable_cert="$DATA_DIR/tls/cert.pem"
+  stable_key="$DATA_DIR/tls/key.pem"
+  mkdir -p "$DATA_DIR/tls"
+  [ "$TLS_CERT" = "$stable_cert" ] || ln -sfn "$TLS_CERT" "$stable_cert"
+  [ "$TLS_KEY" = "$stable_key" ] || ln -sfn "$TLS_KEY" "$stable_key"
+}
+
 validate_domain() {
   case "$1" in
     ''|*' '*|*'/'*|*'..'*|.*|*.) return 1 ;;
@@ -80,10 +91,8 @@ issue() {
   [ -s "$TLS_CERT" ] && [ -s "$TLS_KEY" ] || fail "lego finished but certificate files are absent"
   chmod 644 "$TLS_CERT"
   chmod 600 "$TLS_KEY"
-  # Symlink into stable paths used by config
-  mkdir -p "$DATA_DIR/tls"
-  ln -sfn "$TLS_CERT" "$DATA_DIR/tls/cert.pem"
-  ln -sfn "$TLS_KEY" "$DATA_DIR/tls/key.pem"
+  # Symlink ACME output into stable paths used by config.
+  sync_stable_tls_paths
 }
 
 reload_center() {
@@ -118,8 +127,7 @@ renew_once() {
   after="$(sha256sum "$TLS_CERT" | awk '{print $1}')"
   if [ "$before" != "$after" ]; then
     log "certificate renewed; reloading unlock-center"
-    ln -sfn "$TLS_CERT" "$DATA_DIR/tls/cert.pem"
-    ln -sfn "$TLS_KEY" "$DATA_DIR/tls/key.pem"
+    sync_stable_tls_paths
     reload_center
   else
     log "certificate unchanged"
@@ -138,9 +146,7 @@ selfsigned() {
       -keyout "$TLS_KEY" -out "$TLS_CERT" -subj "/CN=$DOT_DOMAIN"
     chmod 644 "$TLS_CERT"; chmod 600 "$TLS_KEY"
   fi
-  mkdir -p "$DATA_DIR/tls"
-  ln -sfn "$TLS_CERT" "$DATA_DIR/tls/cert.pem" 2>/dev/null || cp -f "$TLS_CERT" "$DATA_DIR/tls/cert.pem"
-  ln -sfn "$TLS_KEY" "$DATA_DIR/tls/key.pem" 2>/dev/null || cp -f "$TLS_KEY" "$DATA_DIR/tls/key.pem"
+  sync_stable_tls_paths
 }
 
 case "${1:-ensure}" in

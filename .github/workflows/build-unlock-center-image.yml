@@ -73,6 +73,7 @@ jobs:
           grep -q 'CENTER_ALLOWED_IPS' README.md .env.example
           grep -q 'CENTER_CONTROL_TOKEN' README.md .env.example
           test -f scripts/cert-manager.sh
+          test -f tests/cert-manager.test.sh
           test -f scripts/geoip-updater.sh
           test -f scripts/update-allowed-ips.sh
           test -f Dockerfile

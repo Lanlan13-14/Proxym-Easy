@@ -16,6 +16,9 @@ grep -q 'broadcast_acl' crates/unlock-center/src/control.rs || { echo 'missing A
 grep -q 'reload_acl_from_file' crates/unlock-center/src/main.rs || { echo 'missing SIGHUP ACL reload'; fail=1; }
 grep -q 'hub.query' crates/unlock-center/src/resolve.rs || { echo 'missing control DNS passthrough'; fail=1; }
 
+printf '%s\n' '== center self-signed TLS bootstrap =='
+sh tests/cert-manager.test.sh || fail=1
+
 printf '%s\n' '== center config templates parse =='
 python3 -c 'import tomllib; tomllib.load(open("config.example.toml", "rb")); print("toml_parse_pass")' || fail=1
 
