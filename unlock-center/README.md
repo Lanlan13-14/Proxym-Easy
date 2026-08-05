@@ -238,27 +238,28 @@ class = other
   │  目的：答案 = 公网真实解析，客户端直连 CDN（不经 unlock sniproxy）
   │
   ▼
-选「代查用」解锁机（只当 DNS 上游，答案里不会填它的 unlock_ip）
+选「代查用」解锁机（只决定从哪台机看 DNS；答案不会填它的 unlock_ip）
   │
   ├─ nearest_for_passthrough=true（默认）
-  │     ├─ GeoIP 根据 client_ip 得到 lat/lon
-  │     │     └─ 在 nodes 里按 lat/lon 选最近机
-  │     └─ GeoIP 失败/未加载
-  │           └─ default_passthrough_region 池（如 us）
-  └─ nearest_for_passthrough=false
-        └─ 只用 default_passthrough_region
+  │     ├─ GeoIP 根据 client_ip 得到 lat/lon → nodes 里选最近机
+  │     └─ GeoIP 失败/未加载 → default_passthrough_region 池（如 us）
+  └─ nearest_for_passthrough=false → 只用 default_passthrough_region
   │
-  ├─ 该选择失败 → 任意 healthy 节点
+  ├─ 选择失败 → 任意 healthy 节点
   │
   ▼
-向节点 dns_upstream（例 203.0.113.20:53）发【相同 qname/qtype】
+该 node_id 是否已有认证 WSS 控制会话？
   │
-  ├─ 成功 → 把上游 DNS 应答原样回给客户端（TTL 可截断到 passthrough_max_ttl）
-  │         可缓存 key=(qname, qtype, 节点id)
+  ├─ 是（优先）→ 在既有 center DoH TLS 端口的同一条 WSS 内发原始 DNS query
+  │               → 节点问本机 SmartDNS `127.0.0.1:53`
+  │               → 返还原始 DNS 应答
   │
-  └─ 失败 → 试 fallback_upstreams（默认 1.1.1.1:53、8.8.8.8:53）
-        ├─ 成功 → 同样原样返回
-        └─ 全失败 → SERVFAIL
+  └─ 否 / WSS 超时失败 → 旧兼容：向 dns_upstream（例 203.0.113.20:53）发同一 query
+                         → 仍失败才试 fallback_upstreams（1.1.1.1:53、8.8.8.8:53）
+  │
+  ▼
+成功 → 原样回客户端（TTL 可截断到 passthrough_max_ttl；可按 qname/qtype/node 缓存）
+全失败 → SERVFAIL
 ```
 
 **和「命中」的对比（务必分清）**
@@ -269,13 +270,13 @@ class = other
 | 客户端接下来连谁 | 该区 sniproxy → WARP | 真实 CDN/源站 |
 | 用不用 path 定区 | global/ai 用 | **不用** |
 | 用不用 GeoIP | 否（regional/global/ai 定区） | **是**（只选代查从哪台机出去） |
-| 解锁机 53 | 不必须给客户端 | **必须给中心**访问 `dns_upstream` |
+| 解锁机 53 | 不必须给客户端 | 控制通道已连：仅节点内 loopback 给代理；未连：旧兼容模式须给中心访问 `dns_upstream` |
 
 **要点：**
 
 - 未命中 **不是** 丢弃，也 **不是** 把 example.com 解析成某台 unlock_ip。  
 - 代查从哪台 unlock 出去，只影响解析视角/延迟；答案仍是真实 RRset。  
-- 若解锁机 53 未对中心放行，且 fallback 也挂 → 普通站会 SERVFAIL。
+- 控制会话已连时不要求节点 53 对中心公网开放；会话缺失才退回 `dns_upstream`。若该 UDP 后备未放行且 fallback 也挂 → 普通站会 SERVFAIL。
 
 ### Profile 从哪来（和协议有关）
 
@@ -392,8 +393,8 @@ CONTROL_NODE_ID=jp-1
   nftables，SmartDNS/sniproxy 不重启。
 - `other`（未匹配）查询优先复用该次调度选中的数据面节点连接，节点本地问
   `127.0.0.1:53`；连接缺失/超时才沿用旧 `dns_upstream` 与 `fallback_upstreams`。
-- 中心发布前不可达、Token 不同、TLS 证书不受信任时，节点不会应用任何新 ACL；
-  它保留最后一次验证过的快照以及本地 `ALLOWED_IPS` 启动白名单。
+- 中心不可达、Token 不同、TLS 证书不受信任时，节点不会应用任何新 ACL；它保留
+  最后一次验证过的快照以及本地 `ALLOWED_IPS` 启动白名单。
 - 控制连接是 **WSS**；生产不要使用 `ws://`。`CONTROL_CENTER_URL` 主机名必须在
   中心 TLS 证书的 SAN 中。
 
@@ -412,6 +413,7 @@ CONTROL_NODE_ID=jp-1
 - GeoIP City MMDB：**内置默认下载 URL**，可自定义日更时刻
 - TLS：自签 或 **Let’s Encrypt + Cloudflare DNS-01 only**（与 unlock 同思路）
 - 域名表定时拉取热更新；GeoIP `SIGUSR1` 热加载
+- 可选单端口 WSS 控制通道：中心 ACL 原子热下发 + other DNS 复用节点连接代查（未配置时完整保留 UDP 后备）
 - 无 sniproxy、无 TUN、无 WARP
 
 ---
@@ -448,22 +450,26 @@ CONTROL_NODE_ID=jp-1
   80/443 → 中心返回的那台 unlock 公网 IP（sniproxy）
 
 [center]
-  出站 UDP/TCP → 各 unlock:53   （非解锁代查；必须放行中心 IP）
-  不连 unlock 的 80/443 做视频
+  控制通道已开：已有 DoH TLS:443 ← 每台 unlock 主动 WSS 连接
+                  （ACL 下发 + other DNS 代查；不需要 center → unlock:53）
+  控制通道未开：出站 UDP/TCP → 各 unlock:53（旧兼容代查）
+  永不连 unlock 的 80/443 做视频
 
 [unlock-xx]
-  53   ：可只给中心 IP（代查）+ 可选自己测试
-  80/443：给「会看流媒体的客户端 IP」（sniproxy）
-  DoT/DoH：可选；给中心当数据面时客户端通常只连中心 DoH，unlock 上 DoT/DoH 可关
+  80/443：给 CENTER_ALLOWED_IPS 下发的客户端网段（sniproxy）
+  控制通道已开：仅出站 WSS → center:443；本机 53 只须监听 loopback 给代理
+  控制通道未开：53/udp+tcp 给中心 `dns_upstream` 代查
+  DoT/DoH：可选；客户端通常只连中心 DoH，数据面可关
 ```
 
 防火墙/安全组最小集：
 
-| 机器 | 放行入站 | 来源 |
-|---|---|---|
-| center | 443（DoH）、可选 853/53 | 你的客户端网段 |
-| 每台 unlock | 80, 443 | 客户端网段 |
-| 每台 unlock | 53/udp+tcp | **仅中心 IP** `203.0.113.1`（推荐） |
+| 模式 | 机器 | 放行入站 | 来源 |
+|---|---|---|---|
+| 任意 | center | 443（DoH + WSS）、可选 853/53 | `CENTER_ALLOWED_IPS` 客户端网段；节点 WSS 也走 443，但由 Token 鉴权 |
+| 任意 | 每台 unlock | 80, 443 | `CENTER_ALLOWED_IPS` 下发的客户端网段 |
+| **控制通道** | 每台 unlock | 无需给中心开放 53 | 节点主动连 center:443；中心经 WSS 问本机 SmartDNS loopback |
+| **旧兼容模式** | 每台 unlock | 53/udp+tcp | **仅中心 IP** `203.0.113.1`（推荐） |
 
 ---
 
@@ -502,7 +508,9 @@ ENABLE_ACL=1
 # CONTROL_TOKEN=replace-with-the-identical-secret
 # CONTROL_NODE_ID=jp-1
 
-# 给中心当数据面时：建议开明文 DNS 供中心代查；DoT/DoH 可关（客户端走中心）
+# 数据面仍必须至少启用一种 DNS listener；最简单是明文 DNS。控制通道会让
+# center 经节点内的 127.0.0.1:53 代查，因此无需再对 center IP 开放 UDP 53。
+# 端口仍按 CENTER_ALLOWED_IPS 的快照受 ACL 保护；DoT/DoH 可关（客户端走中心）。
 ENABLE_DNS=1
 DNS_UDP_PORT=53
 ENABLE_DOT=0
@@ -650,7 +658,7 @@ lon = 103.82
 |---|---|
 | `region` | 逻辑区名，与 map / DoH path 一致（`us`/`jp`/`hk`/`sg`/`uk`/自定义） |
 | `unlock_ip` | 写入 DNS A 记录、客户端去连 sniproxy 的地址 |
-| `dns_upstream` | 中心做 **非解锁代查** 时问谁；通常 `unlock_ip:53` |
+| `dns_upstream` | 控制通道未连接/未配置时中心做 **非解锁代查** 的 UDP 后备地址；通常 `unlock_ip:53`。控制通道连接后优先 WSS，不需公开该端口。 |
 | `lat`/`lon` | GeoIP nearest 用；建议填准 |
 
 #### 4.3.3 中心 `.env` 完整示例
@@ -666,6 +674,13 @@ DOT_PORT=853
 CENTER_ENABLE_DOH=1
 DOH_PORT=443
 DOH_BASE_PATH=/api/v2/weather
+
+# —— 统一 ACL + 复用 DoH:443 的 WSS 控制通道 ——
+# 客户端 CIDR 只在中心维护：既限制中心入口，也热下发 unlock 的 DNS/SNI ACL。
+CENTER_ALLOWED_IPS=198.51.100.0/24
+# 与每台 unlock 的 CONTROL_TOKEN 完全一致；为空则关闭控制通道并走旧 UDP 代查。
+CENTER_CONTROL_TOKEN=replace-with-a-long-random-secret
+CENTER_CONTROL_PATH=/unlock-control/v1/connect
 
 # —— 策略：多区 regional 全开；默认全局区仅影响 Netflix 等 ——
 UNLOCK_SCOPE=all
@@ -703,7 +718,9 @@ docker compose pull
 docker compose up -d
 docker compose logs -f
 
-# 应看到：domain index loaded、nodes loaded、geoip、证书 ensure
+# 应看到：domain index loaded、nodes loaded、geoip、证书 ensure。
+# 开启控制通道后还应出现：unlock control endpoint enabled；每台节点连接后出现
+# unlock control node connected（并带 node_id）。
 ```
 
 Compose 映射：`53`（若开 DNS）、`853` DoT、`443` DoH；卷持久化证书与 GeoIP。
@@ -754,17 +771,18 @@ DoT：主机 `dns.example.com:853`（MVP 用默认全局区；区锁仍按 map�
 
 - [ ] `UNLOCK_IP` = 该机公网 IP  
 - [ ] WARP 已连接且出口区正确（日机日本、港机香港…）  
-- [ ] `ENABLE_DNS=1`，中心 `dig @unlockIP example.com` 通  
-- [ ] `ALLOWED_IPS` 含 **客户端网段 + 中心 IP**  
+- [ ] **控制通道模式**：`CONTROL_CENTER_URL`、同一 `CONTROL_TOKEN`、正确 `CONTROL_NODE_ID` 已填；日志出现 `applied center ACL snapshot`
+- [ ] **旧兼容模式**：`ENABLE_DNS=1`，中心 `dig @unlockIP example.com` 通，且 `ALLOWED_IPS` 含客户端网段 + 中心 IP
 - [ ] 80/443 对客户端可达；容器 sniproxy 在跑  
 
 **中心**
 
 - [ ] `nodes.toml` 每区至少一节点，IP 与上表一致  
 - [ ] `region` 名与 path / map 一致（`sg` 不要写成 `singapore` 却 path 用 `/sg` 对不上）  
-- [ ] 证书签发成功（`letsencrypt` 时）  
-- [ ] GeoIP 文件已下载（日志无长期 missing）  
-- [ ] 从中心能访问各 `dns_upstream:53`  
+- [ ] 控制通道模式：`CENTER_ALLOWED_IPS` 非空、`CENTER_CONTROL_TOKEN` 已设，日志有每个节点的 `unlock control node connected`
+- [ ] 证书签发成功（`letsencrypt` 时）
+- [ ] GeoIP 文件已下载（日志无长期 missing）
+- [ ] 仅旧兼容模式：从中心能访问各 `dns_upstream:53`
 
 **客户端**
 
@@ -777,8 +795,8 @@ DoT：主机 `dns.example.com:853`（MVP 用默认全局区；区锁仍按 map�
 | 现象 | 原因 |
 |---|---|
 | 中心查区锁 SERVFAIL | `nodes.toml` 缺该 `region` 或节点全 unhealthy |
-| 代查失败 / 普通站解析慢失败 | 解锁机 53 未放行中心 IP，或 `ENABLE_DNS=0` |
-| 能解析到 unlock IP 但播不了 | 解锁机 80/443 ACL 没放行客户端，或 WARP 挂了 |
+| 代查失败 / 普通站解析慢失败 | 控制模式先查节点日志是否有 WSS 连接、Token/证书/`CONTROL_NODE_ID` 是否正确；旧模式则检查解锁机 53 是否放行中心 IP、`ENABLE_DNS=1` |
+| 能解析到 unlock IP 但播不了 | 解锁机 80/443 ACL 没收到 `CENTER_ALLOWED_IPS` 快照（或旧模式未放行客户端），或 WARP 挂了 |
 | 新机 Netflix 仍是美区 | DoH 仍用 `/us` 或默认 `DEFAULT_GLOBAL_REGION=us`，应改 `/sg` |
 | 所有流媒体都进同一台机 | 只有一台 unlock 登记，或 map/节点 region 写错 |
 
@@ -803,7 +821,7 @@ DoT：主机 `dns.example.com:853`（MVP 用默认全局区；区锁仍按 map�
 | 目录 | [../unlock](../unlock/) | 本目录 |
 | Compose 文件 | [../unlock/docker-compose.yml](../unlock/docker-compose.yml) | [docker-compose.yml](./docker-compose.yml) |
 | 必填 | WARP + `UNLOCK_IP` + `ALLOWED_IPS` | `nodes.toml` + 域名/证书（若 DoT/DoH） |
-| 发布 | `build-unlock-image.yml`（version+latest） | `build-unlock-center-image.yml`（version+latest，默认 v1.0.0） |
+| 发布 | `build-unlock-image.yml`（version+latest） | `build-unlock-center-image.yml`（version+latest） |
 
 ---
 
@@ -818,7 +836,8 @@ DoT：主机 `dns.example.com:853`（MVP 用默认全局区；区锁仍按 map�
 ```bash
 cd unlock
 cp .env.example .env
-# 编辑 .env：UNLOCK_IP、ALLOWED_IPS（含客户端+中心 IP）、WARP_*、ENABLE_DNS=1 等
+# 控制模式编辑 .env：UNLOCK_IP、CONTROL_CENTER_URL/TOKEN/NODE_ID、WARP_*；
+# 旧兼容模式则填 ALLOWED_IPS（客户端+中心 IP）并 ENABLE_DNS=1。
 docker compose pull
 docker compose up -d
 docker compose logs -f
@@ -867,11 +886,16 @@ volumes:
 
 ```bash
 UNLOCK_IP=203.0.113.20          # 本机公网 IP
-ALLOWED_IPS=198.51.100.0/24,203.0.113.1/32   # 客户端 + 中心 IP
+# 控制通道模式：只留本机断联/启动兜底，客户端 CIDR 由中心自动下发。
+ALLOWED_IPS=203.0.113.1/32
 ENABLE_ACL=1
-ENABLE_DNS=1                    # 给中心 dns_upstream 代查
+CONTROL_CENTER_URL=wss://dns.example.com:443/unlock-control/v1/connect
+CONTROL_TOKEN=replace-with-the-same-long-random-secret
+CONTROL_NODE_ID=jp-1
+# 控制通道代查走 loopback:53；明文 DNS 仍须启用，DoT/DoH 都可关。
+ENABLE_DNS=1
 ENABLE_DOT=0
-ENABLE_DOH=0                    # 客户端只连中心 DoH 时可关
+ENABLE_DOH=0
 # WARP_* 必填（该区出口）
 ENABLE_DOMAIN_AUTO_UPDATE=1
 DOMAIN_LIST_URL=https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock/domains/all.txt
@@ -1082,6 +1106,7 @@ sh scripts/build-domain-map.sh
    id = "uk-1"
    region = "uk"
    unlock_ip = "英区公网IP"
+   # 控制通道未连接时的 UDP 后备；控制通道已连则不需要开放公网 53。
    dns_upstream = "英区公网IP:53"
    lat = 51.51
    lon = -0.13
@@ -1206,7 +1231,7 @@ docker compose logs unlock-center 2>&1 | grep -i cert-manager
 | 域名表 | `domain-region.map`（分类） | `domains/all.txt`（劫持列表） |
 | 出站 | 无 | WARP 强制 |
 | 客户端 80/443 | 不终结 | sniproxy |
-| 中心查 53 | 作 passthrough 上游 | 需对中心 IP 放行 |
+| other 代查 | 已连控制会话时走 WSS；否则旧 UDP 后备 | 已连时本机 loopback:53；旧 UDP 后备才需对中心 IP 放行 |
 
 建议：每个 `region` 至少一台 unlock；中心 `nodes.toml` 的 `unlock_ip` 必须是客户端能直连的公网地址。
 
@@ -1227,6 +1252,7 @@ unlock-center/
 │   ├── entrypoint.sh         # 容器入口
 │   ├── cert-manager.sh       # LE + CF DNS-01
 │   ├── geoip-updater.sh      # MMDB 日更（内置 URL）
+│   ├── update-allowed-ips.sh # 原子 ACL 热更新 + WSS 快照推送
 │   └── build-domain-map.sh   # 分类域名构建
 ├── domains/                  # 已发布的分类列表
 └── crates/
@@ -1255,7 +1281,9 @@ unlock-center/
 DNS 会先到中心再代查；中心与用户的 RTT 占大头。可接受则保持单中心；要更低延迟需多中心 GeoDNS（非本 MVP）。
 
 **Q: 解锁机 53 不给公网开？**  
-给中心单独 ACL，或把 `dns_upstream` 改成内网 IP；`unlock_ip` 仍须是客户端可达的公网地址。
+开控制通道后不必给中心公网开放 53：节点 WSS 主动连中心，中心会通过它请求节点
+loopback SmartDNS。未开/断开控制通道时，才给中心单独 ACL，或把 `dns_upstream`
+改成内网 IP；`unlock_ip` 仍须是客户端可达的公网地址。
 
 **Q: 如何只开区锁、不动 Netflix？**  
 `UNLOCK_SCOPE=regional`。

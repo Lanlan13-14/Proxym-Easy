@@ -46,10 +46,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-      - name: Shell syntax
+      - name: Shell and control-agent test syntax
         run: |
           set -e
-          for f in scripts/*.sh; do sh -n "$f"; done
+          for f in scripts/*.sh tests/*.sh; do sh -n "$f"; done
+          python3 -m py_compile tests/control-e2e.py
       - name: Build domain map
         run: |
           set -euo pipefail
@@ -59,14 +60,19 @@ jobs:
         run: cargo test --workspace
       - name: Cargo release build
         run: cargo build -p unlock-center --release
+      - name: Control channel tests
+        run: CENTER_BINARY="$PWD/target/release/unlock-center" sh tests/run.sh
       - name: Docs consistency
         run: |
           set -e
           grep -q 'doh_base_path' config.example.toml
           grep -q 'geoip' config.example.toml
           grep -q 'domain-region.map' README.md
+          grep -q 'CENTER_ALLOWED_IPS' README.md .env.example
+          grep -q 'CENTER_CONTROL_TOKEN' README.md .env.example
           test -f scripts/cert-manager.sh
           test -f scripts/geoip-updater.sh
+          test -f scripts/update-allowed-ips.sh
           test -f Dockerfile
 
   publish:

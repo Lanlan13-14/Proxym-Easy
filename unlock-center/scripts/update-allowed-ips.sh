@@ -5,7 +5,7 @@
 set -eu
 
 RUNTIME_DIR="${RUNTIME_DIR:-/run/unlock-center}"
-ACL_FILE="${CENTER_ALLOWED_IPS_FILE:-/etc/unlock-center/allowed-ips.txt}"
+ACL_FILE="${CENTER_ALLOWED_IPS_FILE:-/data/allowed-ips.txt}"
 PID_FILE="${CENTER_PID_FILE:-$RUNTIME_DIR/unlock-center.pid}"
 CIDRS="${1:-}"
 
@@ -14,6 +14,11 @@ fail() { log "ERROR: $*" >&2; exit 1; }
 
 [ -n "$CIDRS" ] || fail "usage: $0 '<cidr[,cidr...]>'"
 printf '%s' "$CIDRS" | grep -Eq '^[0-9A-Fa-f:.,/[:space:]]+$' || fail "CIDRs contain unsupported characters"
+# Parse every entry before atomically replacing the live snapshot. The Rust
+# center will reject malformed CIDRs too, but validation here avoids writing a
+# file that can only be rejected after the signal has been sent.
+python3 -c 'import ipaddress,sys; entries=[x.strip() for x in sys.argv[1].split(",") if x.strip()]; assert entries; [ipaddress.ip_network(x, strict=False) for x in entries]' "$CIDRS" \
+  || fail "invalid CIDR list"
 
 candidate="$ACL_FILE.new"
 printf '%s\n' "$CIDRS" >"$candidate"

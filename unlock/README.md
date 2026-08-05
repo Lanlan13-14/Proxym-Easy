@@ -291,7 +291,7 @@ docker compose logs -f unlock
 - `ENABLE_DNS` / `ENABLE_DOT` / `ENABLE_DOH` 至少一个为 `1`。
 - 启用 DoT 或 DoH 时才需要 `DOT_DOMAIN`（及 `letsencrypt` 下的 `LE_EMAIL` / `CF_DNS_API_TOKEN`）。
 - DoT/DoH 两者都开时端口必须不同；`DOT_PORT` / `DOH_PORT` 不能是 `53`/`80`/`443`（且不能等于 `DNS_UDP_PORT`）。
-- `ALLOWED_IPS` 不可为空。它既是 DNS/DoT/DoH/SNI 访问白名单，也是 WARP 全隧道下的回程排除列表。
+- 未配置 `CONTROL_CENTER_URL` 时，`ALLOWED_IPS` 不可为空；它既是 DNS/DoT/DoH/SNI 访问白名单，也是 WARP 全隧道下的回程排除列表。配置控制通道时可只填断联/启动兜底 CIDR，首个中心快照到达前服务保持 fail-closed。
 - SOCKS5 不继承 `ALLOWED_IPS`：启用时必须单独配置 `SOCKS5_ALLOWED_IPS`，并同时使用用户名/密码认证。
 
 ### 已发布镜像
@@ -542,7 +542,12 @@ GitHub Action `update-unlock-domains.yml`（约上海 **03:00**）在 **仓库**
 | `UNLOCK_IP` | 自动探测 | 流媒体域名返回的解锁机 IP，生产建议显式设置 |
 | `ALLOWED_IPS` | 空，拒绝启动 | DNS/DoT/DoH/SNI 访问白名单；支持任意 CIDR，包括 `0.0.0.0/0` |
 | `ENABLE_ACL` | `1` | 关闭后不应用防火墙白名单，**不建议生产使用** |
-| `ENABLE_DNS` | `0` | `1` 公网发布明文 DNS（`0.0.0.0:DNS_UDP_PORT`）；`0` 时仅 loopback 供健康检查 |
+| `CONTROL_CENTER_URL` | 空 | 可选 `wss://中心域名:DOH_PORT/unlock-control/v1/connect`；空则完全走旧独立 ACL/UDP 代查 |
+| `CONTROL_TOKEN` | 空 | 控制通道共享密钥；设置 URL 时必填，必须等于中心 `CENTER_CONTROL_TOKEN` |
+| `CONTROL_NODE_ID` | 空 | 控制节点 ID；设置 URL 时必填，必须严格等于 `nodes.toml` 的 `id` |
+| `CONTROL_RECONNECT_SECS` | `5` | WSS 断线重连间隔（秒） |
+| `CONTROL_QUERY_TIMEOUT_SECS` | `0.8` | 节点本地 SmartDNS 代查超时（秒） |
+| `ENABLE_DNS` | `0` | `1` 公网发布明文 DNS（`0.0.0.0:DNS_UDP_PORT`）；`0` 时仅 loopback 供健康检查。控制通道代查仍需要本机明文 listener，因此中心数据面推荐 `1` |
 | `DNS_UDP_PORT` | `53` | 明文 DNS UDP/TCP 端口；Compose 始终映射，但仅 `ENABLE_DNS=1` 时对外有效 |
 | `ENABLE_DOT` | `1` | `1` 启用 DoT（`bind-tls`） |
 | `DOT_PORT` | `853` | DoT TCP 端口；不可为 53/80/443/DNS_UDP_PORT |
@@ -581,7 +586,8 @@ GitHub Action `update-unlock-domains.yml`（约上海 **03:00**）在 **仓库**
 ```bash
 cd unlock
 cp .env.example .env
-# 必填 WARP_*、UNLOCK_IP、ALLOWED_IPS；配合中心时建议 ENABLE_DNS=1 且 ACL 含中心 IP
+# 必填 WARP_*、UNLOCK_IP、ALLOWED_IPS；控制模式另填 CONTROL_CENTER_URL/TOKEN/NODE_ID，
+# 客户端 ACL 改由中心下发且 ENABLE_DNS=1；旧兼容模式仍令 ACL 含中心 IP。
 docker compose pull
 docker compose up -d
 docker compose logs -f unlock
@@ -636,5 +642,6 @@ sh tests/run.sh
 - Let’s Encrypt DNS-01 签发/续期/SmartDNS 重载；纯 DNS 时 cert-manager 跳过
 - 官方 WARP MDM Service Token、`tunnelonly`、MASQUE、Consumer 拒绝
 - WARP fail-closed 启动顺序与连接标记回程（支持任意 CIDR）
+- 可选中心 WSS 控制通道配置、节点 ID/Token 校验、ACL 快照合并及 WARP 回程热刷新
 - Compose 接线及 `unlock/` 构建上下文隔离
 - unlock-socks5d 任意字符用户名/密码真实握手测试
