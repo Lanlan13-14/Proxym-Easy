@@ -27,13 +27,11 @@ services:
       # legacy open center behavior. When CONTROL_TOKEN is set this snapshot is
       # pushed over the existing DoH TLS port to connected unlock nodes.
       CENTER_ALLOWED_IPS: ${CENTER_ALLOWED_IPS:-}
-      CENTER_ALLOWED_IPS_FILE: /etc/unlock-center/allowed-ips.txt
+      CENTER_ALLOWED_IPS_FILE: /data/allowed-ips.txt
       CENTER_CONTROL_TOKEN: ${CENTER_CONTROL_TOKEN:-}
       CENTER_CONTROL_PATH: ${CENTER_CONTROL_PATH:-/unlock-control/v1/connect}
     volumes:
       - ./nodes.toml:/etc/unlock-center/nodes.toml:ro
-      # CENTER_ALLOWED_IPS is mirrored here atomically for SIGHUP hot reload.
-      - ./allowed-ips.txt:/etc/unlock-center/allowed-ips.txt
       # 证书 + GeoIP MMDB 持久化
       - center-data:/data
     ports:

@@ -384,7 +384,8 @@ CONTROL_NODE_ID=jp-1
   `CENTER_ALLOWED_IPS` 后 `docker compose up -d`；不重启热更新则在中心容器运行：
 
   ```bash
-  /opt/unlock-center/scripts/update-allowed-ips.sh '198.51.100.0/24,2001:db8:1234::/48'
+  docker compose exec unlock-center /opt/unlock-center/scripts/update-allowed-ips.sh \
+    '198.51.100.0/24,2001:db8:1234::/48'
   ```
 
   它原子替换 ACL 文件、向中心发 `SIGHUP`，中心立即推送给已连接节点；节点热替换
