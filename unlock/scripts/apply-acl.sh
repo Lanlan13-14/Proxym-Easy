@@ -3,6 +3,8 @@ set -eu
 
 RUNTIME_DIR="${RUNTIME_DIR:-/run/unlock}"
 ALLOWED_IPS="${ALLOWED_IPS:-}"
+CONTROL_CENTER_URL="${CONTROL_CENTER_URL:-}"
+CONTROL_ALLOWED_IPS_FILE="${CONTROL_ALLOWED_IPS_FILE:-$RUNTIME_DIR/control-allowed-ips.txt}"
 ENABLE_ACL="${ENABLE_ACL:-1}"
 ENABLE_SOCKS5="${ENABLE_SOCKS5:-0}"
 SOCKS5_ALLOWED_IPS="${SOCKS5_ALLOWED_IPS:-}"
@@ -18,7 +20,21 @@ log() { echo " >> [apply-acl] $*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
 
 case "$ENABLE_ACL" in 1|true|yes) ;; 0|false|no) log "ACL disabled explicitly"; exit 0 ;; *) fail "ENABLE_ACL must be 0 or 1" ;; esac
-[ -n "$ALLOWED_IPS" ] || fail "ALLOWED_IPS is required for DNS/SNI services"
+# A configured control channel makes the center snapshot authoritative for all
+# connected data-plane nodes. Keep the local list as a bootstrap/emergency
+# list, then merge the last atomically verified center snapshot when present.
+if [ -n "$CONTROL_CENTER_URL" ] && [ -s "$CONTROL_ALLOWED_IPS_FILE" ]; then
+  control_allowed_ips="$(tr -d '\r\n ' < "$CONTROL_ALLOWED_IPS_FILE")"
+  case "$control_allowed_ips" in
+    *[!0-9A-Fa-f:.,/]*|'') fail "invalid center ACL snapshot: $CONTROL_ALLOWED_IPS_FILE" ;;
+  esac
+  [ -n "$ALLOWED_IPS" ] && ALLOWED_IPS="$ALLOWED_IPS,$control_allowed_ips" || ALLOWED_IPS="$control_allowed_ips"
+  log "merged last verified center ACL snapshot"
+fi
+if [ -z "$ALLOWED_IPS" ]; then
+  [ -n "$CONTROL_CENTER_URL" ] || fail "ALLOWED_IPS is required for DNS/SNI services"
+  log "waiting for first center ACL snapshot; DNS/SNI stays closed until it arrives"
+fi
 case "$ENABLE_SOCKS5" in 1|true|yes) ENABLE_SOCKS5=1; [ -n "$SOCKS5_ALLOWED_IPS" ] || fail "SOCKS5_ALLOWED_IPS is required when SOCKS5 is enabled" ;; 0|false|no|'') ENABLE_SOCKS5=0 ;; *) fail "ENABLE_SOCKS5 must be 0 or 1" ;; esac
 case "$ENABLE_DNS" in 1|true|yes) ENABLE_DNS=1 ;; 0|false|no|'') ENABLE_DNS=0 ;; *) fail "ENABLE_DNS must be 0 or 1" ;; esac
 case "$ENABLE_DOT" in 1|true|yes) ENABLE_DOT=1 ;; 0|false|no|'') ENABLE_DOT=0 ;; *) fail "ENABLE_DOT must be 0 or 1" ;; esac
@@ -35,6 +51,7 @@ nft add rule inet "$TABLE" input iif lo accept
 
 add_cidrs() {
   cidrs="$1"; shift
+  [ -n "$cidrs" ] || return 0
   oldifs="$IFS"; IFS=','
   for cidr in $cidrs; do
     cidr="$(printf '%s' "$cidr" | tr -d ' ')"

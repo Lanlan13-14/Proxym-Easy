@@ -116,4 +116,13 @@ allowed_cidrs = []
 # DoH Bearer，非空则要求 Authorization 头
 bearer_token = ""
 
+# ----- 到 unlock 数据面的单端口控制通道（可选） -----
+# 空 token = 不开放控制端点、维持旧的 node dns_upstream UDP 代查方式。
+# 填 token 后，端点复用上方 doh_port（不增加监听端口）；每台 unlock 用
+# CONTROL_CENTER_URL + 同一 CONTROL_TOKEN 主动连入。中心 access.allowed_cidrs
+# 会作为完整 ACL 快照热下发给已连接节点，同时 other 域名优先走此连接代查。
+[control]
+bearer_token = ""
+path = "/unlock-control/v1/connect"
+
 log_level = "info"

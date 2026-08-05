@@ -11,6 +11,18 @@ RESTART_HOURS="${ZT_RESTART_HOURS:-12}"
 REGISTER_TIMEOUT="${WARP_REGISTER_TIMEOUT:-240}"
 CONNECT_TIMEOUT="${WARP_CONNECT_TIMEOUT:-120}"
 ALLOWED_IPS="${ALLOWED_IPS:-}"
+CONTROL_CENTER_URL="${CONTROL_CENTER_URL:-}"
+CONTROL_ALLOWED_IPS_FILE="${CONTROL_ALLOWED_IPS_FILE:-$RUNTIME_DIR/control-allowed-ips.txt}"
+
+# Keep WARP's marked reply routing consistent with the ACL hot snapshot. The
+# control agent writes this atomically before invoking apply-acl; startup sees
+# it on the next supervised container restart as well.
+if [ -n "$CONTROL_CENTER_URL" ] && [ -s "$CONTROL_ALLOWED_IPS_FILE" ]; then
+  control_allowed_ips="$(tr -d '\r\n ' < "$CONTROL_ALLOWED_IPS_FILE")"
+  [ -z "$control_allowed_ips" ] || {
+    [ -n "$ALLOWED_IPS" ] && ALLOWED_IPS="$ALLOWED_IPS,$control_allowed_ips" || ALLOWED_IPS="$control_allowed_ips"
+  }
+fi
 
 log() { echo " >> [warp-zt] $*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
@@ -19,7 +31,9 @@ validate_env() {
   [ -n "$ORG" ] || fail "WARP_ORGANIZATION is required"
   [ -n "$CLIENT_ID" ] || fail "WARP_CLIENT_ID is required"
   [ -n "$CLIENT_SECRET" ] || fail "WARP_CLIENT_SECRET is required"
-  [ -n "$ALLOWED_IPS" ] || fail "ALLOWED_IPS is required for return-route exclusions"
+  if [ -z "$ALLOWED_IPS" ] && [ -z "$CONTROL_CENTER_URL" ]; then
+    fail "ALLOWED_IPS is required for return-route exclusions"
+  fi
 }
 
 write_mdm() {
@@ -149,6 +163,13 @@ ensure_marked_main_rule() {
 }
 
 fix_return_routes() {
+  # With a configured control node and no bootstrap/local ACL, services start
+  # closed. The control agent will atomically install the first center snapshot
+  # and call apply-acl; return routes are added after the normal WARP restart.
+  if [ -z "$ALLOWED_IPS" ]; then
+    log "no ACL CIDRs yet; service reply route exclusions deferred"
+    return 0
+  fi
   # Mark only inbound service connections, persist the mark in conntrack, then
   # restore it in local OUTPUT. `type route` re-runs policy routing after the
   # mark is restored, so replies leave eth0/main while new outbound traffic
@@ -235,6 +256,10 @@ start_all() {
 
 case "${1:-}" in
   start|restart) start_all ;;
+  refresh-routes)
+    validate_env
+    fix_return_routes
+    ;;
   status)
     [ -f "$RUNTIME_DIR/warp-ready" ] \
       && pgrep -x warp-svc >/dev/null 2>&1 \
@@ -250,5 +275,5 @@ case "${1:-}" in
     ;;
 
   stop) stop_svc ;;
-  *) fail "usage: $0 {start|restart|status|supervise|stop}" ;;
+  *) fail "usage: $0 {start|restart|refresh-routes|status|supervise|stop}" ;;
 esac

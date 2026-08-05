@@ -16,6 +16,13 @@ services:
       UNLOCK_IP: ${UNLOCK_IP:-}
       ALLOWED_IPS: ${ALLOWED_IPS:-}
       ENABLE_ACL: ${ENABLE_ACL:-1}
+      # Optional outbound control channel to unlock-center's existing DoH port.
+      # Empty CONTROL_CENTER_URL retains legacy independent ACL/DNS behavior.
+      CONTROL_CENTER_URL: ${CONTROL_CENTER_URL:-}
+      CONTROL_TOKEN: ${CONTROL_TOKEN:-}
+      CONTROL_NODE_ID: ${CONTROL_NODE_ID:-}
+      CONTROL_RECONNECT_SECS: ${CONTROL_RECONNECT_SECS:-5}
+      CONTROL_QUERY_TIMEOUT_SECS: ${CONTROL_QUERY_TIMEOUT_SECS:-0.8}
       DNS_UDP_PORT: ${DNS_UDP_PORT:-53}
       # DNS / DoT / DoH are independent. Enable any combination (at least one).
       # Plain DNS (ENABLE_DNS=1) needs no DOT_DOMAIN / LE cert.

@@ -334,6 +334,73 @@ DNS 只负责告诉客户端「去连哪个 IP」
 
 ---
 
+## 2.2 中心与 unlock 数据面联动（单端口控制通道）
+
+旧设计确实有重复配置：中心的客户端入口与每一台 `unlock` 的 `ALLOWED_IPS`
+彼此不知道对方。现在可选的控制通道把**中心白名单作为唯一来源**，同时仍只复用
+中心已有的 **DoH TLS 端口**，没有新增监听端口。
+
+```text
+客户端白名单（CENTER_ALLOWED_IPS）
+      │
+      ├─ 立即限制 center 的 DNS / DoT / DoH
+      └─ 同一 WSS 连接热推送到每个已连接 unlock
+             ├─ 原子替换 ACL 快照 → nftables 热更新 DNS/SNI 80/443
+             └─ center 的 other 查询复用连接 → unlock 本地 SmartDNS:53
+```
+
+### 开启方式
+
+1. 中心 `.env`：
+
+```env
+# 不能为空：它既限制中心入口，也会下发给每一个已连接节点。
+CENTER_ALLOWED_IPS=198.51.100.0/24,2001:db8:1234::/48
+# 高强度随机共享密钥；不提交到 Git。
+CENTER_CONTROL_TOKEN=replace-with-a-long-random-shared-secret
+# 默认路径；和 DoH 共享 DOH_PORT=443，不另开端口。
+CENTER_CONTROL_PATH=/unlock-control/v1/connect
+```
+
+2. 每台数据面 `unlock/.env`：
+
+```env
+CONTROL_CENTER_URL=wss://dns.example.com:443/unlock-control/v1/connect
+CONTROL_TOKEN=replace-with-the-identical-secret
+# 必须严格等于 center nodes.toml 中该节点的 id，例如 jp-1。
+CONTROL_NODE_ID=jp-1
+```
+
+3. `docker compose up -d` 重启中心和节点。节点会**主动**向中心建立认证的 WSS
+连接；因此无需在数据面新增端口或给中心开入站 53。中心日志出现
+`unlock control node connected`，节点日志出现 `applied center ACL snapshot` 即完成。
+
+### 语义和故障行为
+
+- `CENTER_CONTROL_TOKEN` 为空：控制端点不存在，且回到原来的
+  `nodes.toml dns_upstream` UDP 代查与各节点独立 `ALLOWED_IPS`，完全兼容。
+- 设置 Token 时 `CENTER_ALLOWED_IPS` 必填；程序拒绝空快照，避免意外放开或锁死。
+- 每次连接立即收到**完整快照**。常规更新可改中心 `.env` 的
+  `CENTER_ALLOWED_IPS` 后 `docker compose up -d`；不重启热更新则在中心容器运行：
+
+  ```bash
+  /opt/unlock-center/scripts/update-allowed-ips.sh '198.51.100.0/24,2001:db8:1234::/48'
+  ```
+
+  它原子替换 ACL 文件、向中心发 `SIGHUP`，中心立即推送给已连接节点；节点热替换
+  nftables，SmartDNS/sniproxy 不重启。
+- `other`（未匹配）查询优先复用该次调度选中的数据面节点连接，节点本地问
+  `127.0.0.1:53`；连接缺失/超时才沿用旧 `dns_upstream` 与 `fallback_upstreams`。
+- 中心发布前不可达、Token 不同、TLS 证书不受信任时，节点不会应用任何新 ACL；
+  它保留最后一次验证过的快照以及本地 `ALLOWED_IPS` 启动白名单。
+- 控制连接是 **WSS**；生产不要使用 `ws://`。`CONTROL_CENTER_URL` 主机名必须在
+  中心 TLS 证书的 SAN 中。
+
+> 这里的“自动”不是未认证的远程改防火墙：必须同时通过 TLS、共享 Token、WebSocket
+> 子协议以及 `CONTROL_NODE_ID` 校验，才会写入 ACL 快照。
+
+---
+
 ## 3. 功能清单
 
 - 明文 DNS / DoT / DoH **独立开关**，各最多一个端口
@@ -422,10 +489,17 @@ TZ=Asia/Shanghai
 # 本机公网 IP（DNS 解锁返回给客户端的地址，必须填对）
 UNLOCK_IP=203.0.113.20
 
-# ACL：客户端网段 + 中心 IP（中心要查 53 代查）
-# 不要只写自己测试 IP 却漏掉中心，否则 center passthrough 失败
-ALLOWED_IPS=198.51.100.0/24,203.0.113.1/32
+# 旧版/未开控制通道：客户端网段 + 中心 IP（中心要查 53 代查）。
+# 开启下方控制通道后，CENTER_ALLOWED_IPS 会自动热下发；此处只保留本机
+# 启动/断联兜底白名单，不必再手动复制中心客户端 CIDR。
+ALLOWED_IPS=203.0.113.1/32
 ENABLE_ACL=1
+
+# 可选单端口控制通道：复用 center:443，不额外暴露端口。CONTROL_NODE_ID
+# 必须与中心 nodes.toml 的 id 相同；TOKEN 必须与 CENTER_CONTROL_TOKEN 相同。
+# CONTROL_CENTER_URL=wss://dns.example.com:443/unlock-control/v1/connect
+# CONTROL_TOKEN=replace-with-the-identical-secret
+# CONTROL_NODE_ID=jp-1
 
 # 给中心当数据面时：建议开明文 DNS 供中心代查；DoT/DoH 可关（客户端走中心）
 ENABLE_DNS=1

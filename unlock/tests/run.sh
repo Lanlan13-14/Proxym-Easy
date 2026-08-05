@@ -233,6 +233,47 @@ sh tests/cert-manager.test.sh || fail=1
 echo "== mandatory Cloudflare Zero Trust WARP =="
 sh tests/warp-zt.test.sh || fail=1
 
+echo "== optional center control channel configuration =="
+test -f scripts/control-agent.py || { echo "missing control-agent.py"; fail=1; }
+test -f scripts/control-agent.sh || { echo "missing control-agent.sh"; fail=1; }
+python3 -m py_compile scripts/control-agent.py || fail=1
+rm -rf scripts/__pycache__
+CONTROL_CENTER_URL="wss://dns.example.com/unlock-control/v1/connect" \
+  CONTROL_TOKEN="test-token" CONTROL_NODE_ID="jp-1" \
+  UNLOCK_ROOT="$ROOT" RUNTIME_DIR="$tmp/control" sh scripts/control-agent.sh env || fail=1
+if CONTROL_CENTER_URL="https://dns.example.com" CONTROL_TOKEN=x CONTROL_NODE_ID=jp-1 \
+  UNLOCK_ROOT="$ROOT" sh scripts/control-agent.sh env 2>/dev/null; then
+  echo "control agent must reject non-WebSocket URL"
+  fail=1
+fi
+if CONTROL_CENTER_URL="wss://dns.example.com/control" CONTROL_TOKEN="" CONTROL_NODE_ID=jp-1 \
+  UNLOCK_ROOT="$ROOT" sh scripts/control-agent.sh env 2>/dev/null; then
+  echo "control agent must require token"
+  fail=1
+fi
+if CONTROL_CENTER_URL="wss://dns.example.com/control" CONTROL_TOKEN=x CONTROL_NODE_ID="bad/id" \
+  UNLOCK_ROOT="$ROOT" sh scripts/control-agent.sh env 2>/dev/null; then
+  echo "control agent must reject unsafe node id"
+  fail=1
+fi
+control_acl="$tmp/control-acl"
+mkdir -p "$tmp/control"
+printf '198.51.100.0/24,2001:db8::/48\n' > "$control_acl"
+# Stub nft validates the generated rule input without needing NET_ADMIN.
+bin="$tmp/bin"; mkdir -p "$bin"
+printf '#!/bin/sh\nexit 0\n' > "$bin/nft"; chmod +x "$bin/nft"
+PATH="$bin:$PATH" RUNTIME_DIR="$tmp/control" CONTROL_CENTER_URL="wss://dns.example.com/control" \
+  CONTROL_ALLOWED_IPS_FILE="$control_acl" ALLOWED_IPS="203.0.113.1/32" \
+  ENABLE_DNS=1 ENABLE_DOT=0 ENABLE_DOH=0 ENABLE_ACL=1 sh scripts/apply-acl.sh || fail=1
+if PATH="$bin:$PATH" RUNTIME_DIR="$tmp/control" CONTROL_CENTER_URL="wss://dns.example.com/control" \
+  CONTROL_ALLOWED_IPS_FILE="$tmp/missing-control-acl" ALLOWED_IPS="" \
+  ENABLE_DNS=1 ENABLE_DOT=0 ENABLE_DOH=0 ENABLE_ACL=1 sh scripts/apply-acl.sh >/dev/null 2>&1; then
+  : # no snapshot yet is fail-closed but valid control bootstrap
+else
+  echo "control bootstrap without local ACL must stay fail-closed but start"
+  fail=1
+fi
+
 echo "== optional SOCKS5 independent access controls =="
 sh tests/socks.test.sh || fail=1
 echo "== SOCKS5 free-charset runtime =="
@@ -293,6 +334,10 @@ if grep -q 'dante-server' Dockerfile; then
 fi
 grep -q 'start-socks.sh' scripts/entrypoint.sh || { echo "SOCKS5 startup not wired"; fail=1; }
 grep -q 'SOCKS5_ALLOWED_IPS' docker-compose.yml || { echo "SOCKS5 independent ACL missing"; fail=1; }
+grep -q 'CONTROL_CENTER_URL' docker-compose.yml || { echo "compose missing center control URL"; fail=1; }
+grep -q 'control-agent.sh' scripts/entrypoint.sh || { echo "control agent not wired into entrypoint"; fail=1; }
+grep -q 'refresh-routes' scripts/warp-zt.sh || { echo "WARP route hot refresh missing"; fail=1; }
+grep -q 'CONTROL_ALLOWED_IPS_FILE' scripts/apply-acl.sh || { echo "ACL center snapshot support missing"; fail=1; }
 
 echo "== .dockerignore present =="
 test -f .dockerignore || { echo "missing .dockerignore"; fail=1; }

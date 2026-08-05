@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget openssl procps iproute2 iptables nftables \
       dbus libdbus-1-3 libnss3 libnspr4 libpcap0.8 libtss2-esys-3.0.2-0 \
       libtss2-tctildr0 libgcc-s1 sniproxy dnsutils gcc libc6-dev \
+      python3 python3-websockets \
     && rm -rf /var/lib/apt/lists/*
 
 # SmartDNS official self-contained runtime, amd64 + arm64.

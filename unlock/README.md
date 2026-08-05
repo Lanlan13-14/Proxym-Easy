@@ -9,6 +9,7 @@
 - Fail closed：Zero Trust 注册/连接/`warp=on` 任一步失败，SmartDNS/sniproxy/SOCKS5 不启动或容器退出
 - Let’s Encrypt：仅在启用 DoT/DoH 时签发共用 TLS 证书；纯明文 DNS **不需要**域名/证书
 - IP/CIDR 白名单：DNS、DoT、DoH、80、443、SOCKS5，并保证 WARP 全隧道下的回程
+- 可选 unlock-center 控制通道：复用中心既有 DoH TLS 端口，中心 ACL 自动热同步到本机，且未命中 DNS 代查复用同一认证连接
 - 域名规则：镜像内嵌 `all.txt` 打底；默认从本仓库 raw 日更（**URL/时刻可改**，可关）；不含 Google / YouTube
 - GitHub Actions：仅手动发布，多架构 amd64/arm64，版本号必填
 
@@ -300,6 +301,47 @@ image: ghcr.io/lanlan13-14/proxym-easy-unlock:latest
 ```
 
 使用镜像时删除 `build:`，其余环境、端口、capabilities、volumes 保持不变。发布含明文 DNS 支持的新版本后改用新 tag。
+
+---
+
+## 4.3 可选：接入 unlock-center 的单端口控制通道
+
+单独部署时，`ALLOWED_IPS` 仍是本机 DNS/SNI 的唯一 ACL，行为没有变化。
+但接入 `unlock-center` 时，手动把同一客户端 CIDR 复制到每台数据面既慢又容易漏。
+
+控制通道用**节点主动发起的一个 WSS 连接**复用中心已有 `DOH_PORT`；不会在
+`unlock` 或中心增加新监听端口。它做两件事：
+
+1. 中心 `CENTER_ALLOWED_IPS` 作为唯一白名单来源，下发完整快照；本机原子写入后
+   热重载 nftables 的 DNS/DoT/DoH/80/443 ACL 和 WARP 回程标记，**不重启**
+   SmartDNS/sniproxy。
+2. 中心对 `other` 域名选中本节点时，通过同一连接发送 DNS wire query；本机问
+   `127.0.0.1:53` 后回传真实结果，避免中心必须公开访问节点的 UDP 53。
+
+数据面 `.env`（`CONTROL_NODE_ID` 与中心 `nodes.toml` 的 `id` 必须严格相等）：
+
+```env
+# 仍保留作断联/启动兜底；中心下发快照到达后会与其合并。
+ALLOWED_IPS=203.0.113.1/32
+ENABLE_ACL=1
+
+CONTROL_CENTER_URL=wss://dns.example.com:443/unlock-control/v1/connect
+CONTROL_TOKEN=replace-with-the-same-long-random-secret
+CONTROL_NODE_ID=jp-1
+CONTROL_RECONNECT_SECS=5
+CONTROL_QUERY_TIMEOUT_SECS=0.8
+```
+
+中心侧还必须同时设：
+
+```env
+CENTER_ALLOWED_IPS=198.51.100.0/24
+CENTER_CONTROL_TOKEN=replace-with-the-same-long-random-secret
+```
+
+`CONTROL_CENTER_URL` 留空，或中心没有 `CENTER_CONTROL_TOKEN` 时，控制代理不启动，
+中心仍按 `nodes.toml` 的 `dns_upstream` UDP 地址代查，数据面仍只使用自身
+`ALLOWED_IPS`：这就是旧版本的完整兼容路径。控制连接断开也不会清空已验证的旧快照。
 
 ---
 

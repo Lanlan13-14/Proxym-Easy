@@ -10,6 +10,7 @@ use domain_index::{Class, DomainIndex, UnlockScope};
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{Name, RData, Record, RecordType};
+use ipnet::IpNet;
 use schedule::{Node, NodeTable};
 use tracing::{debug, warn};
 
@@ -23,6 +24,8 @@ pub struct AppState {
     pub nodes: ArcSwap<NodeTable>,
     pub geoip: Arc<GeoIp>,
     pub passthrough_cache: DashMap<String, CacheEntry>,
+    pub control: Option<Arc<crate::control::ControlHub>>,
+    pub acl_cidrs: ArcSwap<Vec<IpNet>>,
 }
 
 pub struct CacheEntry {
@@ -39,14 +42,71 @@ pub enum ResolveResult {
 }
 
 impl AppState {
-    pub fn new(cfg: Config, index: DomainIndex, nodes: NodeTable, geoip: GeoIp) -> Arc<Self> {
+    pub fn new(
+        cfg: Config,
+        index: DomainIndex,
+        nodes: NodeTable,
+        geoip: GeoIp,
+        control: Option<Arc<crate::control::ControlHub>>,
+    ) -> Arc<Self> {
+        // Config::validate has already rejected malformed CIDRs.
+        let acl_cidrs = cfg
+            .access
+            .allowed_cidrs
+            .iter()
+            .map(|value| value.parse::<IpNet>().expect("validated CIDR"))
+            .collect();
         Arc::new(Self {
             cfg,
             index: ArcSwap::from_pointee(index),
             nodes: ArcSwap::from_pointee(nodes),
             geoip: Arc::new(geoip),
             passthrough_cache: DashMap::new(),
+            control,
+            acl_cidrs: ArcSwap::from_pointee(acl_cidrs),
         })
+    }
+
+    pub fn control_acl_snapshot(&self) -> Vec<String> {
+        self.acl_cidrs
+            .load()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    pub fn access_allowed(&self, client_ip: IpAddr) -> bool {
+        let cidrs = self.acl_cidrs.load();
+        cidrs.is_empty() || cidrs.iter().any(|cidr| cidr.contains(&client_ip))
+    }
+
+    pub async fn reload_acl_from_file(&self) -> anyhow::Result<bool> {
+        let Some(path) = std::env::var_os("CENTER_ALLOWED_IPS_FILE").map(std::path::PathBuf::from)
+        else {
+            return Ok(false);
+        };
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| anyhow::anyhow!("read center ACL file {}: {error}", path.display()))?;
+        let cidrs = text
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.parse::<IpNet>().map_err(|_| value.to_string()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|invalid| anyhow::anyhow!("invalid center ACL file CIDR: {invalid}"))?;
+        if cidrs.is_empty() {
+            anyhow::bail!("refusing empty center ACL file snapshot");
+        }
+        let old = self.control_acl_snapshot();
+        let next: Vec<String> = cidrs.iter().map(ToString::to_string).collect();
+        if old == next {
+            return Ok(false);
+        }
+        self.acl_cidrs.store(Arc::new(cidrs));
+        if let Some(hub) = &self.control {
+            hub.broadcast_acl(next).await;
+        }
+        Ok(true)
     }
 
     pub fn scope(&self) -> UnlockScope {
@@ -60,6 +120,11 @@ impl AppState {
         client_ip: Option<IpAddr>,
         profile: &Profile,
     ) -> ResolveResult {
+        if let Some(client_ip) = client_ip {
+            if !self.access_allowed(client_ip) {
+                return ResolveResult::Message(refused(request));
+            }
+        }
         let Some(query) = request.queries().first() else {
             return ResolveResult::ServFail;
         };
@@ -117,8 +182,7 @@ impl AppState {
     ) -> ResolveResult {
         let _ = profile;
         let index = self.index.load();
-        let (class, _) =
-            index.classify(qname, self.scope(), self.cfg.policy.enable_ai_unlock);
+        let (class, _) = index.classify(qname, self.scope(), self.cfg.policy.enable_ai_unlock);
         match self.cfg.policy.aaaa_mode.as_str() {
             "passthrough" => {
                 self.passthrough(request, qname, RecordType::AAAA, client_ip)
@@ -186,10 +250,7 @@ impl AppState {
             }
             .or_else(|_| nodes.nearest(None, None))
         } else {
-            nodes.pick_region(
-                &self.cfg.schedule.default_passthrough_region,
-                true,
-            )
+            nodes.pick_region(&self.cfg.schedule.default_passthrough_region, true)
         };
 
         let cache_key = format!(
@@ -216,29 +277,27 @@ impl AppState {
         };
 
         let timeout = Duration::from_millis(self.cfg.passthrough.timeout_ms);
+        // If the selected data-plane node has joined the authenticated control
+        // channel, it is the authoritative passthrough transport. Fall back to
+        // the legacy public UDP upstream chain only when the channel is absent
+        // or unavailable, preserving old deployments exactly when unconfigured.
+        if let (Some(hub), Ok(ref selected)) = (&self.control, &node) {
+            match hub.query(&selected.id, request, timeout).await {
+                Ok(mut msg) => {
+                    msg.set_id(request.id());
+                    return self.cache_passthrough(cache_key, msg, qname, "control");
+                }
+                Err(e) => {
+                    warn!(%qname, node=%selected.id, error=%e, "control passthrough failed; trying legacy upstreams")
+                }
+            }
+        }
+
         for up in upstreams {
             match query_upstream(&up, qname, qtype, timeout).await {
                 Ok(mut msg) => {
                     msg.set_id(request.id());
-                    // Clamp TTL
-                    let max_ttl = self.cfg.cache.passthrough_max_ttl_secs;
-                    for rec in msg.answers_mut() {
-                        if rec.ttl() > max_ttl {
-                            rec.set_ttl(max_ttl);
-                        }
-                    }
-                    if self.passthrough_cache.len() < self.cfg.cache.passthrough_max_entries {
-                        self.passthrough_cache.insert(
-                            cache_key.clone(),
-                            CacheEntry {
-                                message: msg.clone(),
-                                expire: Instant::now()
-                                    + Duration::from_secs(max_ttl as u64),
-                            },
-                        );
-                    }
-                    debug!(%qname, %up, "passthrough ok");
-                    return ResolveResult::Message(msg);
+                    return self.cache_passthrough(cache_key, msg, qname, &up);
                 }
                 Err(e) => {
                     warn!(%qname, %up, error=%e, "passthrough failed");
@@ -247,14 +306,35 @@ impl AppState {
         }
         ResolveResult::ServFail
     }
+
+    fn cache_passthrough(
+        &self,
+        cache_key: String,
+        mut msg: Message,
+        qname: &str,
+        upstream: &str,
+    ) -> ResolveResult {
+        let max_ttl = self.cfg.cache.passthrough_max_ttl_secs;
+        for rec in msg.answers_mut() {
+            if rec.ttl() > max_ttl {
+                rec.set_ttl(max_ttl);
+            }
+        }
+        if self.passthrough_cache.len() < self.cfg.cache.passthrough_max_entries {
+            self.passthrough_cache.insert(
+                cache_key,
+                CacheEntry {
+                    message: msg.clone(),
+                    expire: Instant::now() + Duration::from_secs(max_ttl as u64),
+                },
+            );
+        }
+        debug!(%qname, %upstream, "passthrough ok");
+        ResolveResult::Message(msg)
+    }
 }
 
-fn build_a_answer(
-    request: &Message,
-    qname: &str,
-    ip: IpAddr,
-    ttl: u32,
-) -> Result<Message, ()> {
+fn build_a_answer(request: &Message, qname: &str, ip: IpAddr, ttl: u32) -> Result<Message, ()> {
     let name = Name::from_utf8(qname).map_err(|_| ())?;
     let mut msg = Message::new();
     msg.set_id(request.id());
@@ -346,7 +426,9 @@ async fn raw_udp_query(
     sock.send_to(&bytes, server).await?;
 
     let mut buf = vec![0u8; 4096];
-    let n = tokio::time::timeout(timeout, sock.recv_from(&mut buf)).await??.0;
+    let n = tokio::time::timeout(timeout, sock.recv_from(&mut buf))
+        .await??
+        .0;
     let msg = Message::from_bytes(&buf[..n])?;
     Ok(msg)
 }
@@ -363,3 +445,30 @@ fn rand_u16() -> u16 {
 // silence unused import in some builds
 #[allow(dead_code)]
 fn _use_node(_: &Node) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_acl(cidrs: Vec<&str>) -> Arc<AppState> {
+        let mut cfg = Config::default();
+        cfg.access.allowed_cidrs = cidrs.into_iter().map(ToOwned::to_owned).collect();
+        let index = DomainIndex::load_str("", 0).unwrap();
+        let nodes = NodeTable::from_configs(vec![]).unwrap();
+        AppState::new(cfg, index, nodes, GeoIp::open("/dev/null"), None)
+    }
+
+    #[test]
+    fn center_access_acl_applies_to_dns_requests() {
+        let state = state_with_acl(vec!["198.51.100.0/24", "2001:db8::/48"]);
+        assert!(state.access_allowed("198.51.100.8".parse().unwrap()));
+        assert!(state.access_allowed("2001:db8::1".parse().unwrap()));
+        assert!(!state.access_allowed("203.0.113.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn empty_center_acl_preserves_legacy_open_behavior() {
+        let state = state_with_acl(vec![]);
+        assert!(state.access_allowed("203.0.113.8".parse().unwrap()));
+    }
+}

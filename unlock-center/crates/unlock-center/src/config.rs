@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use domain_index::UnlockScope;
+use ipnet::IpNet;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -20,6 +21,7 @@ pub struct Config {
     pub passthrough: PassthroughConfig,
     pub cache: CacheConfig,
     pub access: AccessConfig,
+    pub control: ControlConfig,
     pub log_level: String,
 }
 
@@ -124,6 +126,15 @@ pub struct AccessConfig {
     pub bearer_token: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ControlConfig {
+    /// Shared bearer token for WebSocket control sessions. Empty disables the endpoint.
+    pub bearer_token: String,
+    /// Path served on the existing DoH TLS listener; it never opens another port.
+    pub path: String,
+}
+
 impl Default for ListenConfig {
     fn default() -> Self {
         Self {
@@ -226,10 +237,7 @@ impl Default for PassthroughConfig {
     fn default() -> Self {
         Self {
             timeout_ms: 800,
-            fallback_upstreams: vec![
-                "1.1.1.1:53".into(),
-                "8.8.8.8:53".into(),
-            ],
+            fallback_upstreams: vec!["1.1.1.1:53".into(), "8.8.8.8:53".into()],
         }
     }
 }
@@ -252,6 +260,15 @@ impl Default for AccessConfig {
     }
 }
 
+impl Default for ControlConfig {
+    fn default() -> Self {
+        Self {
+            bearer_token: String::new(),
+            path: "/unlock-control/v1/connect".into(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -265,6 +282,7 @@ impl Default for Config {
             passthrough: PassthroughConfig::default(),
             cache: CacheConfig::default(),
             access: AccessConfig::default(),
+            control: ControlConfig::default(),
             log_level: "info".into(),
         }
     }
@@ -273,8 +291,8 @@ impl Default for Config {
 impl Config {
     pub fn load(path: Option<&Path>) -> Result<Self> {
         let mut cfg = if let Some(p) = path {
-            let text = fs::read_to_string(p)
-                .with_context(|| format!("read config {}", p.display()))?;
+            let text =
+                fs::read_to_string(p).with_context(|| format!("read config {}", p.display()))?;
             toml::from_str(&text).context("parse config toml")?
         } else if Path::new("config.toml").exists() {
             let text = fs::read_to_string("config.toml")?;
@@ -316,6 +334,9 @@ impl Config {
         if let Ok(v) = env::var("CENTER_DOH_BASE_PATH") {
             self.listen.doh_base_path = v;
         }
+        if let Ok(v) = env::var("CENTER_ALLOWED_IPS") {
+            self.access.allowed_cidrs = split_cidrs(&v);
+        }
         if let Ok(v) = env::var("CENTER_UNLOCK_SCOPE") {
             self.policy.unlock_scope = v;
         }
@@ -345,6 +366,12 @@ impl Config {
         }
         if let Ok(v) = env::var("CENTER_TLS_KEY") {
             self.tls.key_file = PathBuf::from(v);
+        }
+        if let Ok(v) = env::var("CENTER_CONTROL_TOKEN") {
+            self.control.bearer_token = v;
+        }
+        if let Ok(v) = env::var("CENTER_CONTROL_PATH") {
+            self.control.path = v;
         }
         if let Ok(v) = env::var("CENTER_LOG_LEVEL") {
             self.log_level = v;
@@ -387,8 +414,23 @@ impl Config {
         }
         self.listen.doh_base_path = p;
 
-        self.policy.default_global_region =
-            self.policy.default_global_region.trim().to_ascii_lowercase();
+        let mut control_path = self.control.path.trim().to_string();
+        if control_path.is_empty() {
+            control_path = "/unlock-control/v1/connect".into();
+        }
+        if !control_path.starts_with('/') {
+            control_path = format!("/{control_path}");
+        }
+        while control_path.len() > 1 && control_path.ends_with('/') {
+            control_path.pop();
+        }
+        self.control.path = control_path;
+
+        self.policy.default_global_region = self
+            .policy
+            .default_global_region
+            .trim()
+            .to_ascii_lowercase();
         self.policy.default_ai_region = self.policy.default_ai_region.trim().to_ascii_lowercase();
         self.schedule.default_passthrough_region = self
             .schedule
@@ -426,6 +468,21 @@ impl Config {
                 other => bail!("unknown tls.mode: {other}"),
             }
         }
+        if !self.control.bearer_token.is_empty() {
+            if !self.listen.enable_doh {
+                bail!("control.bearer_token requires listen.enable_doh=true (the control path reuses DoH TLS)");
+            }
+            if !self.control.path.starts_with('/') || self.control.path.len() < 2 {
+                bail!("control.path must be an absolute non-root HTTP path");
+            }
+            if self.access.allowed_cidrs.is_empty() {
+                bail!("control.bearer_token requires non-empty access.allowed_cidrs");
+            }
+        }
+        for cidr in &self.access.allowed_cidrs {
+            cidr.parse::<IpNet>()
+                .map_err(|_| anyhow::anyhow!("invalid access.allowed_cidrs entry: {cidr}"))?;
+        }
         Ok(())
     }
 
@@ -446,9 +503,42 @@ impl Config {
     }
 }
 
+fn split_cidrs(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn parse_bool(s: &str) -> bool {
     matches!(
         s.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_requires_doh_and_nonempty_acl() {
+        let mut cfg = Config::default();
+        cfg.control.bearer_token = "secret".into();
+        assert!(cfg.validate().is_err());
+        cfg.access.allowed_cidrs = vec!["198.51.100.0/24".into()];
+        assert!(cfg.validate().is_ok());
+        cfg.listen.enable_doh = false;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn parses_center_allowed_ips_env_value() {
+        assert_eq!(
+            split_cidrs(" 198.51.100.0/24, 2001:db8::/48 ,,"),
+            vec!["198.51.100.0/24", "2001:db8::/48"]
+        );
+    }
 }

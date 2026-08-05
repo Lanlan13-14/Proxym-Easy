@@ -23,8 +23,17 @@ services:
       DATA_DIR: /data
       CONF_DIR: /etc/unlock-center
       RUNTIME_DIR: /run/unlock-center
+      # Single source of DNS/SNI client ACL. Comma-separated CIDRs; empty keeps
+      # legacy open center behavior. When CONTROL_TOKEN is set this snapshot is
+      # pushed over the existing DoH TLS port to connected unlock nodes.
+      CENTER_ALLOWED_IPS: ${CENTER_ALLOWED_IPS:-}
+      CENTER_ALLOWED_IPS_FILE: /etc/unlock-center/allowed-ips.txt
+      CENTER_CONTROL_TOKEN: ${CENTER_CONTROL_TOKEN:-}
+      CENTER_CONTROL_PATH: ${CENTER_CONTROL_PATH:-/unlock-control/v1/connect}
     volumes:
       - ./nodes.toml:/etc/unlock-center/nodes.toml:ro
+      # CENTER_ALLOWED_IPS is mirrored here atomically for SIGHUP hot reload.
+      - ./allowed-ips.txt:/etc/unlock-center/allowed-ips.txt
       # 证书 + GeoIP MMDB 持久化
       - center-data:/data
     ports:

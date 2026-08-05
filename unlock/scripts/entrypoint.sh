@@ -51,6 +51,10 @@ IFS="$oldifs"
 UPSTREAM_DNS="$resolved_upstreams"; export UPSTREAM_DNS
 "$ROOT/scripts/gen-configs.sh"
 
+# Validate optional center control configuration before touching nftables/WARP.
+# An empty CONTROL_CENTER_URL deliberately preserves legacy standalone behavior.
+"$ROOT/scripts/control-agent.sh" env
+
 # White-list firewall is mandatory by default.
 if [ "${ENABLE_ACL:-1}" = "1" ] || [ "${ENABLE_ACL:-true}" = "true" ]; then
   "$ROOT/scripts/apply-acl.sh"
@@ -96,6 +100,11 @@ fi
 # Optional SOCKS5: separate source whitelist and username/password. It starts
 # only after WARP has passed its mandatory egress validation.
 "$ROOT/scripts/start-socks.sh" start
+
+# One optional outbound WebSocket multiplexes center ACL hot-sync and
+# center-selected `other` DNS passthrough. It uses the center's existing DoH
+# port; a missing URL keeps the old independent behavior.
+"$ROOT/scripts/control-agent.sh" start
 
 "$ROOT/scripts/cert-manager.sh" renew-loop >"$RUNTIME_DIR/cert-manager.log" 2>&1 &
 echo $! >"$RUNTIME_DIR/cert-manager.pid"
@@ -150,5 +159,11 @@ while true; do
       }
       ;;
   esac
+  if [ -n "${CONTROL_CENTER_URL:-}" ]; then
+    [ -f "$RUNTIME_DIR/control-agent.pid" ] && kill -0 "$(cat "$RUNTIME_DIR/control-agent.pid")" 2>/dev/null || {
+      log "center control agent died; exiting for clean container restart"
+      exit 1
+    }
+  fi
   sleep 10
 done

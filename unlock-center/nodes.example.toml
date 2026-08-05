@@ -8,8 +8,9 @@
 #   region        逻辑区名：须与 domain-region.map 的 regional 区、DoH path（/us）一致
 #                 可自定义，如 uk、sg、foo；中心 allow_regions 里也要有
 #   unlock_ip     返回给客户端的 A 记录 IP = 客户端去连 sniproxy 的地址（公网）
-#   dns_upstream  中心「未命中域名」代查时问谁，格式 IP:53；通常与 unlock_ip 同机
-#                 该机 ENABLE_DNS=1，且 ALLOWED_IPS 必须包含中心出口 IP
+#   dns_upstream  旧版/未配置控制通道时，中心「未命中域名」代查 UDP 地址，格式 IP:53。
+#                 配置 CENTER_CONTROL_TOKEN 且该 id 的 unlock 已连入时，中心优先复用
+#                 该条 WSS 控制连接代查；连接不可用才回退这里和 fallback_upstreams。
 #   weight        同 region 多机时加权（整数，越大越容易被选中）
 #   lat / lon     经纬度，供 GeoIP nearest 算「离客户端最近」；建议填准
 #

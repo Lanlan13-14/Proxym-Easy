@@ -1,4 +1,5 @@
 mod config;
+mod control;
 mod dns_plain;
 mod geoip;
 mod profile;
@@ -23,6 +24,10 @@ use crate::resolve::AppState;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // rustls 0.23 no longer picks a process-wide crypto provider implicitly
+    // when multiple TLS stacks are linked (reqwest + tokio-rustls).
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let mut args = std::env::args().skip(1);
     let mut config_path: Option<PathBuf> = None;
     while let Some(a) = args.next() {
@@ -46,8 +51,7 @@ async fn main() -> Result<()> {
     let cfg = Config::load(config_path.as_deref())?;
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(&cfg.log_level)),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cfg.log_level)),
         )
         .init();
 
@@ -80,7 +84,17 @@ async fn main() -> Result<()> {
     };
     crate::geoip::warn_if_missing(&geo);
 
-    let state = AppState::new(cfg.clone(), index, nodes, geo);
+    let control = if cfg.control.bearer_token.is_empty() {
+        None
+    } else {
+        let hub = crate::control::ControlHub::new(
+            cfg.control.bearer_token.clone(),
+            cfg.control.path.clone(),
+        );
+        info!(path = %hub.path(), "unlock control endpoint enabled on existing DoH TLS port");
+        Some(hub)
+    };
+    let state = AppState::new(cfg.clone(), index, nodes, geo, control);
 
     // Write pid for cert-manager / geoip-updater signals.
     if let Ok(pid_path) = std::env::var("CENTER_PID_FILE") {
@@ -208,9 +222,14 @@ async fn signal_loop(state: Arc<AppState>) {
         loop {
             tokio::select! {
                 _ = hup.recv() => {
-                    info!("SIGHUP: reload geoip (+ TLS requires process restart for rustls identity today)");
+                    info!("SIGHUP: reload GeoIP and optional center ACL snapshot");
                     if let Err(e) = state.geoip.reload() {
                         warn!(error = %e, "geoip reload on SIGHUP");
+                    }
+                    match state.reload_acl_from_file().await {
+                        Ok(true) => info!("center ACL reloaded and pushed to control nodes"),
+                        Ok(false) => {}
+                        Err(e) => warn!(error = %e, "center ACL reload on SIGHUP; kept old snapshot"),
                     }
                 }
                 _ = usr1.recv() => {

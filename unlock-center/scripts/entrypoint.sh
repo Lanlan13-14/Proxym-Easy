@@ -16,6 +16,20 @@ export DATA_DIR CONF_DIR RUNTIME_DIR CENTER_PID_FILE="${CENTER_PID_FILE:-$RUNTIM
 mkdir -p "$DATA_DIR/tls" "$DATA_DIR/geoip" "$CONF_DIR" "$RUNTIME_DIR" /var/log/unlock-center
 log() { echo " >> [entrypoint] $*"; }
 
+# Keep an atomically replaceable CIDR file beside config. SIGHUP can reload this
+# file and hot-push the complete snapshot over existing node control sessions.
+CENTER_ALLOWED_IPS_FILE="${CENTER_ALLOWED_IPS_FILE:-$CONF_DIR/allowed-ips.txt}"
+export CENTER_ALLOWED_IPS_FILE
+if [ -n "${CENTER_ALLOWED_IPS:-}" ]; then
+  acl_candidate="$CENTER_ALLOWED_IPS_FILE.new"
+  printf '%s\n' "$CENTER_ALLOWED_IPS" >"$acl_candidate"
+  chmod 600 "$acl_candidate"
+  mv "$acl_candidate" "$CENTER_ALLOWED_IPS_FILE"
+elif [ ! -e "$CENTER_ALLOWED_IPS_FILE" ]; then
+  : >"$CENTER_ALLOWED_IPS_FILE"
+  chmod 600 "$CENTER_ALLOWED_IPS_FILE"
+fi
+
 # Map common env into cert-manager / center
 export ENABLE_DOT="${ENABLE_DOT:-${CENTER_ENABLE_DOT:-1}}"
 export ENABLE_DOH="${ENABLE_DOH:-${CENTER_ENABLE_DOH:-1}}"
@@ -110,8 +124,16 @@ passthrough_max_entries = 500000
 passthrough_max_ttl_secs = 300
 
 [access]
+# This is the single source of client ACL truth. CENTER_ALLOWED_IPS is parsed
+# directly by the Rust process; its atomically mirrored file is for SIGHUP hot
+# reload and control-node propagation.
 allowed_cidrs = []
 bearer_token = "${CENTER_BEARER_TOKEN:-}"
+
+[control]
+# Empty token disables the WebSocket endpoint and preserves legacy UDP node DNS.
+bearer_token = "${CENTER_CONTROL_TOKEN:-}"
+path = "${CENTER_CONTROL_PATH:-/unlock-control/v1/connect}"
 
 log_level = "${CENTER_LOG_LEVEL:-info}"
 EOF

@@ -48,11 +48,7 @@ pub async fn serve_dot(
     }
 }
 
-async fn handle_dot_conn<S>(
-    state: &AppState,
-    stream: &mut S,
-    peer: SocketAddr,
-) -> Result<()>
+async fn handle_dot_conn<S>(state: &AppState, stream: &mut S, peer: SocketAddr) -> Result<()>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
 {
@@ -84,7 +80,8 @@ where
     Ok(())
 }
 
-/// DNS-over-HTTPS with configurable path.
+/// DNS-over-HTTPS and, when configured, the authenticated WebSocket control
+/// endpoint share the same existing TLS listener and port.
 pub async fn serve_doh(
     state: Arc<AppState>,
     addr: SocketAddr,
@@ -95,6 +92,7 @@ pub async fn serve_doh(
     info!(
         %addr,
         path=%state.cfg.listen.doh_base_path,
+        control_path=?state.control.as_ref().map(|hub| hub.path()),
         "DoH listening"
     );
     loop {
@@ -114,8 +112,11 @@ pub async fn serve_doh(
                 let state = Arc::clone(&state);
                 async move { handle_doh_http(state, req, peer).await }
             });
-            if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
-                // http2 may fail on http1 builder — try hyper_util auto if needed
+            if let Err(e) = http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await
+            {
                 warn!(%peer, error=%e, "doh http conn");
             }
         });
@@ -124,10 +125,56 @@ pub async fn serve_doh(
 
 async fn handle_doh_http(
     state: Arc<AppState>,
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     peer: SocketAddr,
 ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
-    // Optional bearer
+    if is_control_upgrade(&req, &state) {
+        let authorization = req
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok());
+        let hub = state.control.as_ref().expect("checked control hub");
+        if !hub.authorize(authorization) {
+            return Ok(status_body(StatusCode::UNAUTHORIZED, b"unauthorized"));
+        }
+        let key = match req
+            .headers()
+            .get("sec-websocket-key")
+            .and_then(|value| value.to_str().ok())
+        {
+            Some(value) => value,
+            None => {
+                return Ok(status_body(
+                    StatusCode::BAD_REQUEST,
+                    b"missing websocket key",
+                ))
+            }
+        };
+        let accept = websocket_accept(key);
+        let upgrade = hyper::upgrade::on(&mut req);
+        let hub = Arc::clone(hub);
+        let acl = state.control_acl_snapshot();
+        tokio::spawn(async move {
+            match upgrade.await {
+                Ok(upgraded) => {
+                    if let Err(error) = hub.serve(TokioIo::new(upgraded), acl).await {
+                        warn!(%peer, error=%error, "unlock control session");
+                    }
+                }
+                Err(error) => warn!(%peer, error=%error, "unlock control upgrade"),
+            }
+        });
+        return Ok(Response::builder()
+            .status(StatusCode::SWITCHING_PROTOCOLS)
+            .header(hyper::header::CONNECTION, "Upgrade")
+            .header(hyper::header::UPGRADE, "websocket")
+            .header("sec-websocket-accept", accept)
+            .header("sec-websocket-protocol", crate::control::protocol())
+            .body(Full::new(Bytes::new()))
+            .unwrap());
+    }
+
+    // Optional bearer remains for normal DoH clients.
     if !state.cfg.access.bearer_token.is_empty() {
         let ok = req
             .headers()
@@ -223,6 +270,38 @@ async fn handle_doh_http(
         .header(hyper::header::CACHE_CONTROL, "max-age=45")
         .body(Full::new(Bytes::from(out)))
         .unwrap())
+}
+
+fn is_control_upgrade(req: &Request<Incoming>, state: &AppState) -> bool {
+    let Some(hub) = state.control.as_ref() else {
+        return false;
+    };
+    req.uri().path() == hub.path()
+        && req
+            .headers()
+            .get(hyper::header::UPGRADE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false)
+        && req
+            .headers()
+            .get("sec-websocket-protocol")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| {
+                value
+                    .split(',')
+                    .any(|item| item.trim() == crate::control::protocol())
+            })
+            .unwrap_or(false)
+}
+
+fn websocket_accept(key: &str) -> String {
+    use base64::Engine;
+    use sha1::{Digest, Sha1};
+    let mut hasher = Sha1::new();
+    hasher.update(key.as_bytes());
+    hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
 }
 
 fn status_body(code: StatusCode, b: &'static [u8]) -> Response<Full<Bytes>> {
