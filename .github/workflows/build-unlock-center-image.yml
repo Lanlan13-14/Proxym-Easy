@@ -44,6 +44,8 @@ jobs:
         working-directory: unlock-center
     steps:
       - uses: actions/checkout@v4
+      - name: Install control-channel test dependency
+        run: python3 -m pip install --user 'websockets>=14,<17'
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
       - name: Shell and control-agent test syntax
