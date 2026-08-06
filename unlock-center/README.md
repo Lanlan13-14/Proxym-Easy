@@ -177,11 +177,13 @@ pool = map 里该域名的 region          # 例 dmm.co.jp → jp
 节点 = nodes 里 region==pool 且 healthy 的机（可加权）
 返回：A = 该节点 unlock_ip，TTL≈45s
 若该 region 无健康节点：
-  allow_region_fallback=false（默认）→ SERVFAIL
-  true → 任意健康节点（一般不要开）
+  → 降级为【未命中通道】passthrough（真实公网解析）
+  → 不改派到别的区 unlock（不会用 us 机冒充 uk）
+  → 仅当代查整条也失败时才 SERVFAIL
 ```
 
 **要点：** path 写 `/us` 也 **不能** 把 DMM 派去美国。  
+**缺机：** map 里有 `uk` 但 `nodes.toml` 没 uk 机 → BBC 等 **不会挂死**，回真实 IP（版权/地区限制仍可能在应用层存在）。  
 **多区：** map 里 jp/hk/uk 各有域名时，只要 nodes 都有对应机，**全部同时有效**。
 
 #### ② class = global（如 Netflix）
@@ -192,12 +194,14 @@ pool = profile.global_region
      = DEFAULT_GLOBAL_REGION  若 path 是 /{base} 或明文/DoT 默认 profile
 节点 = region==pool 的 unlock
 返回：A = unlock_ip
+pool 无健康节点 → 同 regional：降级真实 DNS（不乱派别区）
 ```
 
 **要点：**  
 - 只影响 global（和下面的 ai 跟随逻辑），**不影响** regional。  
 - 新机用 `/sg`、美机用 `/us` → 同一中心、同一时刻 Netflix 可去不同区。  
-- **默认不用** 客户端 IP 猜 global 区（防漂）。
+- **默认不用** 客户端 IP 猜 global 区（防漂）。  
+- path 写了 `/uk` 但 nodes 没有 uk → Netflix **不会** SERVFAIL，回真实 IP。
 
 #### ③ class = ai（如 openai.com）
 
@@ -207,6 +211,7 @@ pool = profile.ai_region
      否则若 DEFAULT_AI_REGION 非空 → 该值
      否则 → 与 global 相同（跟随 profile.global_region）
 返回：A = 该 pool 的 unlock_ip
+pool 无健康节点 → 降级真实 DNS（同上）
 ```
 
 | path 示例 | global 池 | ai 池 |
@@ -308,7 +313,7 @@ class = other
 | 12 | SCOPE=`global` | `dmm.co.jp` | A | map 有但 scope 关 regional → **降级未命中** → 真实/代查 |
 | 13 | SCOPE=`regional` | `netflix.com` | A | map 有但 scope 关 global → **降级未命中** → 真实/代查 |
 | 14 | path 乱写 | 任意 | — | DoH **HTTP 404**（请求未进入 DNS 逻辑） |
-| 15 | map 有 `uk` 但 nodes 无 uk 机 | `bbc.co.uk` | A | **命中 regional** 但无节点 → **SERVFAIL**（不是未命中代查） |
+| 15 | map 有 `uk` 但 nodes 无 uk 机 | `bbc.co.uk` | A | **命中 regional** 但无节点 → **降级 passthrough 真实 IP**（不乱派别区；代查失败才 SERVFAIL） |
 | 16 | 同 path 连查 jp 站再查 hk 站 | 两条 A | A | 分别 jp/hk unlock_ip，**同时成立** |
 | 17 | 代查：unlock:53 全不通且 fallback 挂 | `example.com` | A | **未命中通道失败** → SERVFAIL |
 
@@ -327,9 +332,9 @@ DNS 只负责告诉客户端「去连哪个 IP」
 | 应答 | 常见原因 |
 |---|---|
 | A = 某 203.x unlock_ip | 解锁命中，去播流 |
-| A = 公网 CDN IP | other 代查成功 |
-| NOERROR 无 AAAA | 解锁域名的 AAAA 被策略掏空 |
-| SERVFAIL | 该 region 无节点 / 代查全失败 |
+| A = 公网 CDN IP | other 代查成功，**或** map 命中但该区无节点而降级代查 |
+| NOERROR 无 AAAA | 解锁域名的 AAAA 被策略掏空（且该区有节点） |
+| SERVFAIL | 代查全失败（WSS/`dns_upstream`/fallback 都挂）；**不是**「map 有区但 nodes 缺机」的默认结果 |
 | REFUSED | 非 A/AAAA 且未开 passthrough |
 | HTTP 404 | DoH path 不是合法 base/profile |
 
@@ -798,7 +803,8 @@ DoT：主机 `dns.example.com:853`（MVP 用默认全局区；区锁仍按 map�
 
 | 现象 | 原因 |
 |---|---|
-| 中心查区锁 SERVFAIL | `nodes.toml` 缺该 `region` 或节点全 unhealthy |
+| 区锁域名变成真实 CDN IP（不是 unlock_ip） | `nodes.toml` **缺该 `region`** 或该区节点全 unhealthy → 中心**故意降级**为真实解析，不会乱派别区；补机后才会回 unlock_ip |
+| 中心查区锁/普通站 SERVFAIL | 代查通道全挂（WSS 未连且 `dns_upstream`/fallback 不通），或 ACL 拒绝客户端 |
 | 代查失败 / 普通站解析慢失败 | 控制模式先查节点日志是否有 WSS 连接、Token/证书/`CONTROL_NODE_ID` 是否正确；旧模式则检查解锁机 53 是否放行中心 IP、`ENABLE_DNS=1` |
 | **YouTube / 普通站偶发打不开** | YouTube 族**故意不进 map**（始终 `other` 代查真实 IP）。旧版若节点 SmartDNS 经 WARP 返回 SERVFAIL，中心会原样回客户端甚至缓存最多 300s。现已：**节点/上游 SERVFAIL 不缓存，自动试下一个 fallback（1.1.1.1/8.8.8.8）**。仍失败时查：① 节点 WSS 是否断连抖动；② `passthrough.timeout_ms` 是否过短（建议 ≥1600）；③ fallback 是否被墙/被路由黑洞；④ 客户端是否把 DoH 设成「唯一 DNS」且中心 ACL 间歇拒绝 |
 | 能解析到 unlock IP 但播不了 | 解锁机 80/443 ACL 没收到 `CENTER_ALLOWED_IPS` 快照（或旧模式未放行客户端），或 WARP 挂了 |
@@ -814,7 +820,7 @@ DoT：主机 `dns.example.com:853`（MVP 用默认全局区；区锁仍按 map�
 1. 只部署 `unlock-us` + `unlock-jp`  
 2. `nodes.toml` 只留 us、jp  
 3. 客户端 DoH：`.../us` 或 `.../jp` 选 Netflix 区  
-4. 日区锁仍然只靠 jp 机；港区 map 有但无节点 → 该区查询会失败/降级（可补机或先不管）
+4. 日区锁仍然只靠 jp 机；港区 map 有但无节点 → 该区域名 **降级真实 DNS**（能打开站，不是港区解锁；补 hk 机后才会回 unlock_ip）
 
 ---
 
