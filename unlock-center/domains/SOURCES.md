@@ -30,13 +30,26 @@ domain<TAB>class<TAB>region
 sh unlock-center/scripts/build-domain-map.sh
 ```
 
-Inputs:
+### Universe (must cover unlock data-plane list)
 
-1. **1-stream** `stream.smartdns.list` section headers → global / regional / ai  
-2. **Lanlan13-14/Rules** Domain YAML: `streaming_hk/sg/tw/uk`, `tvb` → regional (hk/sg/tw/uk)  
-3. Google/YouTube family stripped  
-4. **China Media** → `global` (no dedicated cn unlock); **bilibili / biliapi** family forced → `regional` `hk`  
-5. **SouthEastAsia media** (1-stream) + Rules `streaming_sg` → **`sg`** (sea folded into sg; one SE Asia / Singapore unlock pool)
+1. **`unlock/domains/all.txt`** — same published list unlock nodes pull daily  
+2. **MetaCubeX geosite** basenames from `unlock/domains/geosite-sources.txt`  
+3. **Lanlan13-14/Rules** Domain YAML from `unlock/domains/rules-domain-sources.txt`  
+   (`streaming_hk/sg/tw/uk`, `tvb`, …)  
+4. **1-stream** `stream.smartdns.list` domains  
+
+Google/YouTube family is stripped (never unlocked).
+
+### Classification
+
+1. **1-stream** section headers → `global` / `regional` / `ai` (+ region)  
+2. **Rules** YAML → `regional` (`hk`/`sg`/`tw`/`uk`) with higher priority  
+3. **China Media** → `global`; **bilibili / biliapi / biliintl** → `regional` `hk`  
+4. **SouthEastAsia** → `sg` (no separate `sea`)  
+5. Domains only in the universe: longest-suffix inherit from classified parents;  
+   else keyword heuristics; else default **`global`** (path-selected unlock)
+
+Daily GitHub Action rebuilds unlock `all.txt` then this map together.
 
 ## Custom regions (e.g. `uk`)
 
@@ -44,4 +57,5 @@ Inputs:
 2. Deploy unlock node with `region = "uk"`  
 3. Add `uk` to center `allow_regions`  
 
-Daily GitHub Action rebuilds these files together with unlock `all.txt`.
+If map has a region but no healthy node, center **degrades to real DNS**
+(passthrough), not SERVFAIL and not cross-region unlock.

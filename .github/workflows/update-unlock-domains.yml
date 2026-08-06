@@ -75,7 +75,8 @@ jobs:
       - name: Build unlock-center classified domain map
         working-directory: unlock-center
         env:
-          MIN_ENTRIES: "100"
+          # Full universe ≈ unlock all.txt + geosite + Rules; keep floor high.
+          MIN_ENTRIES: "800"
         run: |
           set -euo pipefail
           sh scripts/build-domain-map.sh
@@ -85,6 +86,20 @@ jobs:
           # AI may be small but file must exist
           test -f domains/ai.txt
           echo "center_map=$(grep -cvE '^\s*(#|$)' domains/domain-region.map)" >> "$GITHUB_STEP_SUMMARY"
+          # Completeness: every unlock all.txt host must appear in the center map
+          python3 - <<'PY'
+from pathlib import Path
+alld={x.strip().lower() for x in Path("../unlock/domains/all.txt").read_text().splitlines() if x.strip() and not x.startswith("#")}
+mapped=set()
+for line in Path("domains/domain-region.map").read_text().splitlines():
+    if not line or line.startswith("#"):
+        continue
+    mapped.add(line.split("\t")[0].lower())
+missing=sorted(alld-mapped)
+if missing:
+    raise SystemExit(f"center map missing {len(missing)} unlock domains e.g. {missing[:20]}")
+print(f"coverage ok: all.txt={len(alld)} map={len(mapped)}")
+PY
           # required classifications
           grep -E $'^netflix\.com\tglobal\t' domains/domain-region.map
           grep -E $'^dmm\.co\.jp\tregional\tjp$' domains/domain-region.map
@@ -96,6 +111,9 @@ jobs:
           # SEA media folded into sg (no separate sea region)
           grep -E $'^mewatch\.sg\tregional\tsg$' domains/domain-region.map
           grep -E $'^hbogoasia\.com\tregional\tsg$' domains/domain-region.map
+          # Prime Video aliases (must not stay other-only)
+          grep -E $'^primevideo\.com\tglobal\t' domains/domain-region.map
+          grep -E $'^prime-video\.com\tglobal\t' domains/domain-region.map
           if awk -F'\t' 'NF>=3 && $1!~/^#/ && $2=="regional" && ($3=="cn" || $3=="sea") { found=1; print; } END { exit found?0:1 }' domains/domain-region.map; then
             echo "ERROR: residual cn/sea regional rows in domain-region.map" >&2
             exit 1
