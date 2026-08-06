@@ -292,7 +292,14 @@ fn load_index(cfg: &Config) -> Result<DomainIndex> {
 
 fn fetch_domain_map_text_blocking(url: &str) -> Result<String> {
     info!(%url, "fetch domain map");
-    let text = reqwest::blocking::get(url)
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("proxym-easy-unlock-center/domain-map")
+        .build()
+        .context("build http client")?;
+    let text = client
+        .get(url)
+        .send()
         .context("fetch map")?
         .error_for_status()
         .context("map http")?
@@ -315,7 +322,12 @@ fn cache_domain_map_file(path: &std::path::Path, text: &str) {
 }
 
 async fn fetch_domain_map_text(url: &str) -> Result<String> {
-    let resp = reqwest::get(url).await.context("fetch map")?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("proxym-easy-unlock-center/domain-map")
+        .build()
+        .context("build http client")?;
+    let resp = client.get(url).send().await.context("fetch map")?;
     let resp = resp.error_for_status().context("map http")?;
     let text = resp.text().await.context("map body")?;
     Ok(text)

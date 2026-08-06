@@ -30,8 +30,9 @@ hyper-util = { version = "0.1.10", features = ["tokio", "server", "server-auto",
 http-body-util = "0.1"
 rcgen = "=0.13.2"
 # Prefer ring over aws-lc-sys (avoids multi-minute C compile on CI/QEMU).
-# manual-roots keeps webpki-roots; no native-certs build script.
-reqwest = { version = "=0.12.12", default-features = false, features = ["rustls-tls-manual-roots", "blocking"] }
+# webpki-roots: ship Mozilla roots so HTTPS works without native-certs/openssl.
+# (manual-roots does NOT load any CA — domain map fetch silently failed TLS.)
+reqwest = { version = "=0.12.12", default-features = false, features = ["rustls-tls-webpki-roots", "blocking"] }
 rustls = { version = "=0.23.20", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
