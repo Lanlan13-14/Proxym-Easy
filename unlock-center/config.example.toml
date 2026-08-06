@@ -63,12 +63,15 @@ other_qtype_mode = "refused"
 
 # ----- 域名分类表 -----
 [tables]
-# 远程 map（优先可填 URL）；空则只用本地 domain_map_file
-domain_map_url = ""
-# 本地/镜像内分类表：域名<TAB>global|regional|ai<TAB>区或-
-domain_map_file = "domains/domain-region.map"
-# 定时重新加载间隔（秒）
-refresh_interval_secs = 3600
+# 远程 map（非空则优先 HTTP 拉取，与 unlock DOMAIN_LIST_URL 同思路）
+domain_map_url = "https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock-center/domains/domain-region.map"
+# 本地 seed / 拉取成功后的缓存；远程失败时回退
+domain_map_file = "/data/domain-region.map"
+# 0 = 仅日更（update_hour:update_minute，默认 04:00 对齐解锁机）
+# >0 = 固定间隔秒数刷新（旧行为）
+refresh_interval_secs = 0
+update_hour = 4
+update_minute = 0
 # map 条目数少于此则拒绝加载（防拉到空文件）
 min_entries = 100
 

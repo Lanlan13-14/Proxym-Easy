@@ -81,7 +81,8 @@ pub async fn daily_at_loop(hour: u32, minute: u32, mut tick: impl FnMut()) {
     }
 }
 
-fn seconds_until_hhmm(hour: u32, minute: u32) -> u64 {
+/// Seconds until next local HH:MM (CENTER_TZ_OFFSET_HOURS, default +8).
+pub fn seconds_until_hhmm(hour: u32, minute: u32) -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     // Local time via chrono-less approximation: use UTC offset from env TZ is complex;
     // use localtime via libc-less: parse from `date` is shell-only.

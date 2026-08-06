@@ -54,6 +54,15 @@ if [ "${GEOIP_ENABLE:-1}" = "1" ] || [ "${GEOIP_ENABLE:-true}" = "true" ]; then
   fi
 fi
 
+# Seed domain map cache from image (unlock-style). Runtime prefers DOMAIN_MAP_URL;
+# this file is last-good fallback and write-through cache after successful fetch.
+DOMAIN_MAP_FILE="${DOMAIN_MAP_FILE:-$DATA_DIR/domain-region.map}"
+if [ ! -s "$DOMAIN_MAP_FILE" ] && [ -s "$ROOT/domains/domain-region.map" ]; then
+  mkdir -p "$(dirname "$DOMAIN_MAP_FILE")"
+  cp "$ROOT/domains/domain-region.map" "$DOMAIN_MAP_FILE"
+  log "seeded domain map cache from image ($(wc -l <"$ROOT/domains/domain-region.map" | tr -d ' ') lines)"
+fi
+
 # Background supervisors
 "$ROOT/scripts/cert-manager.sh" renew-loop >"$RUNTIME_DIR/cert-manager.log" 2>&1 &
 echo $! >"$RUNTIME_DIR/cert-manager.pid"
@@ -94,9 +103,14 @@ aaaa_mode = "empty"
 other_qtype_mode = "refused"
 
 [tables]
+# Prefer remote URL (same cadence as unlock DOMAIN_LIST_URL / 04:00).
+# Local file is seed + last-good cache when fetch fails.
 domain_map_url = "${DOMAIN_MAP_URL:-https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/unlock-center/domains/domain-region.map}"
-domain_map_file = "${DOMAIN_MAP_FILE:-$ROOT/domains/domain-region.map}"
-refresh_interval_secs = ${DOMAIN_MAP_REFRESH_SECS:-3600}
+domain_map_file = "${DOMAIN_MAP_FILE:-$DATA_DIR/domain-region.map}"
+# 0 = daily only at update_hour:update_minute (default 04:00, match unlock)
+refresh_interval_secs = ${DOMAIN_MAP_REFRESH_SECS:-0}
+update_hour = ${DOMAIN_MAP_UPDATE_HOUR:-4}
+update_minute = ${DOMAIN_MAP_UPDATE_MINUTE:-0}
 min_entries = ${DOMAIN_MAP_MIN_ENTRIES:-100}
 
 [nodes]

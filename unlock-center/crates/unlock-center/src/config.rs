@@ -91,9 +91,17 @@ pub struct PolicyConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct TablesConfig {
+    /// Remote classified map URL (preferred when non-empty). Same raw host as unlock all.txt.
     pub domain_map_url: String,
+    /// Local seed / last-good cache. Used when URL empty or remote fetch fails.
     pub domain_map_file: PathBuf,
+    /// Legacy interval refresh (seconds). 0 = disabled.
+    /// Daily clock below is the default path (aligned with unlock domain-updater 04:00).
     pub refresh_interval_secs: u64,
+    /// Daily remote refresh hour (local via CENTER_TZ_OFFSET_HOURS, default Asia/Shanghai).
+    pub update_hour: u32,
+    /// Daily remote refresh minute.
+    pub update_minute: u32,
     pub min_entries: usize,
 }
 
@@ -197,7 +205,10 @@ impl Default for TablesConfig {
         Self {
             domain_map_url: String::new(),
             domain_map_file: PathBuf::from("domains/domain-region.map"),
-            refresh_interval_secs: 3600,
+            // Prefer daily 04:00 (same as unlock); interval off by default.
+            refresh_interval_secs: 0,
+            update_hour: 4,
+            update_minute: 0,
             min_entries: 1,
         }
     }
@@ -358,8 +369,43 @@ impl Config {
         if let Ok(v) = env::var("CENTER_DOMAIN_MAP_URL") {
             self.tables.domain_map_url = v;
         }
+        if let Ok(v) = env::var("DOMAIN_MAP_URL") {
+            // entrypoint-style alias (same as unlock DOMAIN_LIST_URL pattern)
+            self.tables.domain_map_url = v;
+        }
         if let Ok(v) = env::var("CENTER_DOMAIN_MAP_FILE") {
             self.tables.domain_map_file = PathBuf::from(v);
+        }
+        if let Ok(v) = env::var("DOMAIN_MAP_FILE") {
+            self.tables.domain_map_file = PathBuf::from(v);
+        }
+        if let Ok(v) = env::var("CENTER_DOMAIN_MAP_REFRESH_SECS")
+            .or_else(|_| env::var("DOMAIN_MAP_REFRESH_SECS"))
+        {
+            if let Ok(secs) = v.parse() {
+                self.tables.refresh_interval_secs = secs;
+            }
+        }
+        if let Ok(v) = env::var("CENTER_DOMAIN_MAP_UPDATE_HOUR")
+            .or_else(|_| env::var("DOMAIN_MAP_UPDATE_HOUR"))
+        {
+            if let Ok(h) = v.parse() {
+                self.tables.update_hour = h;
+            }
+        }
+        if let Ok(v) = env::var("CENTER_DOMAIN_MAP_UPDATE_MINUTE")
+            .or_else(|_| env::var("DOMAIN_MAP_UPDATE_MINUTE"))
+        {
+            if let Ok(m) = v.parse() {
+                self.tables.update_minute = m;
+            }
+        }
+        if let Ok(v) = env::var("CENTER_DOMAIN_MAP_MIN_ENTRIES")
+            .or_else(|_| env::var("DOMAIN_MAP_MIN_ENTRIES"))
+        {
+            if let Ok(n) = v.parse() {
+                self.tables.min_entries = n;
+            }
         }
         if let Ok(v) = env::var("CENTER_NODES_FILE") {
             self.nodes.file = PathBuf::from(v);

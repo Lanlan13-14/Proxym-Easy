@@ -251,55 +251,148 @@ async fn signal_loop(state: Arc<AppState>) {
 
 fn load_index(cfg: &Config) -> Result<DomainIndex> {
     let min = cfg.tables.min_entries;
+    // Prefer remote URL (same model as unlock DOMAIN_LIST_URL): fetch first,
+    // cache to domain_map_file, fall back to local seed on failure.
+    if !cfg.tables.domain_map_url.is_empty() {
+        match fetch_domain_map_text_blocking(&cfg.tables.domain_map_url) {
+            Ok(text) => match DomainIndex::load_str(&text, min) {
+                Ok(idx) => {
+                    cache_domain_map_file(&cfg.tables.domain_map_file, &text);
+                    info!(
+                        url = %cfg.tables.domain_map_url,
+                        entries = idx.len(),
+                        "domain map loaded from URL"
+                    );
+                    return Ok(idx);
+                }
+                Err(e) => warn!(
+                    error = %e,
+                    url = %cfg.tables.domain_map_url,
+                    "remote domain map invalid; trying local file"
+                ),
+            },
+            Err(e) => warn!(
+                error = %e,
+                url = %cfg.tables.domain_map_url,
+                "remote domain map fetch failed; trying local file"
+            ),
+        }
+    }
     if cfg.tables.domain_map_file.exists() {
+        info!(
+            path = %cfg.tables.domain_map_file.display(),
+            "domain map loaded from local file"
+        );
         return DomainIndex::load_file(&cfg.tables.domain_map_file, min)
             .map_err(|e| anyhow::anyhow!(e));
-    }
-    if !cfg.tables.domain_map_url.is_empty() {
-        info!(url = %cfg.tables.domain_map_url, "fetch domain map");
-        let text = reqwest::blocking::get(&cfg.tables.domain_map_url)
-            .context("fetch map")?
-            .error_for_status()
-            .context("map http")?
-            .text()
-            .context("map body")?;
-        return DomainIndex::load_str(&text, min).map_err(|e| anyhow::anyhow!(e));
     }
     warn!("no domain map file/url; starting with empty index");
     DomainIndex::load_str("", 0).map_err(|e| anyhow::anyhow!(e))
 }
 
-async fn refresh_loop(state: Arc<AppState>) {
-    let interval = Duration::from_secs(state.cfg.tables.refresh_interval_secs.max(60));
-    loop {
-        tokio::time::sleep(interval).await;
-        let cfg = &state.cfg;
-        let min = cfg.tables.min_entries;
-        let result = if cfg.tables.domain_map_file.exists() {
-            DomainIndex::load_file(&cfg.tables.domain_map_file, min)
-        } else if !cfg.tables.domain_map_url.is_empty() {
-            match reqwest::get(&cfg.tables.domain_map_url).await {
-                Ok(resp) => match resp.text().await {
-                    Ok(text) => DomainIndex::load_str(&text, min),
-                    Err(e) => {
-                        warn!(error = %e, "refresh body");
-                        continue;
-                    }
-                },
-                Err(e) => {
-                    warn!(error = %e, "refresh fetch");
-                    continue;
+fn fetch_domain_map_text_blocking(url: &str) -> Result<String> {
+    info!(%url, "fetch domain map");
+    let text = reqwest::blocking::get(url)
+        .context("fetch map")?
+        .error_for_status()
+        .context("map http")?
+        .text()
+        .context("map body")?;
+    Ok(text)
+}
+
+fn cache_domain_map_file(path: &std::path::Path, text: &str) {
+    if path.as_os_str().is_empty() {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("map.part");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+async fn fetch_domain_map_text(url: &str) -> Result<String> {
+    let resp = reqwest::get(url).await.context("fetch map")?;
+    let resp = resp.error_for_status().context("map http")?;
+    let text = resp.text().await.context("map body")?;
+    Ok(text)
+}
+
+async fn apply_domain_map_refresh(state: &AppState) {
+    let cfg = &state.cfg;
+    let min = cfg.tables.min_entries;
+    let result = if !cfg.tables.domain_map_url.is_empty() {
+        match fetch_domain_map_text(&cfg.tables.domain_map_url).await {
+            Ok(text) => {
+                let parsed = DomainIndex::load_str(&text, min);
+                if parsed.is_ok() {
+                    cache_domain_map_file(&cfg.tables.domain_map_file, &text);
+                }
+                parsed
+            }
+            Err(e) => {
+                warn!(error = %e, "domain map URL refresh failed; trying local file");
+                if cfg.tables.domain_map_file.exists() {
+                    DomainIndex::load_file(&cfg.tables.domain_map_file, min)
+                } else {
+                    return;
                 }
             }
-        } else {
-            continue;
-        };
-        match result {
-            Ok(idx) => {
-                info!(entries = idx.len(), "domain index refreshed");
-                state.index.store(Arc::new(idx));
-            }
-            Err(e) => warn!(error = %e, "refresh failed; keep old index"),
+        }
+    } else if cfg.tables.domain_map_file.exists() {
+        DomainIndex::load_file(&cfg.tables.domain_map_file, min)
+    } else {
+        return;
+    };
+    match result {
+        Ok(idx) => {
+            info!(entries = idx.len(), "domain index refreshed");
+            state.index.store(Arc::new(idx));
+        }
+        Err(e) => warn!(error = %e, "domain map refresh failed; keep old index"),
+    }
+}
+
+/// Default: daily at update_hour:update_minute (04:00, same as unlock domain-updater).
+/// If refresh_interval_secs > 0, use fixed interval instead (legacy).
+async fn refresh_loop(state: Arc<AppState>) {
+    let hour = state.cfg.tables.update_hour.min(23);
+    let minute = state.cfg.tables.update_minute.min(59);
+    let interval_secs = state.cfg.tables.refresh_interval_secs;
+    info!(
+        hour,
+        minute,
+        interval_secs,
+        url = %state.cfg.tables.domain_map_url,
+        "domain map refresh armed"
+    );
+
+    if interval_secs > 0 {
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(interval_secs.max(60)));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Boot already loaded the map; skip the immediate first tick.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            apply_domain_map_refresh(&state).await;
+        }
+    } else {
+        loop {
+            let wait = crate::geoip::seconds_until_hhmm(hour, minute);
+            info!(
+                hour,
+                minute,
+                wait_secs = wait,
+                "domain map sleeping until next daily refresh"
+            );
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+            apply_domain_map_refresh(&state).await;
+            // Avoid double-fire within the same minute.
+            tokio::time::sleep(Duration::from_secs(60)).await;
         }
     }
 }
