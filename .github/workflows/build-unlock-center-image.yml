@@ -216,16 +216,20 @@ jobs:
           NAME='${{ env.IMAGE_NAME }}'
           VER='${{ needs.prepare.outputs.version }}'
           IMG="ghcr.io/${OWNER}/${NAME}"
-          args=()
+          # imagetools create takes SOURCE refs as positional args (no --amend).
+          sources=()
           if [[ '${{ needs.build-amd64.result }}' == 'success' ]]; then
-            args+=(--amend "${IMG}:${VER}-amd64")
+            sources+=("${IMG}:${VER}-amd64")
           fi
           if [[ '${{ needs.build-arm64.result }}' == 'success' ]]; then
-            args+=(--amend "${IMG}:${VER}-arm64")
+            sources+=("${IMG}:${VER}-arm64")
           fi
-          if [[ ${#args[@]} -eq 0 ]]; then
+          if [[ ${#sources[@]} -eq 0 ]]; then
             echo "no arch images to publish" >&2
             exit 1
           fi
-          docker buildx imagetools create -t "${IMG}:${VER}" -t "${IMG}:latest" "${args[@]}"
+          docker buildx imagetools create \
+            -t "${IMG}:${VER}" \
+            -t "${IMG}:latest" \
+            "${sources[@]}"
           docker buildx imagetools inspect "${IMG}:${VER}"
