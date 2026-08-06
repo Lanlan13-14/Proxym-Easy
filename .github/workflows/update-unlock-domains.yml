@@ -87,7 +87,7 @@ jobs:
           test -f domains/ai.txt
           echo "center_map=$(grep -cvE '^\s*(#|$)' domains/domain-region.map)" >> "$GITHUB_STEP_SUMMARY"
           # Completeness: every unlock all.txt host must appear in the center map.
-          python3 -c "from pathlib import Path; alld={x.strip().lower() for x in Path('../unlock/domains/all.txt').read_text().splitlines() if x.strip() and not x.startswith('#')}; mapped={line.split(chr(9))[0].lower() for line in Path('domains/domain-region.map').read_text().splitlines() if line and not line.startswith('#')}; missing=sorted(alld-mapped); raise SystemExit('center map missing %d unlock domains e.g. %s' % (len(missing), missing[:20])) if missing else print('coverage ok: all.txt=%d map=%d' % (len(alld), len(mapped)))"
+          python3 -c "from pathlib import Path; import sys; alld={x.strip().lower() for x in Path('../unlock/domains/all.txt').read_text().splitlines() if x.strip() and not x.startswith('#')}; mapped={line.split(chr(9))[0].lower() for line in Path('domains/domain-region.map').read_text().splitlines() if line and not line.startswith('#')}; missing=sorted(alld-mapped); sys.exit('center map missing %d unlock domains e.g. %s' % (len(missing), missing[:20])) if missing else print('coverage ok: all.txt=%d map=%d' % (len(alld), len(mapped)))"
           # required classifications
           grep -E $'^netflix\.com\tglobal\t' domains/domain-region.map
           grep -E $'^dmm\.co\.jp\tregional\tjp$' domains/domain-region.map
