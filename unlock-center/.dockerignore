@@ -1,3 +1,8 @@
 target/
 **/*.md
 !README.md
+.git
+**/*~
+**/*.swp
+**/__pycache__
+*.log

@@ -1,15 +1,32 @@
 # syntax=docker/dockerfile:1
 # Multi-stage: build unlock-center (Rust) + runtime with lego for LE+CF DNS-01.
+#
+# Speed:
+# - BuildKit cache mounts for cargo registry/git/target (deps not redownloaded)
+# - rustls/ring (Cargo.toml) — avoid aws-lc-sys C compile
+# - strip release binary
+# - multi-arch: prefer native runners in CI (QEMU arm64 is the usual 40m sink)
 
 ARG RUST_VERSION=1.85
 ARG LEGO_VERSION=v5.3.1
 
 FROM rust:${RUST_VERSION}-bookworm AS builder
 WORKDIR /src
-# Cache deps
+
+ENV CARGO_TERM_COLOR=always \
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+    CARGO_INCREMENTAL=0
+
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
-RUN cargo build -p unlock-center --release
+
+# target/ lives in a cache mount so it is NOT in the image layer; copy binary out.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    cargo build -p unlock-center --release --locked \
+    && strip target/release/unlock-center \
+    && cp target/release/unlock-center /src/unlock-center-bin
 
 FROM debian:bookworm-slim
 
@@ -45,7 +62,7 @@ RUN set -eu; \
     lego --version; \
     rm -rf /tmp/lego.tgz
 
-COPY --from=builder /src/target/release/unlock-center /opt/unlock-center/bin/unlock-center
+COPY --from=builder /src/unlock-center-bin /opt/unlock-center/bin/unlock-center
 COPY scripts/ /opt/unlock-center/scripts/
 COPY domains/ /opt/unlock-center/domains/
 COPY nodes.example.toml config.example.toml /opt/unlock-center/

@@ -1,14 +1,24 @@
 # Manual, versioned GHCR release for unlock-center (DNS control plane).
 # Build context is ONLY ./unlock-center.
+#
+# Speed knobs:
+# - test job: Swatinem/rust-cache (shared key with locked deps)
+# - publish: native amd64 + arm64 runners (no QEMU), then merge manifest
+# - Dockerfile: cargo registry/target BuildKit caches + rustls/ring
 name: publish-unlock-center-image
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Image version, e.g. v1.0.0"
+        description: "Image version, e.g. v1.0.10"
         required: true
         default: "v1.0.0"
+        type: string
+      platforms:
+        description: "linux/amd64,linux/arm64 | linux/amd64 | linux/arm64"
+        required: false
+        default: "linux/amd64,linux/arm64"
         type: string
 
 permissions:
@@ -17,12 +27,17 @@ permissions:
 
 env:
   IMAGE_NAME: proxym-easy-unlock-center
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.value }}
+      want_amd64: ${{ steps.plats.outputs.amd64 }}
+      want_arm64: ${{ steps.plats.outputs.arm64 }}
     steps:
       - name: Validate version
         id: version
@@ -35,6 +50,24 @@ jobs:
             exit 1
           fi
           echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Parse platforms
+        id: plats
+        shell: bash
+        run: |
+          set -euo pipefail
+          p='${{ inputs.platforms }}'
+          echo "amd64=false" >> "$GITHUB_OUTPUT"
+          echo "arm64=false" >> "$GITHUB_OUTPUT"
+          case ",$p," in
+            *,linux/amd64,*) echo "amd64=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+          case ",$p," in
+            *,linux/arm64,*) echo "arm64=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+          if [[ "$p" != *linux/amd64* && "$p" != *linux/arm64* ]]; then
+            echo "platforms must include linux/amd64 and/or linux/arm64" >&2
+            exit 1
+          fi
 
   test:
     needs: prepare
@@ -48,6 +81,12 @@ jobs:
         run: python3 -m pip install --user 'websockets>=14,<17'
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: unlock-center -> target
+          shared-key: unlock-center-ci
+          cache-on-failure: true
       - name: Shell and control-agent test syntax
         run: |
           set -e
@@ -58,10 +97,9 @@ jobs:
           set -euo pipefail
           sh scripts/build-domain-map.sh
           test -s domains/domain-region.map
-      - name: Cargo test
-        run: cargo test --workspace
-      - name: Cargo release build
-        run: cargo build -p unlock-center --release
+      # One release build serves unit tests + control e2e (avoid debug+release double compile).
+      - name: Cargo test (release)
+        run: cargo test --workspace --release --locked
       - name: Control channel tests
         run: CENTER_BINARY="$PWD/target/release/unlock-center" sh tests/run.sh
       - name: Docs consistency
@@ -78,37 +116,97 @@ jobs:
           test -f scripts/update-allowed-ips.sh
           test -f Dockerfile
 
-  publish:
+  # Native arch builds — no QEMU (QEMU arm64 was ~40m of the old pipeline).
+  build-amd64:
     needs: [prepare, test]
+    if: needs.prepare.outputs.want_amd64 == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=latest
-      - name: Build and publish multi-architecture image
+      - name: Build and push amd64
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: ./unlock-center
           file: ./unlock-center/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          provenance: false
+          tags: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}-amd64
+          cache-from: type=gha,scope=unlock-center-amd64
+          cache-to: type=gha,mode=max,scope=unlock-center-amd64
+
+  build-arm64:
+    needs: [prepare, test]
+    if: needs.prepare.outputs.want_arm64 == 'true'
+    # GitHub-hosted ARM runner (native). Falls back only if org enables it.
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push arm64
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./unlock-center
+          file: ./unlock-center/Dockerfile
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}-arm64
+          cache-from: type=gha,scope=unlock-center-arm64
+          cache-to: type=gha,mode=max,scope=unlock-center-arm64
+
+  publish:
+    needs: [prepare, test, build-amd64, build-arm64]
+    # Always run when test ok; individual arch jobs may be skipped.
+    if: |
+      always() &&
+      needs.test.result == 'success' &&
+      (needs.build-amd64.result == 'success' || needs.build-amd64.result == 'skipped') &&
+      (needs.build-arm64.result == 'success' || needs.build-arm64.result == 'skipped') &&
+      (needs.build-amd64.result == 'success' || needs.build-arm64.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create multi-arch manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          OWNER='${{ github.repository_owner }}'
+          NAME='${{ env.IMAGE_NAME }}'
+          VER='${{ needs.prepare.outputs.version }}'
+          IMG="ghcr.io/${OWNER}/${NAME}"
+          args=()
+          if [[ '${{ needs.build-amd64.result }}' == 'success' ]]; then
+            args+=(--amend "${IMG}:${VER}-amd64")
+          fi
+          if [[ '${{ needs.build-arm64.result }}' == 'success' ]]; then
+            args+=(--amend "${IMG}:${VER}-arm64")
+          fi
+          if [[ ${#args[@]} -eq 0 ]]; then
+            echo "no arch images to publish" >&2
+            exit 1
+          fi
+          docker buildx imagetools create -t "${IMG}:${VER}" -t "${IMG}:latest" "${args[@]}"
+          docker buildx imagetools inspect "${IMG}:${VER}"

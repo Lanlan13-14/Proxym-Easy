@@ -26,7 +26,8 @@ use crate::resolve::AppState;
 async fn main() -> Result<()> {
     // rustls 0.23 no longer picks a process-wide crypto provider implicitly
     // when multiple TLS stacks are linked (reqwest + tokio-rustls).
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // Use ring (not aws-lc-rs) so CI/Docker avoid the heavy aws-lc-sys C build.
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     let mut args = std::env::args().skip(1);
     let mut config_path: Option<PathBuf> = None;
