@@ -97,11 +97,17 @@ jobs:
           set -euo pipefail
           sh scripts/build-domain-map.sh
           test -s domains/domain-region.map
-      # One release build serves unit tests + control e2e (avoid debug+release double compile).
+      # Release profile only (no separate debug build). `cargo test` does not
+      # install the final bin at target/release/unlock-center; link it after.
       - name: Cargo test (release)
         run: cargo test --workspace --release --locked
+      - name: Cargo release binary
+        run: cargo build -p unlock-center --release --locked
       - name: Control channel tests
-        run: CENTER_BINARY="$PWD/target/release/unlock-center" sh tests/run.sh
+        run: |
+          set -euo pipefail
+          test -x "$PWD/target/release/unlock-center"
+          CENTER_BINARY="$PWD/target/release/unlock-center" sh tests/run.sh
       - name: Docs consistency
         run: |
           set -e
