@@ -343,26 +343,36 @@ impl AppState {
         // channel, it is the authoritative passthrough transport. Fall back to
         // the legacy public UDP upstream chain only when the channel is absent
         // or unavailable, preserving old deployments exactly when unconfigured.
+        //
+        // IMPORTANT: never forward the raw client wire on WSS. DoH/stub clients
+        // attach EDNS0 (OPT, cookies, padding, large bufsize). SmartDNS often
+        // answers FormErr to those; legacy UDP path already rebuilds a clean
+        // RD query and worked. Match that behavior on the control channel.
         if let (Some(hub), Ok(ref selected)) = (&self.control, &node) {
-            match hub.query(&selected.id, request, timeout).await {
-                Ok(mut msg) if passthrough_rcode_ok(&msg) => {
-                    msg.set_id(request.id());
-                    return self.cache_passthrough(cache_key, msg, qname, "control");
-                }
-                Ok(msg) => {
-                    // Node SmartDNS can return SERVFAIL under WARP/upstream blips.
-                    // Do NOT cache or return that as a final answer — fall through
-                    // to the next upstream (public resolvers) so sites like YouTube
-                    // recover within one query instead of hanging on a 300s cache.
-                    warn!(
-                        %qname,
-                        node = %selected.id,
-                        rcode = ?msg.response_code(),
-                        "control passthrough non-success rcode; trying legacy upstreams"
-                    );
-                }
+            match sanitize_passthrough_query(request) {
+                Ok(clean) => match hub.query(&selected.id, &clean, timeout).await {
+                    Ok(mut msg) if passthrough_rcode_ok(&msg) => {
+                        msg.set_id(request.id());
+                        return self.cache_passthrough(cache_key, msg, qname, "control");
+                    }
+                    Ok(msg) => {
+                        // Node SmartDNS can return SERVFAIL under WARP/upstream blips.
+                        // Do NOT cache or return that as a final answer — fall through
+                        // to the next upstream (public resolvers) so sites like YouTube
+                        // recover within one query instead of hanging on a 300s cache.
+                        warn!(
+                            %qname,
+                            node = %selected.id,
+                            rcode = ?msg.response_code(),
+                            "control passthrough non-success rcode; trying legacy upstreams"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(%qname, node=%selected.id, error=%e, "control passthrough failed; trying legacy upstreams")
+                    }
+                },
                 Err(e) => {
-                    warn!(%qname, node=%selected.id, error=%e, "control passthrough failed; trying legacy upstreams")
+                    warn!(%qname, error=%e, "sanitize passthrough query failed; trying legacy upstreams")
                 }
             }
         }
@@ -477,6 +487,28 @@ fn passthrough_rcode_ok(msg: &Message) -> bool {
     )
 }
 
+/// Minimal RD query for node SmartDNS / public resolvers.
+/// Strips EDNS OPT, cookies, padding, and extra sections from client DoH wire.
+fn sanitize_passthrough_query(request: &Message) -> anyhow::Result<Message> {
+    use hickory_proto::op::Query;
+
+    let q = request
+        .queries()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("passthrough request has no question"))?;
+    let mut req = Message::new();
+    req.set_id(rand_u16());
+    req.set_message_type(MessageType::Query);
+    req.set_op_code(OpCode::Query);
+    req.set_recursion_desired(true);
+    let mut nq = Query::new();
+    nq.set_name(q.name().clone());
+    nq.set_query_type(q.query_type());
+    nq.set_query_class(q.query_class());
+    req.add_query(nq);
+    Ok(req)
+}
+
 async fn query_upstream(
     upstream: &str,
     qname: &str,
@@ -561,6 +593,38 @@ mod tests {
     fn empty_center_acl_preserves_legacy_open_behavior() {
         let state = state_with_acl(vec![]);
         assert!(state.access_allowed("203.0.113.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn sanitize_passthrough_query_is_minimal_rd() {
+        use hickory_proto::op::Query;
+        use hickory_proto::rr::{DNSClass, Name, RecordType};
+
+        let mut client = Message::new();
+        client.set_id(0xabcd);
+        client.set_message_type(MessageType::Query);
+        client.set_op_code(OpCode::Query);
+        client.set_recursion_desired(true);
+        // Client-style extras that SmartDNS often FormErrs on when forwarded whole.
+        client.set_checking_disabled(true);
+        let mut q = Query::new();
+        q.set_name(Name::from_utf8("www.youtube.com.").unwrap());
+        q.set_query_type(RecordType::A);
+        q.set_query_class(DNSClass::IN);
+        client.add_query(q);
+
+        let clean = sanitize_passthrough_query(&client).unwrap();
+        assert_eq!(clean.queries().len(), 1);
+        assert_eq!(
+            clean.queries()[0].name().to_string(),
+            "www.youtube.com."
+        );
+        assert_eq!(clean.queries()[0].query_type(), RecordType::A);
+        assert!(clean.recursion_desired());
+        assert!(clean.additionals().is_empty());
+        assert!(clean.answers().is_empty());
+        assert!(clean.name_servers().is_empty());
+        assert_ne!(clean.id(), 0); // random id assigned
     }
 
     #[test]
