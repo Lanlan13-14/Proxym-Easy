@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 1743 (global=1132 regional=591 ai=20)
+# generated entries: 1744 (global=1133 regional=591 ai=20)
 # sources: unlock/all.txt + geosite + Rules Domain + 1-stream
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
@@ -1306,6 +1306,7 @@ p-9now.akamaized.net	regional	au
 p-bstarstatic.akamaized.net	global	-
 p-log.ykimg.com	global	-
 p-smith.com	regional	jp
+p16-tiktok-dm-sticker-sign-sg.ibyteimg.com	global	-
 p16-tiktokcdn-com.akamaized.net	global	-
 pandalive.co.kr	regional	kr
 paradisehotelquizfox.com	global	-
