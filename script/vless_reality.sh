@@ -341,7 +341,6 @@ add_inbound() {
         "network": "tcp",
         "security": "reality",
         "realitySettings": {
-          "minClientVer": "1.8.2",
           "dest": "$dest:443",
           "serverNames": [
             "$sni"
