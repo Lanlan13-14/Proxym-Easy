@@ -87,6 +87,13 @@ impl ControlHub {
                 .unwrap_or(false)
     }
 
+    /// Whether a data-plane node currently holds a live control session.
+    /// Used by the resolver to prefer nodes that are actually reachable over
+    /// the authenticated channel instead of burning a timeout on dead ones.
+    pub fn connected(&self, node_id: &str) -> bool {
+        self.sessions.contains_key(node_id)
+    }
+
     pub async fn broadcast_acl(&self, cidrs: Vec<String>) {
         let sessions: Vec<(String, mpsc::Sender<Command>)> = self
             .sessions
@@ -170,8 +177,23 @@ impl ControlHub {
 
         let mut pending: HashMap<u64, oneshot::Sender<std::result::Result<Message, String>>> =
             HashMap::new();
+        // The center must detect half-open connections itself: the node only
+        // pings, it never expects pings from us. If the node host dies without
+        // a FIN/RST, read.next() would otherwise never resolve and the stale
+        // session would silently eat one 800ms timeout per passthrough query.
+        let mut ping = tokio::time::interval(Duration::from_secs(20));
+        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_seen = tokio::time::Instant::now();
+        const IDLE_TIMEOUT: Duration = Duration::from_secs(75);
         loop {
             tokio::select! {
+                _ = ping.tick() => {
+                    if last_seen.elapsed() > IDLE_TIMEOUT {
+                        warn!(%node_id, "unlock control node idle; closing half-open session");
+                        break;
+                    }
+                    write.send(WsMessage::Ping(vec![].into())).await.context("control ping")?;
+                }
                 command = rx.recv() => {
                     let Some(command) = command else { break; };
                     match command {
@@ -184,6 +206,7 @@ impl ControlHub {
                 }
                 incoming = read.next() => {
                     let Some(incoming) = incoming else { break; };
+                    last_seen = tokio::time::Instant::now();
                     match incoming.context("read unlock control WebSocket")? {
                         WsMessage::Text(text) => {
                             let message: NodeMessage = serde_json::from_str(&text)
@@ -256,12 +279,16 @@ fn valid_node_id(value: &str) -> bool {
 }
 
 fn random_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(1);
-    now ^ now.rotate_left(17)
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id() as u64;
+    now ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ pid.rotate_left(32)
 }
 
 fn base64url_encode(bytes: &[u8]) -> String {

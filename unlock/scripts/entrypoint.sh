@@ -27,7 +27,7 @@ fi
 
 # Resolve public upstream names before WARP enters Traffic-only mode. SmartDNS
 # then uses numeric endpoints and never depends on WARP changing /etc/resolv.conf.
-UPSTREAM_DNS="${UPSTREAM_DNS:-1.1.1.1,1.0.0.1,8.8.8.8}"
+UPSTREAM_DNS="${UPSTREAM_DNS:-1.1.1.1,1.0.0.1,8.8.8.8,9.9.9.9}"
 resolved_upstreams=""
 oldifs="$IFS"; IFS=','
 for upstream in $UPSTREAM_DNS; do
@@ -160,8 +160,10 @@ while true; do
       ;;
   esac
   if [ -n "${CONTROL_CENTER_URL:-}" ]; then
+    # The supervisor subshell restarts the agent itself; a missing pidfile
+    # means the supervisor died, which is the only fatal case left.
     [ -f "$RUNTIME_DIR/control-agent.pid" ] && kill -0 "$(cat "$RUNTIME_DIR/control-agent.pid")" 2>/dev/null || {
-      log "center control agent died; exiting for clean container restart"
+      log "center control supervisor died; exiting for clean container restart"
       exit 1
     }
   fi

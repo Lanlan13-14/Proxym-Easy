@@ -18,10 +18,14 @@ bind-cert-key-file /etc/unlock/letsencrypt/certificates/dot.example.com.key
 
 cache-size 32768
 prefetch-domain yes
+serve-expired yes
+serve-expired-ttl 86400
+serve-expired-reply-ttl 5
 dualstack-ip-selection yes
 speed-check-mode ping,tcp:80,tcp:443
 log-level info
 log-console yes
 server 1.1.1.1
 server 1.0.0.1
+server 9.9.9.9
 # address /netflix.com/<UNLOCK_IP>

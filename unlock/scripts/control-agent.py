@@ -29,7 +29,10 @@ URL = os.environ.get("CONTROL_CENTER_URL", "").strip()
 TOKEN = os.environ.get("CONTROL_TOKEN", "")
 NODE_ID = os.environ.get("CONTROL_NODE_ID", "").strip()
 RECONNECT_SECS = max(1, int(os.environ.get("CONTROL_RECONNECT_SECS", "5")))
-QUERY_TIMEOUT = max(0.1, float(os.environ.get("CONTROL_QUERY_TIMEOUT_SECS", "0.8")))
+# Node-side budget deliberately below the center's passthrough timeout_ms so a
+# late answer still crosses the WSS link before the center gives up and falls
+# back to public resolvers (which lose the node's GeoDNS perspective).
+QUERY_TIMEOUT = max(0.1, float(os.environ.get("CONTROL_QUERY_TIMEOUT_SECS", "0.6")))
 ACL_FILE = RUNTIME_DIR / "control-allowed-ips.txt"
 PROTOCOL = "proxym-unlock-control-v1"
 
@@ -126,17 +129,51 @@ def b64encode(value):
 def dns_udp_query(wire):
     port = int(os.environ.get("DNS_UDP_PORT", "53"))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(QUERY_TIMEOUT)
+    # Two short attempts instead of one long one. Loopback UDP to SmartDNS is
+    # normally instant; a single lost wakeup under load should not consume the
+    # whole budget. None propagates as a per-query error to the center.
+    sock.settimeout(max(0.1, QUERY_TIMEOUT / 2))
     try:
-        sock.sendto(wire, ("127.0.0.1", port))
-        answer, _ = sock.recvfrom(65535)
-        return answer
+        for _ in range(2):
+            sock.sendto(wire, ("127.0.0.1", port))
+            try:
+                answer, _ = sock.recvfrom(65535)
+                return answer
+            except socket.timeout:
+                continue
+        raise TimeoutError("local SmartDNS did not answer in time")
     finally:
         sock.close()
 
 
 async def resolve_dns(wire):
     return await asyncio.to_thread(dns_udp_query, wire)
+
+
+async def answer_query(websocket, request_id, payload):
+    """Handle one center query concurrently.
+
+    The recv loop must never await the local SmartDNS round-trip: with several
+    in-flight center queries, serial processing queued them until the center's
+    (equal) timeout fired first, so every burst degraded to the legacy public
+    UDP fallback. Errors are reported per query; the connection survives.
+    """
+    try:
+        answer = await resolve_dns(b64decode(payload))
+        await send(websocket, {
+            "type": "query_result", "id": request_id,
+            "dns_message_b64": b64encode(answer),
+        })
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        try:
+            await send(websocket, {
+                "type": "query_result", "id": request_id,
+                "error": str(exc)[:512],
+            })
+        except Exception:
+            pass  # connection is gone; the main loop will notice
 
 
 async def send(websocket, payload):
@@ -174,17 +211,11 @@ async def run_once():
                     request_id = message.get("id")
                     if not isinstance(request_id, int):
                         raise ValueError("query id must be an integer")
-                    try:
-                        answer = await resolve_dns(b64decode(message.get("dns_message_b64")))
-                        await send(websocket, {
-                            "type": "query_result", "id": request_id,
-                            "dns_message_b64": b64encode(answer),
-                        })
-                    except Exception as exc:
-                        await send(websocket, {
-                            "type": "query_result", "id": request_id,
-                            "error": str(exc)[:512],
-                        })
+                    if not isinstance(message.get("dns_message_b64"), str):
+                        raise ValueError("dns_message_b64 must be a string")
+                    # Fire-and-track: the recv loop keeps drinking center
+                    # messages while queries resolve concurrently.
+                    asyncio.create_task(answer_query(websocket, request_id, message["dns_message_b64"]))
                 elif message_type == "error":
                     raise RuntimeError(f"center error: {message.get('message', '')}")
                 else:

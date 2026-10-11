@@ -25,7 +25,18 @@ case "${1:-start}" in
     [ -n "$CONTROL_CENTER_URL" ] || { log "control channel disabled (legacy ACL/DNS passthrough retained)"; exit 0; }
     mkdir -p "$RUNTIME_DIR"
     log "starting authenticated center control channel for node=$CONTROL_NODE_ID"
-    python3 "$ROOT/scripts/control-agent.py" >"$RUNTIME_DIR/control-agent.log" 2>&1 &
+    # Local supervisor loop: a dead agent restarts in seconds without taking
+    # the whole container (SmartDNS/sniproxy/WARP) down with it. The old
+    # behavior — entrypoint noticing the death and exiting for a full
+    # container restart — cost a WARP re-enrollment (up to minutes) for a
+    # process that can reconnect in 5.
+    (
+      while true; do
+        python3 "$ROOT/scripts/control-agent.py"
+        echo " >> [control-agent] agent exited; restarting in 5s" >&2
+        sleep 5
+      done
+    ) >"$RUNTIME_DIR/control-agent.log" 2>&1 &
     echo $! >"$RUNTIME_DIR/control-agent.pid"
     ;;
   *) fail "usage: $0 {env|start}" ;;
