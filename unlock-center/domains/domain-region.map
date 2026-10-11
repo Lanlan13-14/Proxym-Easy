@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 1745 (global=1134 regional=591 ai=20)
+# generated entries: 1746 (global=1134 regional=592 ai=20)
 # sources: unlock/all.txt + geosite + Rules Domain + 1-stream
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
@@ -1103,6 +1103,7 @@ mbdlog.iqiyi.com	global	-
 media-shield.live.eurosport.map.fastly.net	regional	eu
 mediapolisvod.rai.it	regional	eu
 megogo.net	regional	eu
+melonbooks.co.jp	regional	jp
 meovse.com	regional	tw
 meta.ai	global	-
 mewatch.sg	regional	sg

@@ -351,6 +351,7 @@ mbc.net
 media-shield.live.eurosport.map.fastly.net
 mediapolisvod.rai.it
 megogo.net
+melonbooks.co.jp
 meovse.com
 mewatch.sg
 mgd0ee5iankkv3gidl14rm7c0.litix.io
