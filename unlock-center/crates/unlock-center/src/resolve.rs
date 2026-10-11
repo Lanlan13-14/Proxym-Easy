@@ -18,12 +18,17 @@ use crate::config::Config;
 use crate::geoip::GeoIp;
 use crate::profile::Profile;
 
+/// How long an expired passthrough answer may still be served after every
+/// upstream has failed (serve-stale grace window).
+const STALE_GRACE: Duration = Duration::from_secs(60);
+
 pub struct AppState {
     pub cfg: Config,
     pub index: ArcSwap<DomainIndex>,
     pub nodes: ArcSwap<NodeTable>,
     pub geoip: Arc<GeoIp>,
     pub passthrough_cache: DashMap<String, CacheEntry>,
+    pub in_flight: DashMap<String, Vec<tokio::sync::oneshot::Sender<ResolveResult>>>,
     pub control: Option<Arc<crate::control::ControlHub>>,
     pub acl_cidrs: ArcSwap<Vec<IpNet>>,
     pub trusted_proxy_cidrs: Vec<IpNet>,
@@ -32,6 +37,9 @@ pub struct AppState {
 pub struct CacheEntry {
     pub message: Message,
     pub expire: Instant,
+    /// Grace window after `expire` during which a failed refresh may still
+    /// serve the previous answer instead of SERVFAIL (serve-stale).
+    pub stale_until: Instant,
 }
 
 #[derive(Debug)]
@@ -69,6 +77,7 @@ impl AppState {
             nodes: ArcSwap::from_pointee(nodes),
             geoip: Arc::new(geoip),
             passthrough_cache: DashMap::new(),
+            in_flight: DashMap::new(),
             control,
             acl_cidrs: ArcSwap::from_pointee(acl_cidrs),
             trusted_proxy_cidrs,
@@ -290,6 +299,82 @@ impl AppState {
         qtype: RecordType,
         client_ip: Option<IpAddr>,
     ) -> ResolveResult {
+        let node = self.pick_passthrough_node(client_ip);
+
+        let cache_key = format!(
+            "{}|{:?}|{}",
+            qname,
+            qtype,
+            node.as_ref().map(|n| n.id.as_str()).unwrap_or("-")
+        );
+        // Serve-stale: an expired-but-within-grace entry is returned only if
+        // the fresh refresh fails, so a WARP blip on a node degrades to a
+        // slightly stale answer instead of SERVFAIL for a whole site.
+        let stale_entry = if let Some(ent) = self.passthrough_cache.get(&cache_key) {
+            if ent.expire > Instant::now() {
+                let mut m = ent.message.clone();
+                m.set_id(request.id());
+                return ResolveResult::Message(m);
+            }
+            if ent.stale_until > Instant::now() {
+                Some(ent.message.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Single-flight: concurrent identical queries join the first in-flight
+        // request instead of each hammering the node control channel. Browser
+        // page loads routinely fire 10-20 lookups at once.
+        {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let mut inserted_leader = false;
+            match self.in_flight.entry(cache_key.clone()) {
+                dashmap::mapref::entry::Entry::Occupied(mut occ) => {
+                    occ.get_mut().push(tx);
+                }
+                dashmap::mapref::entry::Entry::Vacant(vac) => {
+                    vac.insert(vec![tx]);
+                    inserted_leader = true;
+                }
+            }
+            if !inserted_leader {
+                // The leader answers with its own transaction id; rewrite it
+                // to ours before returning (callers echo request.id()).
+                return match rx.await {
+                    Ok(ResolveResult::Message(mut m)) => {
+                        m.set_id(request.id());
+                        ResolveResult::Message(m)
+                    }
+                    Ok(other) => other,
+                    Err(_) => ResolveResult::ServFail,
+                };
+            }
+            let result = self
+                .passthrough_upstream(request, qname, qtype, &cache_key, &node, stale_entry)
+                .await;
+            // Hand the result to every waiter that joined while we queried.
+            // Each waiter rewrites the DNS transaction id to its own request
+            // on receipt (see below), so sharing one Message is safe.
+            if let Some((_, waiters)) = self.in_flight.remove(&cache_key) {
+                for waiter in waiters {
+                    let _ = waiter.send(match &result {
+                        ResolveResult::Message(m) => ResolveResult::Message(m.clone()),
+                        ResolveResult::ServFail => ResolveResult::ServFail,
+                    });
+                }
+            }
+            result
+        }
+    }
+
+    /// Select the data-plane node for `other` passthrough.
+    /// When the authenticated control channel is enabled, prefer nodes that
+    /// actually hold a live session; a node whose agent is down would only
+    /// burn a full timeout per query before the legacy fallback kicks in.
+    fn pick_passthrough_node(&self, client_ip: Option<IpAddr>) -> Result<Arc<Node>, schedule::ScheduleError> {
         let nodes = self.nodes.load();
         let (lat, lon) = if self.cfg.geoip.enabled {
             client_ip
@@ -299,7 +384,7 @@ impl AppState {
         } else {
             (None, None)
         };
-        let node = if self.cfg.schedule.nearest_for_passthrough {
+        let selected = if self.cfg.schedule.nearest_for_passthrough {
             // Prefer lat/lon nearest when GeoIP hits; else default region pool.
             if lat.is_some() && lon.is_some() {
                 nodes.nearest(lat, lon)
@@ -314,21 +399,65 @@ impl AppState {
         } else {
             nodes.pick_region(&self.cfg.schedule.default_passthrough_region, true)
         };
-
-        let cache_key = format!(
-            "{}|{:?}|{}",
-            qname,
-            qtype,
-            node.as_ref().map(|n| n.id.as_str()).unwrap_or("-")
-        );
-        if let Some(ent) = self.passthrough_cache.get(&cache_key) {
-            if ent.expire > Instant::now() {
-                let mut m = ent.message.clone();
-                m.set_id(request.id());
-                return ResolveResult::Message(m);
+        // Control health re-selection: only meaningful when the hub is on.
+        if let (Some(hub), Ok(ref n)) = (&self.control, &selected) {
+            if !hub.connected(&n.id) {
+                if let Some(alternative) = self.pick_connected_alternative(&nodes, lat, lon, &n.id) {
+                    return Ok(alternative);
+                }
+                // No live session anywhere: keep the original selection so the
+                // legacy UDP upstream chain still tries the configured node.
             }
         }
+        selected
+    }
 
+    /// Second choice for passthrough when the preferred node lost its control
+    /// session: another healthy node that IS connected. Ordering: nearest by
+    /// lat/lon when GeoIP data exists, otherwise any connected node.
+    fn pick_connected_alternative(
+        &self,
+        nodes: &NodeTable,
+        lat: Option<f64>,
+        lon: Option<f64>,
+        exclude_id: &str,
+    ) -> Option<Arc<Node>> {
+        let hub = self.control.as_ref()?;
+        let connected: Vec<Arc<Node>> = nodes
+            .all()
+            .iter()
+            .filter(|n| n.is_healthy() && n.id != exclude_id && hub.connected(&n.id))
+            .cloned()
+            .collect();
+        if connected.is_empty() {
+            return None;
+        }
+        if let (Some(clat), Some(clon)) = (lat, lon) {
+            let mut best: Option<&Arc<Node>> = None;
+            let mut best_d = f64::MAX;
+            for n in &connected {
+                if let (Some(nlat), Some(nlon)) = (n.lat, n.lon) {
+                    let d = haversine_km_local(clat, clon, nlat, nlon);
+                    if d < best_d {
+                        best_d = d;
+                        best = Some(n);
+                    }
+                }
+            }
+            return best.cloned();
+        }
+        Some(connected[0].clone())
+    }
+
+    async fn passthrough_upstream(
+        &self,
+        request: &Message,
+        qname: &str,
+        qtype: RecordType,
+        cache_key: &str,
+        node: &Result<Arc<Node>, schedule::ScheduleError>,
+        stale_entry: Option<Message>,
+    ) -> ResolveResult {
         let upstreams: Vec<String> = {
             let mut u = Vec::new();
             if let Ok(ref n) = node {
@@ -348,12 +477,12 @@ impl AppState {
         // attach EDNS0 (OPT, cookies, padding, large bufsize). SmartDNS often
         // answers FormErr to those; legacy UDP path already rebuilds a clean
         // RD query and worked. Match that behavior on the control channel.
-        if let (Some(hub), Ok(ref selected)) = (&self.control, &node) {
+        if let (Some(hub), Ok(ref selected)) = (&self.control, node) {
             match sanitize_passthrough_query(request) {
                 Ok(clean) => match hub.query(&selected.id, &clean, timeout).await {
                     Ok(mut msg) if passthrough_rcode_ok(&msg) => {
                         msg.set_id(request.id());
-                        return self.cache_passthrough(cache_key, msg, qname, "control");
+                        return self.cache_passthrough(cache_key.to_string(), msg, qname, "control");
                     }
                     Ok(msg) => {
                         // Node SmartDNS can return SERVFAIL under WARP/upstream blips.
@@ -381,7 +510,7 @@ impl AppState {
             match query_upstream(&up, qname, qtype, timeout).await {
                 Ok(mut msg) if passthrough_rcode_ok(&msg) => {
                     msg.set_id(request.id());
-                    return self.cache_passthrough(cache_key, msg, qname, &up);
+                    return self.cache_passthrough(cache_key.to_string(), msg, qname, &up);
                 }
                 Ok(msg) => {
                     warn!(
@@ -396,9 +525,15 @@ impl AppState {
                 }
             }
         }
+        // All upstreams failed. Serve-stale beats SERVFAIL inside the grace
+        // window: the client keeps working while the node recovers.
+        if let Some(mut stale) = stale_entry {
+            warn!(%qname, "all passthrough upstreams failed; serving stale answer");
+            stale.set_id(request.id());
+            return ResolveResult::Message(stale);
+        }
         ResolveResult::ServFail
     }
-
     fn cache_passthrough(
         &self,
         cache_key: String,
@@ -418,12 +553,26 @@ impl AppState {
                 CacheEntry {
                     message: msg.clone(),
                     expire: Instant::now() + Duration::from_secs(max_ttl as u64),
+                    stale_until: Instant::now()
+                        + Duration::from_secs(max_ttl as u64)
+                        + STALE_GRACE,
                 },
             );
         }
         debug!(%qname, %upstream, "passthrough ok");
         ResolveResult::Message(msg)
     }
+}
+
+/// Local copy of the haversine helper from the schedule crate (kept private
+/// there) so node selection here can order alternatives by distance.
+fn haversine_km_local(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let r = 6371.0_f64;
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+    2.0 * r * a.sqrt().asin()
 }
 
 fn build_a_answer(request: &Message, qname: &str, ip: IpAddr, ttl: u32) -> Result<Message, ()> {
@@ -557,12 +706,17 @@ async fn raw_udp_query(
 }
 
 fn rand_u16() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static COUNTER: AtomicU16 = AtomicU16::new(0);
     use std::time::{SystemTime, UNIX_EPOCH};
     let t = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(1);
-    (t as u16) | 1
+    let seq = COUNTER.fetch_add(0x2B, Ordering::Relaxed);
+    // Odd ids (q0 bit set) as before; counter hop prevents same-nanosecond
+    // duplicate transaction ids on concurrent queries.
+    ((t as u16) ^ seq.rotate_left(3)) | 1
 }
 
 // silence unused import in some builds
@@ -663,5 +817,62 @@ mod tests {
         // random-region flag; missing KR must use real DNS, never JP unlock.
         assert!(state.nodes.load().pick_region("kr", false).is_err());
         assert!(state.nodes.load().pick_region("kr", true).is_ok());
+    }
+
+    #[test]
+    fn stale_cache_entry_reports_grace_window() {
+        let state = state_with_acl(vec![]);
+        let mut msg = Message::new();
+        msg.set_id(1);
+        state.passthrough_cache.insert(
+            "www.youtube.com.|A|jp-1".into(),
+            CacheEntry {
+                message: msg,
+                expire: Instant::now() - Duration::from_secs(1),
+                stale_until: Instant::now() + STALE_GRACE,
+            },
+        );
+        let ent = state
+            .passthrough_cache
+            .get("www.youtube.com.|A|jp-1")
+            .unwrap();
+        assert!(ent.expire < Instant::now());
+        assert!(ent.stale_until > Instant::now());
+    }
+
+    #[tokio::test]
+    async fn single_flight_waiter_gets_own_transaction_id() {
+        let mut req_a = Message::new();
+        req_a.set_id(0x1111);
+        req_a.set_message_type(MessageType::Query);
+        req_a.set_op_code(OpCode::Query);
+        let mut q = hickory_proto::op::Query::new();
+        q.set_name(Name::from_utf8("www.youtube.com.").unwrap());
+        q.set_query_type(RecordType::A);
+        req_a.add_query(q.clone());
+
+        // Leader broadcasts a result carrying ITS transaction id. A joined
+        // waiter must rewrite the id to its own request before returning.
+        // No timers: the spawned leader completes on first poll.
+        let mut leader_msg = Message::new();
+        leader_msg.set_id(0x2222);
+        leader_msg.set_message_type(MessageType::Response);
+        leader_msg.add_query(q);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(ResolveResult::Message(leader_msg));
+        });
+        let rewritten = match rx.await {
+            Ok(ResolveResult::Message(mut m)) => {
+                m.set_id(req_a.id());
+                ResolveResult::Message(m)
+            }
+            Ok(other) => other,
+            Err(_) => ResolveResult::ServFail,
+        };
+        match rewritten {
+            ResolveResult::Message(m) => assert_eq!(m.id(), 0x1111),
+            _ => panic!("expected message"),
+        }
     }
 }

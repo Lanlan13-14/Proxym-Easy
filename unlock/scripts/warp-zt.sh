@@ -268,8 +268,13 @@ case "${1:-}" in
     ;;
   supervise)
     secs=$((RESTART_HOURS * 3600)); [ "$secs" -ge 300 ] || secs=300
-    log "scheduled Zero Trust restart in ${secs}s"
-    sleep "$secs"
+    # Jitter (0-30min) so a fleet of nodes does not enter the WARP restart
+    # window simultaneously and blank a whole region at once.
+    jitter="$(awk 'BEGIN{srand();print int(rand()*1800)}' 2>/dev/null || echo 0)"
+    case "$jitter" in ''|*[!0-9]*) jitter=0 ;; esac
+    total=$((secs + jitter))
+    log "scheduled Zero Trust restart in ${total}s (base ${secs}s + ${jitter}s jitter)"
+    sleep "$total"
     log "scheduled Zero Trust restart requested"
     touch "$RUNTIME_DIR/warp-restart-required"
     ;;

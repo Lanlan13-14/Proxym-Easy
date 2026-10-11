@@ -8,10 +8,9 @@ use hickory_proto::op::Message;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -59,7 +58,7 @@ where
             break;
         }
         let len = u16::from_be_bytes(len_buf) as usize;
-        if len == 0 || len > 4096 {
+        if len == 0 || len > 65535 {
             break;
         }
         let mut data = vec![0u8; len];
@@ -74,6 +73,15 @@ where
             ResolveResult::ServFail => servfail(&request),
         };
         let out = resp.to_bytes()?;
+        if out.len() > 65535 {
+            // Cannot be expressed in the 2-byte TCP DNS length prefix.
+            let fallback = servfail(&request);
+            let bytes = fallback.to_bytes()?;
+            let l2 = (bytes.len() as u16).to_be_bytes();
+            stream.write_all(&l2).await?;
+            stream.write_all(&bytes).await?;
+            continue;
+        }
         let l = (out.len() as u16).to_be_bytes();
         stream.write_all(&l).await?;
         stream.write_all(&out).await?;
@@ -113,9 +121,12 @@ pub async fn serve_doh(
                 let state = Arc::clone(&state);
                 async move { handle_doh_http(state, req, peer).await }
             });
-            if let Err(e) = http1::Builder::new()
-                .serve_connection(io, svc)
-                .with_upgrades()
+            // auto Builder serves both negotiated ALPN protocols. Advertising
+            // h2 in tls.rs while handing the stream to an http1-only builder
+            // broke every client that negotiated h2 via ALPN (browsers, curl,
+            // Cronet): first request always failed as a protocol error.
+            if let Err(e) = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+                .serve_connection_with_upgrades(io, svc)
                 .await
             {
                 warn!(%peer, error=%e, "doh http conn");

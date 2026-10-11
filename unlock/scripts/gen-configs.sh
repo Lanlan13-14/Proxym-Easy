@@ -29,7 +29,10 @@ ENABLE_DOH="${ENABLE_DOH:-1}"
 HTTP_PORT=80
 HTTPS_PORT=443
 UNLOCK_IP="${UNLOCK_IP:-}"
-UPSTREAM_DNS="${UPSTREAM_DNS:-1.1.1.1,1.0.0.1,8.8.8.8}"
+# Operator diversity: 1.1.1.1 and 1.0.0.1 are the same network (Cloudflare);
+# a third independent resolver (Quad9) survives a Cloudflare-side outage.
+DEFAULT_UPSTREAM_DNS="1.1.1.1,1.0.0.1,8.8.8.8,9.9.9.9"
+UPSTREAM_DNS="${UPSTREAM_DNS:-$DEFAULT_UPSTREAM_DNS}"
 CACHE_SIZE="${CACHE_SIZE:-32768}"
 # Most DNS-unlock hosts publish only IPv4. Suppress AAAA by default so a client
 # cannot bypass sniproxy through a direct IPv6 connection.
@@ -268,6 +271,9 @@ EOF
 cache-size $CACHE_SIZE
 cache-persist no
 prefetch-domain yes
+serve-expired yes
+serve-expired-ttl 86400
+serve-expired-reply-ttl 5
 rr-ttl-min 30
 rr-ttl-max 600
 dualstack-ip-selection yes
