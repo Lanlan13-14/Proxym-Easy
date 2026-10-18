@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 1746 (global=1134 regional=592 ai=20)
+# generated entries: 1747 (global=1134 regional=592 ai=21)
 # sources: unlock/all.txt + geosite + Rules Domain + 1-stream
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
@@ -1289,6 +1289,7 @@ online-instagram.com	global	-
 onlineinstagram.com	global	-
 openai.com	ai	-
 openai.com.cdn.cloudflare.net	ai	-
+openai.org	ai	-
 openai.qualtrics.com	ai	-
 openaiapi-site.azureedge.net	ai	-
 openaiassets.blob.core.windows.net	ai	-
