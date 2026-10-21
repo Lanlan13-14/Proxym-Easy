@@ -1,4 +1,5 @@
 anthropic.com
+anthropic.team
 chatgpt.com
 chatgpt.livekit.cloud
 chatgpt.site

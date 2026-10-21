@@ -118,7 +118,10 @@ animetamashi.cn
 animetamashi.com
 anitama.cn
 anitama.net
+ant.dev
 anthropic.com
+anthropic.team
+antspace.dev
 aod-dash-uk-live.akamaized.net
 aod-hls-uk-live.akamaized.net
 aod-pod-uk-live.akamaized.net
@@ -279,6 +282,7 @@ cdninstagram.com
 channel4.com
 channel5.com
 chat.com
+chatbotclaude.com
 chatgpt.com
 chatgpt.livekit.cloud
 chatgpt.site
@@ -287,10 +291,16 @@ chickstagram.com
 cinemax.com
 clau.de
 claude.ai
+claude.app
 claude.com
 claude.dev
+claude.new
+claude.site
+claudeacademy.com
 claudemcpclient.com
 claudemcpcontent.com
+claudepages.dev
+claudestudio.com
 claudeusercontent.com
 client-update.queniuqe.com
 cliptv.vn
@@ -1270,6 +1280,7 @@ ntdofifreetv-tgc.cdn.hinet.net
 ntdofifreevcpc-tgc.cdn.hinet.net
 nxtv.jp
 o33249.ingest.sentry.io
+o33249.ingest.us.sentry.io
 oaistatic.com
 oaistatsig.com
 oaiusercontent.com

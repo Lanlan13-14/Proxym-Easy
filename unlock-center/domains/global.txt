@@ -73,6 +73,8 @@ animetamashi.cn
 animetamashi.com
 anitama.cn
 anitama.net
+ant.dev
+antspace.dev
 aod-pod-uk-live.akamaized.net
 apple-tv-plus-press.apple.com
 atm.youku.com
@@ -143,11 +145,18 @@ cdn-spotify-experiments.conductrics.com
 cdn.registerdisney.go.com
 cdninstagram.com
 chat.com
+chatbotclaude.com
 chickstagram.com
 clau.de
+claude.app
 claude.dev
+claude.new
+claude.site
+claudeacademy.com
 claudemcpclient.com
 claudemcpcontent.com
+claudepages.dev
+claudestudio.com
 claudeusercontent.com
 client-update.queniuqe.com
 cloudpush.iqiyi.com
@@ -841,6 +850,7 @@ nicoseiga.jp
 nomadlandmovie.ch
 np-edge.itunes.apple.com
 o33249.ingest.sentry.io
+o33249.ingest.us.sentry.io
 oaistatsig.com
 oncars.in
 oninstagram.com

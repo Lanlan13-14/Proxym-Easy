@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 1747 (global=1134 regional=592 ai=21)
+# generated entries: 1758 (global=1144 regional=592 ai=22)
 # sources: unlock/all.txt + geosite + Rules Domain + 1-stream
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
@@ -124,7 +124,10 @@ animetamashi.cn	global	-
 animetamashi.com	global	-
 anitama.cn	global	-
 anitama.net	global	-
+ant.dev	global	-
 anthropic.com	ai	-
+anthropic.team	ai	-
+antspace.dev	global	-
 aod-dash-uk-live.akamaized.net	regional	uk
 aod-hls-uk-live.akamaized.net	regional	uk
 aod-pod-uk-live.akamaized.net	global	-
@@ -285,6 +288,7 @@ cdninstagram.com	global	-
 channel4.com	regional	uk
 channel5.com	regional	eu
 chat.com	global	-
+chatbotclaude.com	global	-
 chatgpt.com	ai	-
 chatgpt.livekit.cloud	ai	-
 chatgpt.site	ai	-
@@ -293,10 +297,16 @@ chickstagram.com	global	-
 cinemax.com	regional	sa
 clau.de	global	-
 claude.ai	ai	-
+claude.app	global	-
 claude.com	ai	-
 claude.dev	global	-
+claude.new	global	-
+claude.site	global	-
+claudeacademy.com	global	-
 claudemcpclient.com	global	-
 claudemcpcontent.com	global	-
+claudepages.dev	global	-
+claudestudio.com	global	-
 claudeusercontent.com	global	-
 client-update.queniuqe.com	global	-
 cliptv.vn	regional	sg
@@ -1277,6 +1287,7 @@ ntdofifreetv-tgc.cdn.hinet.net	regional	tw
 ntdofifreevcpc-tgc.cdn.hinet.net	regional	tw
 nxtv.jp	regional	jp
 o33249.ingest.sentry.io	global	-
+o33249.ingest.us.sentry.io	global	-
 oaistatic.com	ai	-
 oaistatsig.com	global	-
 oaiusercontent.com	ai	-
