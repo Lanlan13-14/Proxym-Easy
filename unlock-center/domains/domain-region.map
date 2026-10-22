@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 1758 (global=1144 regional=592 ai=22)
+# generated entries: 1759 (global=1145 regional=592 ai=22)
 # sources: unlock/all.txt + geosite + Rules Domain + 1-stream
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
@@ -377,6 +377,7 @@ d3c7rimkq79yfu.cloudfront.net	regional	tw
 d3cv4a9a9wh0bt.cloudfront.net	regional	us
 d3o7oi00quuwqu.cloudfront.net	global	-
 d3rj5p7u4c4icq.cloudfront.net	regional	au
+d3stzm2eumvgb4.cloudfront.net	global	-
 d3vd9lfkzbru3h.cloudfront.net	global	-
 d5m9nd9n1srh4.cloudfront.net	regional	tw
 d6d4ismr40iw.cloudfront.net	global	-
