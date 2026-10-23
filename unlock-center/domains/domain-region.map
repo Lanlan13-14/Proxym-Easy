@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 1759 (global=1145 regional=592 ai=22)
+# generated entries: 1760 (global=1146 regional=592 ai=22)
 # sources: unlock/all.txt + geosite + Rules Domain + 1-stream
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
@@ -1541,6 +1541,7 @@ steamcontent.com	global	-
 steamdeck.com	global	-
 steamgames.com	global	-
 steammobile.akamaized.net	global	-
+steamos.cloud	global	-
 steampipe-kr.akamaized.net	global	-
 steampipe-partner.akamaized.net	global	-
 steampipe.akamaized.net	global	-
