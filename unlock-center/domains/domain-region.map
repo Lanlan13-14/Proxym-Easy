@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 1760 (global=1146 regional=592 ai=22)
+# generated entries: 1763 (global=1149 regional=592 ai=22)
 # sources: unlock/all.txt + geosite + Rules Domain + 1-stream
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
@@ -1599,11 +1599,14 @@ tiktokeu-cdn.com	global	-
 tiktokglobalshopv.com	global	-
 tiktokminis.us	global	-
 tiktokrow-cdn.com	global	-
+tiktokshop.com	global	-
+tiktokstaticb.com	global	-
 tiktokv.com	global	-
 tiktokv.com.edgekey.net	global	-
 tiktokv.com.edgesuite.net	global	-
 tiktokv.eu	global	-
 tiktokv.us	global	-
+tiktokvapp.com	global	-
 tiktokw.eu	global	-
 tiktokw.us	global	-
 tlmr-hamivideo2.cdn.hinet.net	regional	tw
