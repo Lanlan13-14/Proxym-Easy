@@ -112,6 +112,7 @@ class HealthTests(unittest.TestCase):
                     executable(scripts / script, "#!/bin/sh\nexit 0\n")
                 executable(scripts / "domain-updater.sh", "#!/bin/sh\nif [ \"$1\" = loop ]; then while :; do sleep 3600; done; fi\nexit 0\n")
                 (tmp / "domains").write_text("custom.invalid\n")
+                executable(tmp / "mkdir", "#!/usr/bin/python3\nimport os,sys\nargs=[arg for arg in sys.argv[1:] if arg != '/var/log/unlock']\nos.execv('/bin/mkdir', ['mkdir']+args)\n")
                 executable(scripts / "warp-zt.sh", "#!/bin/sh\nif [ \"$1\" = status ]; then\n n=$(cat \"$RUNTIME_DIR/checks\" 2>/dev/null || echo 0); n=$((n+1)); echo $n >\"$RUNTIME_DIR/checks\"; [ $n -le 7 ]; fi\n")
                 (scripts / "dns-health.py").write_text("import os,pathlib,sys\np=pathlib.Path(os.environ['RUNTIME_DIR'])/'probes'\nn=int(p.read_text())+1 if p.exists() else 1\np.write_text(str(n))\nsys.exit(" + str(probe_code) + " if n in " + failures + " else 0)\n")
                 executable(tmp / "sleep", "#!/usr/bin/python3\nimport time\ntime.sleep(.03)\n")
