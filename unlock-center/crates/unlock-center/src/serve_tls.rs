@@ -165,15 +165,14 @@ async fn handle_doh_http(
         let accept = websocket_accept(key);
         let upgrade = hyper::upgrade::on(&mut req);
         let hub = Arc::clone(hub);
-        let acl = state.control_acl_snapshot();
         tokio::spawn(async move {
             match upgrade.await {
                 Ok(upgraded) => {
-                    if let Err(error) = hub.serve(TokioIo::new(upgraded), acl).await {
-                        warn!(%peer, error=%error, "unlock control session");
+                    if let Err(error) = hub.serve(TokioIo::new(upgraded)).await {
+                        warn!(%peer, error=%format!("{error:#}"), "unlock control session");
                     }
                 }
-                Err(error) => warn!(%peer, error=%error, "unlock control upgrade"),
+                Err(error) => warn!(%peer, error=%format!("{error:#}"), "unlock control upgrade"),
             }
         });
         return Ok(Response::builder()

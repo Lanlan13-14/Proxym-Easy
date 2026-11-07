@@ -21,12 +21,10 @@ case "${ENABLE_SOCKS5:-0}" in
   esac
 "$ROOT/scripts/warp-zt.sh" status
 
-# warp-zt status already checks Connected + a pinned-IP `warp=on` trace.
-
-# DNS smoke test must return the configured unlock IP for a known rule.
-if command -v dig >/dev/null 2>&1; then
-  answer="$(dig +time=2 +tries=1 @127.0.0.1 -p "$DNS_UDP_PORT" netflix.com A +short | tail -1)"
-  [ -n "$answer" ]
-elif command -v nslookup >/dev/null 2>&1; then
-  nslookup -port="$DNS_UDP_PORT" netflix.com 127.0.0.1 >/dev/null 2>&1
-fi
+# Probe an existing local static rule, independently of public recursion.
+probe_status=0
+timeout -k 1 3 python3 "$ROOT/scripts/dns-health.py" || probe_status=$?
+case "$probe_status" in
+  0|2) exit 0 ;; # no applicable static rule: retain process/WARP checks above
+  *) exit "$probe_status" ;;
+esac

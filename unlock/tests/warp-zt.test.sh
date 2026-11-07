@@ -45,7 +45,7 @@ grep -q 'scheduled Zero Trust restart; stopping sniproxy and exiting' "$ROOT/scr
 # Fail-closed startup order: WARP verification must precede both listeners.
 warp_line="$(grep -n 'warp-zt.sh.*start' "$ROOT/scripts/entrypoint.sh" | head -1 | cut -d: -f1)"
 acl_line="$(grep -n 'apply-acl.sh' "$ROOT/scripts/entrypoint.sh" | head -1 | cut -d: -f1)"
-dns_line="$(grep -n 'smartdns -R' "$ROOT/scripts/entrypoint.sh" | head -1 | cut -d: -f1)"
+dns_line="$(grep -n 'smartdns-process.py.*start' "$ROOT/scripts/entrypoint.sh" | head -1 | cut -d: -f1)"
 sni_line="$(grep -n 'sniproxy -c' "$ROOT/scripts/entrypoint.sh" | head -1 | cut -d: -f1)"
 [ "$acl_line" -lt "$dns_line" ]
 [ "$acl_line" -lt "$sni_line" ]

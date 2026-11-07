@@ -24,6 +24,9 @@ if [ -n "$CONTROL_CENTER_URL" ] && [ -s "$CONTROL_ALLOWED_IPS_FILE" ]; then
   }
 fi
 
+# Every IPC call, including diagnostics, must release the supervisor even if
+# warp-svc stops reading its socket. timeout is in Debian coreutils/BusyBox.
+warp_cli() { timeout -k 1 "${WARP_CLI_TIMEOUT:-3}" warp-cli "$@"; }
 log() { echo " >> [warp-zt] $*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
 
@@ -79,7 +82,7 @@ start_svc() {
   echo $! > "$RUNTIME_DIR/warp-svc.pid"
   i=0
   while [ "$i" -lt 40 ]; do
-    warp-cli --accept-tos status >/dev/null 2>&1 && return 0
+    warp_cli --accept-tos status >/dev/null 2>&1 && return 0
     kill -0 "$(cat "$RUNTIME_DIR/warp-svc.pid")" 2>/dev/null || break
     i=$((i + 1)); sleep 1
   done
@@ -91,18 +94,18 @@ wait_registration() {
   log "waiting for Service Token enrollment into $ORG"
   i=0; stale_deleted=0
   while [ "$i" -lt "$REGISTER_TIMEOUT" ]; do
-    if warp-cli --accept-tos registration show >"$RUNTIME_DIR/warp-registration.log" 2>&1; then
+    if warp_cli --accept-tos registration show >"$RUNTIME_DIR/warp-registration.log" 2>&1; then
       if grep -Eqi 'Auth Method:[[:space:]]*Consumer|Account type:[[:space:]]*Free' "$RUNTIME_DIR/warp-registration.log"; then
         if [ "$stale_deleted" = "0" ]; then
           log "consumer WARP registration detected; deleting stale registration"
-          warp-cli --accept-tos registration delete >/dev/null 2>&1 || true
+          warp_cli --accept-tos registration delete >/dev/null 2>&1 || true
           rm -f "$WARP_DIR/reg.json"
           stale_deleted=1
           i=$((i + 1)); sleep 2; continue
         fi
         fail "consumer registration returned after cleanup; refusing non-Zero-Trust fallback"
       fi
-      settings="$(warp-cli --accept-tos settings list 2>&1 || warp-cli --accept-tos settings 2>&1 || true)"
+      settings="$(warp_cli --accept-tos settings list 2>&1 || warp_cli --accept-tos settings 2>&1 || true)"
       printf '%s\n' "$settings" > "$RUNTIME_DIR/warp-settings.log"
       if printf '%s\n' "$settings" | grep -Eqi 'Include mode, with hosts/ips|Split Tunnels[^:]*:[[:space:]]*Include'; then
         printf '%s\n' "$settings" >&2
@@ -125,12 +128,12 @@ wait_registration() {
 }
 
 wait_connected() {
-  warp-cli --accept-tos connect >/dev/null
+  warp_cli --accept-tos connect >/dev/null
   i=0
   while [ "$i" -lt "$CONNECT_TIMEOUT" ]; do
-    status="$(warp-cli --accept-tos status 2>&1 || true)"
+    status="$(warp_cli --accept-tos status 2>&1 || true)"
     printf '%s\n' "$status" > "$RUNTIME_DIR/warp-status.log"
-    printf '%s\n' "$status" | grep -qi 'Connected' && return 0
+    printf '%s\n' "$status" | grep -Eqi '(^|[[:space:]:])Connected([[:space:]]|$)' && return 0
     i=$((i + 1)); sleep 1
   done
   fail "WARP did not reach Connected state"
@@ -215,20 +218,19 @@ fix_return_routes() {
 }
 
 trace_request() {
-  # This is the canonical WARP check used by mature warp-svc containers.
-  # Fall back to the literal 1.1.1.1 endpoint if container DNS is temporarily
-  # unavailable while WARP applies Traffic-only settings.
-  curl -4fsS --max-time 20 https://cloudflare.com/cdn-cgi/trace \
-    || curl -4fsS --max-time 20 https://1.1.1.1/cdn-cgi/trace
+  # Each attempt is bounded; prefer an IP so broken local DNS cannot stall
+  # WARP supervision. Together with IPC this fits Docker's 15s health budget.
+  curl -4fsS --connect-timeout 2 --max-time 3 https://1.1.1.1/cdn-cgi/trace \
+    || curl -4fsS --connect-timeout 2 --max-time 3 https://cloudflare.com/cdn-cgi/trace
 }
 
 dump_diagnostics() {
   echo "--- warp registration ---" >&2
-  warp-cli --accept-tos registration show >&2 2>&1 || true
+  warp_cli --accept-tos registration show >&2 2>&1 || true
   echo "--- warp settings ---" >&2
-  warp-cli --accept-tos settings list >&2 2>&1 || warp-cli --accept-tos settings >&2 2>&1 || true
+  warp_cli --accept-tos settings list >&2 2>&1 || warp_cli --accept-tos settings >&2 2>&1 || true
   echo "--- warp status ---" >&2
-  warp-cli --accept-tos status >&2 2>&1 || true
+  warp_cli --accept-tos status >&2 2>&1 || true
   echo "--- trace ---" >&2
   cat "$RUNTIME_DIR/warp-trace.log" >&2 2>/dev/null || true
   echo "--- IPv4 routes/rules ---" >&2
@@ -263,8 +265,10 @@ case "${1:-}" in
   status)
     [ -f "$RUNTIME_DIR/warp-ready" ] \
       && pgrep -x warp-svc >/dev/null 2>&1 \
-      && warp-cli --accept-tos status 2>/dev/null | grep -qi Connected \
-      && trace_request | grep -Eq '^warp=(on|plus)$'
+      && status="$(warp_cli --accept-tos status 2>/dev/null)" \
+      && printf '%s\n' "$status" | grep -Eqi '(^|[[:space:]:])Connected([[:space:]]|$)' \
+      && trace="$(trace_request)" \
+      && printf '%s\n' "$trace" | grep -Eq '^warp=(on|plus)$'
     ;;
   supervise)
     secs=$((RESTART_HOURS * 3600)); [ "$secs" -ge 300 ] || secs=300

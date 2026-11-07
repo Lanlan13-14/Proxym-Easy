@@ -43,81 +43,116 @@ if [ "$ENABLE_DNS" = "0" ] && [ "$ENABLE_DOT" = "0" ] && [ "$ENABLE_DOH" = "0" ]
   fail "enable at least one of ENABLE_DNS, ENABLE_DOT, or ENABLE_DOH"
 fi
 
-TABLE="unlock_acl"
-nft delete table inet "$TABLE" 2>/dev/null || true
-nft add table inet "$TABLE"
-nft 'add chain inet unlock_acl input { type filter hook input priority filter - 10; policy accept; }'
-nft add rule inet "$TABLE" input iif lo accept
+# Validate/build first; replacement is committed by one nft -f transaction.
+# A rejected batch (or control-agent timeout) cannot expose a partial table.
+python3 - "$ALLOWED_IPS" "$SOCKS5_ALLOWED_IPS" \
+  "$ENABLE_DNS" "$DNS_PORT" "$ENABLE_DOT" "$DOT_PORT" \
+  "$ENABLE_DOH" "$DOH_PORT" "$ENABLE_SOCKS5" "$SOCKS5_PORT" <<'PY'
+import ipaddress
+import re
+import subprocess
+import sys
 
-add_cidrs() {
-  cidrs="$1"; shift
-  [ -n "$cidrs" ] || return 0
-  oldifs="$IFS"; IFS=','
-  for cidr in $cidrs; do
-    cidr="$(printf '%s' "$cidr" | tr -d ' ')"
-    [ -n "$cidr" ] || continue
-    case "$cidr" in
-      *:*) nft add rule inet "$TABLE" input ip6 saddr "$cidr" "$@" ;;
-      *)   nft add rule inet "$TABLE" input ip saddr "$cidr" "$@" ;;
-    esac
-  done
-  IFS="$oldifs"
-}
 
-# sniproxy always under ALLOWED_IPS. Plaintext DNS only when ENABLE_DNS=1
-# (public bind); otherwise SmartDNS listens on loopback and no public ACL hole.
-for proto in tcp udp; do
-  add_cidrs "$ALLOWED_IPS" "$proto" dport 80 accept
-  add_cidrs "$ALLOWED_IPS" "$proto" dport 443 accept
-done
-for proto in tcp udp; do
-  nft add rule inet "$TABLE" input "$proto" dport 80 drop
-  nft add rule inet "$TABLE" input "$proto" dport 443 drop
-done
+def log(message):
+    print(" >> [apply-acl] " + message, flush=True)
 
-case "$ENABLE_DNS" in
-  1)
-    [ "$DNS_PORT" -ge 1 ] 2>/dev/null && [ "$DNS_PORT" -le 65535 ] 2>/dev/null || fail "invalid DNS_UDP_PORT"
-    for proto in tcp udp; do
-      add_cidrs "$ALLOWED_IPS" "$proto" dport "$DNS_PORT" accept
-      nft add rule inet "$TABLE" input "$proto" dport "$DNS_PORT" drop
-    done
-    log "plain DNS ACL applied: UDP/TCP $DNS_PORT"
-    ;;
-esac
 
-# DoT is TCP (and rarely UDP is unused for TLS); SmartDNS bind-tls is TCP.
-case "$ENABLE_DOT" in
-  1)
-    [ "$DOT_PORT" -ge 1 ] 2>/dev/null && [ "$DOT_PORT" -le 65535 ] 2>/dev/null || fail "invalid DOT_PORT"
-    add_cidrs "$ALLOWED_IPS" tcp dport "$DOT_PORT" accept
-    nft add rule inet "$TABLE" input tcp dport "$DOT_PORT" drop
-    log "DoT ACL applied: TCP $DOT_PORT"
-    ;;
-esac
+def fail(message):
+    print(" >> [apply-acl] ERROR: " + message, file=sys.stderr)
+    sys.exit(1)
 
-# DoH is TCP-only HTTPS on DOH_PORT; shares ALLOWED_IPS with DNS/SNI.
-case "$ENABLE_DOH" in
-  1)
-    [ "$DOH_PORT" -ge 1 ] 2>/dev/null && [ "$DOH_PORT" -le 65535 ] 2>/dev/null || fail "invalid DOH_PORT"
-    add_cidrs "$ALLOWED_IPS" tcp dport "$DOH_PORT" accept
-    nft add rule inet "$TABLE" input tcp dport "$DOH_PORT" drop
-    log "DoH ACL applied: TCP $DOH_PORT"
-    ;;
-esac
 
-# SOCKS uses an independent CIDR list. DNS/SNI ALLOWED_IPS never authorizes
-# SOCKS access.
-case "$ENABLE_SOCKS5" in
-  1)
-    [ "$SOCKS5_PORT" -ge 1 ] 2>/dev/null && [ "$SOCKS5_PORT" -le 65535 ] 2>/dev/null || fail "invalid SOCKS5_PORT"
-    add_cidrs "$SOCKS5_ALLOWED_IPS" tcp dport "$SOCKS5_PORT" accept
-    nft add rule inet "$TABLE" input tcp dport "$SOCKS5_PORT" drop
-    log "SOCKS5 ACL applied: TCP $SOCKS5_PORT"
-    ;;
-esac
+def cidrs(value, name):
+    result = []
+    for item in value.split(","):
+        item = item.replace(" ", "")
+        if not item:
+            continue
+        if not re.fullmatch(r"[0-9A-Fa-f:./]+", item):
+            fail("invalid " + name + " CIDR")
+        try:
+            network = ipaddress.ip_network(item, strict=False)
+        except ValueError:
+            fail("invalid " + name + " CIDR")
+        result.append(("ip6" if network.version == 6 else "ip", str(network)))
+    return result
 
-dns_desc="off"; [ "$ENABLE_DNS" = "1" ] && dns_desc="$DNS_PORT"
-dot_desc="off"; [ "$ENABLE_DOT" = "1" ] && dot_desc="$DOT_PORT"
-doh_desc="off"; [ "$ENABLE_DOH" = "1" ] && doh_desc="$DOH_PORT"
-log "DNS/SNI ACL applied for DNS=$dns_desc DoT=$dot_desc DoH=$doh_desc HTTP=80 HTTPS=443"
+
+def port(value, name):
+    if not re.fullmatch(r"[0-9]+", value):
+        fail("invalid " + name)
+    # Existing env files may zero-pad decimal ports. Compare their numeric
+    # value consistently without imposing a new five-character restriction.
+    value = value.lstrip("0") or "0"
+    if len(value) > 5:
+        fail("invalid " + name)
+    number = int(value)
+    if not 1 <= number <= 65535:
+        fail("invalid " + name)
+    return str(number)
+
+
+allowed, socks_allowed, dns, dns_port, dot, dot_port, doh, doh_port, socks, socks_port = sys.argv[1:]
+allowed = cidrs(allowed, "ALLOWED_IPS")
+socks_allowed = cidrs(socks_allowed, "SOCKS5_ALLOWED_IPS") if socks == "1" else []
+services = []
+if socks == "1":
+    socks_port = port(socks_port, "SOCKS5_PORT")
+    reserved = {"80", "443"}
+    reserved.update(port(value, name) for enabled, value, name in (
+        (dns, dns_port, "DNS_UDP_PORT"), (dot, dot_port, "DOT_PORT"),
+        (doh, doh_port, "DOH_PORT")) if enabled == "1")
+    if socks_port in reserved:
+        fail("SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service")
+if dns == "1":
+    services.append(("plain DNS", ("tcp", "udp"), port(dns_port, "DNS_UDP_PORT"), allowed))
+if dot == "1":
+    services.append(("DoT", ("tcp",), port(dot_port, "DOT_PORT"), allowed))
+if doh == "1":
+    services.append(("DoH", ("tcp",), port(doh_port, "DOH_PORT"), allowed))
+if socks == "1":
+    services.append(("SOCKS5", ("tcp",), port(socks_port, "SOCKS5_PORT"), socks_allowed))
+
+rules = [
+    # Unlike add, create fails if a concurrent first installer wins the probe.
+    "create table inet unlock_acl",
+    "add chain inet unlock_acl input { type filter hook input priority filter - 10; policy accept; }",
+    "add rule inet unlock_acl input iif lo accept",
+]
+
+
+def add_service(protocols, service_port, sources):
+    for protocol in protocols:
+        for family, source in sources:
+            rules.append(f"add rule inet unlock_acl input {family} saddr {source} {protocol} dport {service_port} accept")
+        rules.append(f"add rule inet unlock_acl input {protocol} dport {service_port} drop")
+
+
+# SNI always uses the exact client destination ports, not HTTP_PORT/HTTPS_PORT.
+for sni_port in ("80", "443"):
+    add_service(("tcp", "udp"), sni_port, allowed)
+for _, protocols, service_port, sources in services:
+    add_service(protocols, service_port, sources)
+
+try:
+    exists = subprocess.run(
+        ["nft", "list", "table", "inet", "unlock_acl"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    if exists:
+        rules.insert(0, "delete table inet unlock_acl")
+    # Existence probe is read-only; delete and all adds share this batch.
+    subprocess.run(["nft", "-f", "-"], input="\n".join(rules) + "\n", text=True, check=True)
+except (OSError, subprocess.CalledProcessError) as error:
+    fail("ACL transaction failed: " + str(error))
+
+# Preserve existing success messages, emitted only after the commit.
+for label, protocols, service_port, _ in services:
+    protocol_desc = "UDP/TCP" if len(protocols) == 2 else "TCP"
+    log(f"{label} ACL applied: {protocol_desc} {service_port}")
+dns_desc = dns_port if dns == "1" else "off"
+dot_desc = dot_port if dot == "1" else "off"
+doh_desc = doh_port if doh == "1" else "off"
+log(f"DNS/SNI ACL applied for DNS={dns_desc} DoT={dot_desc} DoH={doh_desc} HTTP=80 HTTPS=443")
+PY

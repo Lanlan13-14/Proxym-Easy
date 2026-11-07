@@ -32,7 +32,7 @@ case "${1:-start}" in
     # process that can reconnect in 5.
     (
       while true; do
-        python3 "$ROOT/scripts/control-agent.py"
+        python3 "$ROOT/scripts/control-agent.py" || echo " >> [control-agent] agent failed" >&2
         echo " >> [control-agent] agent exited; restarting in 5s" >&2
         sleep 5
       done

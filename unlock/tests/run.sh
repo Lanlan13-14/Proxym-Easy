@@ -233,6 +233,12 @@ sh tests/cert-manager.test.sh || fail=1
 echo "== mandatory Cloudflare Zero Trust WARP =="
 sh tests/warp-zt.test.sh || fail=1
 
+echo "== bounded node health / local recovery / control reconnect (sandbox) =="
+python3 tests/node-health.test.py || fail=1
+
+echo "== atomic ACL update (sandbox) =="
+python3 tests/acl-atomic.test.py || fail=1
+
 echo "== optional center control channel configuration =="
 test -f scripts/control-agent.py || { echo "missing control-agent.py"; fail=1; }
 test -f scripts/control-agent.sh || { echo "missing control-agent.sh"; fail=1; }

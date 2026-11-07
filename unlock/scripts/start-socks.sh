@@ -45,20 +45,22 @@ validate_env() {
   export SOCKS5_USERNAME SOCKS5_PASSWORD
 
   valid_port "$SOCKS5_PORT" || fail "invalid SOCKS5_PORT: $SOCKS5_PORT"
-  case "$SOCKS5_PORT" in 80|443) fail "SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service" ;; esac
+  if [ "$SOCKS5_PORT" -eq 80 ] || [ "$SOCKS5_PORT" -eq 443 ]; then
+    fail "SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service"
+  fi
   case "${ENABLE_DNS:-0}" in
     1|true|yes)
-      [ "$SOCKS5_PORT" = "${DNS_UDP_PORT:-53}" ] && fail "SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service"
+      [ "$SOCKS5_PORT" -eq "${DNS_UDP_PORT:-53}" ] && fail "SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service"
       ;;
   esac
   case "${ENABLE_DOT:-1}" in
     1|true|yes)
-      [ "$SOCKS5_PORT" = "${DOT_PORT:-853}" ] && fail "SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service"
+      [ "$SOCKS5_PORT" -eq "${DOT_PORT:-853}" ] && fail "SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service"
       ;;
   esac
   case "${ENABLE_DOH:-1}" in
     1|true|yes)
-      [ "$SOCKS5_PORT" = "${DOH_PORT:-4430}" ] && fail "SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service"
+      [ "$SOCKS5_PORT" -eq "${DOH_PORT:-4430}" ] && fail "SOCKS5_PORT conflicts with DNS/DoT/DoH/SNI service"
       ;;
   esac
   [ -n "$SOCKS5_ALLOWED_IPS" ] || fail "SOCKS5_ALLOWED_IPS is required when SOCKS is enabled (it does not inherit ALLOWED_IPS)"

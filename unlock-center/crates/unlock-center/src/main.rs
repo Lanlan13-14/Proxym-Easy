@@ -88,9 +88,21 @@ async fn main() -> Result<()> {
     let control = if cfg.control.bearer_token.is_empty() {
         None
     } else {
+        let initial_acl = cfg
+            .access
+            .allowed_cidrs
+            .iter()
+            .map(|value| {
+                value
+                    .parse::<ipnet::IpNet>()
+                    .expect("validated center ACL CIDR")
+            })
+            .map(|network| network.to_string())
+            .collect();
         let hub = crate::control::ControlHub::new(
             cfg.control.bearer_token.clone(),
             cfg.control.path.clone(),
+            initial_acl,
         );
         info!(path = %hub.path(), "unlock control endpoint enabled on existing DoH TLS port");
         Some(hub)
@@ -383,8 +395,7 @@ async fn refresh_loop(state: Arc<AppState>) {
     );
 
     if interval_secs > 0 {
-        let mut interval =
-            tokio::time::interval(Duration::from_secs(interval_secs.max(60)));
+        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs.max(60)));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // Boot already loaded the map; skip the immediate first tick.
         interval.tick().await;

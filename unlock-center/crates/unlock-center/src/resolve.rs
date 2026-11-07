@@ -34,12 +34,71 @@ pub struct AppState {
     pub trusted_proxy_cidrs: Vec<IpNet>,
 }
 
+struct SingleFlightLeader<'a> {
+    state: &'a AppState,
+    key: Option<String>,
+}
+
+impl SingleFlightLeader<'_> {
+    fn complete(mut self, result: &ResolveResult) {
+        if let Some(key) = self.key.take() {
+            if let Some((_, waiters)) = self.state.in_flight.remove(&key) {
+                for waiter in waiters {
+                    let _ = waiter.send(match result {
+                        ResolveResult::Message(message) => ResolveResult::Message(message.clone()),
+                        ResolveResult::ServFail => ResolveResult::ServFail,
+                    });
+                }
+            }
+        }
+    }
+}
+
+impl Drop for SingleFlightLeader<'_> {
+    fn drop(&mut self) {
+        // Cancellation (e.g. the client closes its DoH stream) must release
+        // followers and let a later query become the next leader.
+        if let Some(key) = self.key.take() {
+            if let Some((_, waiters)) = self.state.in_flight.remove(&key) {
+                for waiter in waiters {
+                    let _ = waiter.send(ResolveResult::ServFail);
+                }
+            }
+        }
+    }
+}
+
 pub struct CacheEntry {
     pub message: Message,
     pub expire: Instant,
     /// Grace window after `expire` during which a failed refresh may still
     /// serve the previous answer instead of SERVFAIL (serve-stale).
     pub stale_until: Instant,
+}
+
+impl CacheEntry {
+    fn reply(&self, id: u16, now: Instant, stale: bool) -> Message {
+        let ttl = if stale {
+            5
+        } else {
+            self.expire
+                .saturating_duration_since(now)
+                .as_secs()
+                .min(u32::MAX as u64) as u32
+        };
+        let mut message = self.message.clone();
+        message.set_id(id);
+        for record in message.answers_mut() {
+            record.set_ttl(record.ttl().min(ttl));
+        }
+        for record in message.name_servers_mut() {
+            record.set_ttl(record.ttl().min(ttl));
+        }
+        for record in message.additionals_mut() {
+            record.set_ttl(record.ttl().min(ttl));
+        }
+        message
+    }
 }
 
 #[derive(Debug)]
@@ -311,13 +370,12 @@ impl AppState {
         // the fresh refresh fails, so a WARP blip on a node degrades to a
         // slightly stale answer instead of SERVFAIL for a whole site.
         let stale_entry = if let Some(ent) = self.passthrough_cache.get(&cache_key) {
-            if ent.expire > Instant::now() {
-                let mut m = ent.message.clone();
-                m.set_id(request.id());
-                return ResolveResult::Message(m);
+            let now = Instant::now();
+            if ent.expire > now {
+                return ResolveResult::Message(ent.reply(request.id(), now, false));
             }
-            if ent.stale_until > Instant::now() {
-                Some(ent.message.clone())
+            if ent.stale_until > now {
+                Some(ent.reply(request.id(), now, true))
             } else {
                 None
             }
@@ -352,20 +410,16 @@ impl AppState {
                     Err(_) => ResolveResult::ServFail,
                 };
             }
+            let leader = SingleFlightLeader {
+                state: self,
+                key: Some(cache_key.clone()),
+            };
             let result = self
                 .passthrough_upstream(request, qname, qtype, &cache_key, &node, stale_entry)
                 .await;
-            // Hand the result to every waiter that joined while we queried.
-            // Each waiter rewrites the DNS transaction id to its own request
-            // on receipt (see below), so sharing one Message is safe.
-            if let Some((_, waiters)) = self.in_flight.remove(&cache_key) {
-                for waiter in waiters {
-                    let _ = waiter.send(match &result {
-                        ResolveResult::Message(m) => ResolveResult::Message(m.clone()),
-                        ResolveResult::ServFail => ResolveResult::ServFail,
-                    });
-                }
-            }
+            // Complete and disarm the guard in one synchronous step; the old
+            // guard must never remove a new leader inserted after completion.
+            leader.complete(&result);
             result
         }
     }
@@ -374,7 +428,10 @@ impl AppState {
     /// When the authenticated control channel is enabled, prefer nodes that
     /// actually hold a live session; a node whose agent is down would only
     /// burn a full timeout per query before the legacy fallback kicks in.
-    fn pick_passthrough_node(&self, client_ip: Option<IpAddr>) -> Result<Arc<Node>, schedule::ScheduleError> {
+    fn pick_passthrough_node(
+        &self,
+        client_ip: Option<IpAddr>,
+    ) -> Result<Arc<Node>, schedule::ScheduleError> {
         let nodes = self.nodes.load();
         let (lat, lon) = if self.cfg.geoip.enabled {
             client_ip
@@ -402,7 +459,8 @@ impl AppState {
         // Control health re-selection: only meaningful when the hub is on.
         if let (Some(hub), Ok(ref n)) = (&self.control, &selected) {
             if !hub.connected(&n.id) {
-                if let Some(alternative) = self.pick_connected_alternative(&nodes, lat, lon, &n.id) {
+                if let Some(alternative) = self.pick_connected_alternative(&nodes, lat, lon, &n.id)
+                {
                     return Ok(alternative);
                 }
                 // No live session anywhere: keep the original selection so the
@@ -482,7 +540,12 @@ impl AppState {
                 Ok(clean) => match hub.query(&selected.id, &clean, timeout).await {
                     Ok(mut msg) if passthrough_rcode_ok(&msg) => {
                         msg.set_id(request.id());
-                        return self.cache_passthrough(cache_key.to_string(), msg, qname, "control");
+                        return self.cache_passthrough(
+                            cache_key.to_string(),
+                            msg,
+                            qname,
+                            "control",
+                        );
                     }
                     Ok(msg) => {
                         // Node SmartDNS can return SERVFAIL under WARP/upstream blips.
@@ -547,17 +610,39 @@ impl AppState {
                 rec.set_ttl(max_ttl);
             }
         }
-        if self.passthrough_cache.len() < self.cfg.cache.passthrough_max_entries {
-            self.passthrough_cache.insert(
-                cache_key,
-                CacheEntry {
-                    message: msg.clone(),
-                    expire: Instant::now() + Duration::from_secs(max_ttl as u64),
-                    stale_until: Instant::now()
-                        + Duration::from_secs(max_ttl as u64)
-                        + STALE_GRACE,
-                },
-            );
+        let capacity = self.cfg.cache.passthrough_max_entries;
+        let now = Instant::now();
+        if capacity > 0 && self.passthrough_cache.len() >= capacity {
+            // An expired key must not permanently occupy a slot. Previously
+            // reaching capacity stopped all insertions, including refreshes.
+            self.passthrough_cache
+                .retain(|_, entry| entry.stale_until > now);
+        }
+        let ttl = msg
+            .answers()
+            .iter()
+            .map(|record| record.ttl())
+            .min()
+            .unwrap_or(0);
+        if capacity > 0 && ttl > 0 {
+            let entry = CacheEntry {
+                message: msg.clone(),
+                expire: now + Duration::from_secs(ttl as u64),
+                stale_until: now + Duration::from_secs(ttl as u64) + STALE_GRACE,
+            };
+            // Replacing an existing key remains legal when the cache is full.
+            // Do not retain zero-TTL / empty answers for the configured maximum.
+            let has_room = self.passthrough_cache.len() < capacity;
+            match self.passthrough_cache.entry(cache_key) {
+                dashmap::mapref::entry::Entry::Occupied(mut slot) => {
+                    slot.insert(entry);
+                }
+                dashmap::mapref::entry::Entry::Vacant(slot) => {
+                    if has_room {
+                        slot.insert(entry);
+                    }
+                }
+            }
         }
         debug!(%qname, %upstream, "passthrough ok");
         ResolveResult::Message(msg)
@@ -769,10 +854,7 @@ mod tests {
 
         let clean = sanitize_passthrough_query(&client).unwrap();
         assert_eq!(clean.queries().len(), 1);
-        assert_eq!(
-            clean.queries()[0].name().to_string(),
-            "www.youtube.com."
-        );
+        assert_eq!(clean.queries()[0].name().to_string(), "www.youtube.com.");
         assert_eq!(clean.queries()[0].query_type(), RecordType::A);
         assert!(clean.recursion_desired());
         assert!(clean.additionals().is_empty());
@@ -874,5 +956,127 @@ mod tests {
             ResolveResult::Message(m) => assert_eq!(m.id(), 0x1111),
             _ => panic!("expected message"),
         }
+    }
+
+    #[tokio::test]
+    async fn cancelled_single_flight_leader_releases_waiters_and_key() {
+        let state = state_with_acl(vec![]);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        state.in_flight.insert("same-query".into(), vec![tx]);
+        let guard = SingleFlightLeader {
+            state: &state,
+            key: Some("same-query".into()),
+        };
+        drop(guard);
+        assert!(matches!(rx.await.unwrap(), ResolveResult::ServFail));
+        assert!(!state.in_flight.contains_key("same-query"));
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        state.in_flight.insert("same-query".into(), vec![tx]);
+        assert!(state.in_flight.contains_key("same-query"));
+    }
+
+    fn small_cache_state() -> Arc<AppState> {
+        let mut cfg = Config::default();
+        cfg.cache.passthrough_max_entries = 1;
+        AppState::new(
+            cfg,
+            DomainIndex::load_str("", 0).unwrap(),
+            NodeTable::from_configs(vec![]).unwrap(),
+            GeoIp::open("/dev/null"),
+            None,
+        )
+    }
+
+    fn cached_test_answer(ttl: u32) -> Message {
+        let mut message = Message::new();
+        message.add_answer(Record::from_rdata(
+            Name::from_utf8("test.example.").unwrap(),
+            ttl,
+            RData::A(A(std::net::Ipv4Addr::new(203, 0, 113, 1))),
+        ));
+        message
+    }
+
+    #[test]
+    fn full_cache_refreshes_existing_keys_and_reclaims_expired_slots() {
+        let state = small_cache_state();
+        state.cache_passthrough(
+            "old".into(),
+            cached_test_answer(30),
+            "test.example.",
+            "test",
+        );
+        assert_eq!(state.passthrough_cache.len(), 1);
+        state.cache_passthrough(
+            "old".into(),
+            cached_test_answer(60),
+            "test.example.",
+            "test",
+        );
+        assert_eq!(
+            state
+                .passthrough_cache
+                .get("old")
+                .unwrap()
+                .message
+                .answers()[0]
+                .ttl(),
+            60
+        );
+        state.passthrough_cache.get_mut("old").unwrap().stale_until =
+            Instant::now() - Duration::from_secs(1);
+        state.cache_passthrough(
+            "new".into(),
+            cached_test_answer(30),
+            "test.example.",
+            "test",
+        );
+        assert!(state.passthrough_cache.contains_key("new"));
+        assert!(!state.passthrough_cache.contains_key("old"));
+    }
+
+    #[test]
+    fn cache_uses_answer_ttl_and_does_not_store_zero_ttl() {
+        let state = small_cache_state();
+        let started = Instant::now();
+        state.cache_passthrough(
+            "short".into(),
+            cached_test_answer(2),
+            "test.example.",
+            "test",
+        );
+        assert!(
+            state.passthrough_cache.get("short").unwrap().expire
+                <= started + Duration::from_secs(3)
+        );
+        state.passthrough_cache.clear();
+        state.cache_passthrough(
+            "zero".into(),
+            cached_test_answer(0),
+            "test.example.",
+            "test",
+        );
+        assert!(state.passthrough_cache.is_empty());
+    }
+
+    #[test]
+    fn cached_reply_counts_down_ttl_and_stale_reply_does_not_recache_for_full_ttl() {
+        let now = Instant::now();
+        let entry = CacheEntry {
+            message: cached_test_answer(60),
+            expire: now + Duration::from_secs(2),
+            stale_until: now + Duration::from_secs(62),
+        };
+        let reply = entry.reply(123, now, false);
+        assert_eq!(reply.id(), 123);
+        assert_eq!(reply.answers()[0].ttl(), 2);
+        assert_eq!(
+            entry
+                .reply(124, now + Duration::from_secs(3), true)
+                .answers()[0]
+                .ttl(),
+            5
+        );
+        assert_eq!(entry.message.answers()[0].ttl(), 60);
     }
 }

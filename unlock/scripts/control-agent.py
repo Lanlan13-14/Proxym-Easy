@@ -15,6 +15,7 @@ import ipaddress
 import json
 import os
 import pathlib
+import signal
 import socket
 import urllib.parse
 
@@ -33,6 +34,9 @@ RECONNECT_SECS = max(1, int(os.environ.get("CONTROL_RECONNECT_SECS", "5")))
 # late answer still crosses the WSS link before the center gives up and falls
 # back to public resolvers (which lose the node's GeoDNS perspective).
 QUERY_TIMEOUT = max(0.1, float(os.environ.get("CONTROL_QUERY_TIMEOUT_SECS", "0.6")))
+COMMAND_TIMEOUT = 15
+SEND_TIMEOUT = 5
+MAX_QUERIES = 64
 ACL_FILE = RUNTIME_DIR / "control-allowed-ips.txt"
 PROTOCOL = "proxym-unlock-control-v1"
 
@@ -90,29 +94,33 @@ def write_acl(cidrs):
     os.replace(candidate, ACL_FILE)
 
 
+async def run_command(*args):
+    process = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+    )
+    reader = asyncio.create_task(process.communicate())
+    try:
+        output, _ = await asyncio.wait_for(asyncio.shield(reader), COMMAND_TIMEOUT)
+    except BaseException:
+        # Kill descendants too: inherited pipe FDs otherwise keep communicate
+        # blocked after the shell itself exits. Reap before reconnecting.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        await reader
+        raise
+    if process.returncode != 0:
+        raise RuntimeError(output.decode("utf-8", "replace").strip() or "control command failed")
+
+
 async def hot_apply_acl(cidrs):
     write_acl(cidrs)
-    # apply-acl reads this file only when the control client is configured.
-    # The file replacement above is atomic, so a failed nft update never leaves
-    # a partially-written allow list for the next retry.
-    process = await asyncio.create_subprocess_exec(
-        f"{ROOT}/scripts/apply-acl.sh",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    output, _ = await process.communicate()
-    if process.returncode != 0:
-        raise RuntimeError(output.decode("utf-8", "replace").strip() or "apply-acl failed")
-    # apply-acl protects inbound ports; rerun the idempotent route-mark setup so
-    # return packets for newly allowed clients leave main/eth0 instead of WARP.
-    process = await asyncio.create_subprocess_exec(
-        f"{ROOT}/scripts/warp-zt.sh", "refresh-routes",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    output, _ = await process.communicate()
-    if process.returncode != 0:
-        raise RuntimeError(output.decode("utf-8", "replace").strip() or "refresh WARP return routes failed")
+    # Atomic file publication is retained; neither a timeout nor reconnect
+    # weakens the currently installed nft rules.
+    await run_command(f"{ROOT}/scripts/apply-acl.sh")
+    await run_command(f"{ROOT}/scripts/warp-zt.sh", "refresh-routes")
     log(f"applied center ACL snapshot ({len(cidrs)} CIDRs)")
 
 
@@ -147,7 +155,9 @@ def dns_udp_query(wire):
 
 
 async def resolve_dns(wire):
-    return await asyncio.to_thread(dns_udp_query, wire)
+    # Include executor queueing, not only the UDP recv timeouts. Cancelling the
+    # awaiting future also prevents an expired queued job from starting later.
+    return await asyncio.wait_for(asyncio.to_thread(dns_udp_query, wire), QUERY_TIMEOUT)
 
 
 async def answer_query(websocket, request_id, payload):
@@ -177,7 +187,7 @@ async def answer_query(websocket, request_id, payload):
 
 
 async def send(websocket, payload):
-    await websocket.send(json.dumps(payload, separators=(",", ":")))
+    await asyncio.wait_for(websocket.send(json.dumps(payload, separators=(",", ":"))), SEND_TIMEOUT)
 
 
 async def run_once():
@@ -187,6 +197,8 @@ async def run_once():
         "open_timeout": 10,
         "ping_interval": 20,
         "ping_timeout": 20,
+        "close_timeout": 5,
+        "max_queue": 64,
         "max_size": 1 << 20,
     }
     # websockets 14+ renamed extra_headers; Debian bookworm's older package
@@ -196,33 +208,47 @@ async def run_once():
     async with websockets.connect(URL, **connect_args) as websocket:
         if websocket.subprotocol != PROTOCOL:
             raise RuntimeError("center did not negotiate control subprotocol")
-        await send(websocket, {"type": "hello", "protocol": PROTOCOL, "node_id": NODE_ID})
-        async for raw in websocket:
-            try:
-                message = json.loads(raw)
-                message_type = message.get("type")
-                if message_type == "hello":
-                    if message.get("protocol") != PROTOCOL:
-                        raise RuntimeError("center control protocol mismatch")
-                elif message_type == "acl":
-                    cidrs = normalize_cidrs(message.get("cidrs"))
-                    await hot_apply_acl(cidrs)
-                elif message_type == "query":
-                    request_id = message.get("id")
-                    if not isinstance(request_id, int):
-                        raise ValueError("query id must be an integer")
-                    if not isinstance(message.get("dns_message_b64"), str):
-                        raise ValueError("dns_message_b64 must be a string")
-                    # Fire-and-track: the recv loop keeps drinking center
-                    # messages while queries resolve concurrently.
-                    asyncio.create_task(answer_query(websocket, request_id, message["dns_message_b64"]))
-                elif message_type == "error":
-                    raise RuntimeError(f"center error: {message.get('message', '')}")
-                else:
-                    raise ValueError("unknown control message")
-            except Exception as exc:
-                await send(websocket, {"type": "error", "message": str(exc)[:512]})
-                raise
+        tasks = set()
+        try:
+            await receive_messages(websocket, tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def receive_messages(websocket, tasks):
+    await send(websocket, {"type": "hello", "protocol": PROTOCOL, "node_id": NODE_ID})
+    async for raw in websocket:
+        try:
+            message = json.loads(raw)
+            message_type = message.get("type")
+            if message_type == "hello":
+                if message.get("protocol") != PROTOCOL:
+                    raise RuntimeError("center control protocol mismatch")
+            elif message_type == "acl":
+                cidrs = normalize_cidrs(message.get("cidrs"))
+                await hot_apply_acl(cidrs)
+            elif message_type == "query":
+                request_id = message.get("id")
+                if not isinstance(request_id, int):
+                    raise ValueError("query id must be an integer")
+                if not isinstance(message.get("dns_message_b64"), str):
+                    raise ValueError("dns_message_b64 must be a string")
+                if len(tasks) >= MAX_QUERIES:
+                    await send(websocket, {"type": "query_result", "id": request_id,
+                                           "error": "node query capacity exceeded"})
+                    continue
+                task = asyncio.create_task(answer_query(websocket, request_id, message["dns_message_b64"]))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+            elif message_type == "error":
+                raise RuntimeError(f"center error: {message.get('message', '')}")
+            else:
+                raise ValueError("unknown control message")
+        except Exception as exc:
+            await send(websocket, {"type": "error", "message": str(exc)[:512]})
+            raise
 
 
 async def main():

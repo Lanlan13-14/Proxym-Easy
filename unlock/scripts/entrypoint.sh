@@ -79,7 +79,9 @@ log "starting mandatory Cloudflare Zero Trust WARP egress"
 
 # Start SmartDNS only after Zero Trust has been proven ready.
 log "starting smartdns"
-smartdns -R -c "$CONF_DIR/smartdns.conf" -f >"$RUNTIME_DIR/smartdns.log" 2>&1 &
+# Keep `smartdns -R` and its workers in a private process group; the PID
+# remains stable for existing certificate reloads and health checks.
+python3 "$ROOT/scripts/smartdns-process.py" start "$CONF_DIR/smartdns.conf" >"$RUNTIME_DIR/smartdns.log" 2>&1 &
 echo $! >"$RUNTIME_DIR/smartdns.pid"
 sleep 1
 if ! kill -0 "$(cat "$RUNTIME_DIR/smartdns.pid")" 2>/dev/null; then
@@ -131,6 +133,11 @@ log "  HTTP=80 HTTPS=443 ALLOWED_IPS=${ALLOWED_IPS}"
 
 # Fail closed: if WARP is no longer healthy, stop sniproxy immediately. The
 # container restarts and does not silently fall back to direct VPS egress.
+# Container-local DNS recovery; no WARP re-enrollment, ACL/config rewrite or
+# periodic restart. Three failed samples (10s apart) reject transient loss.
+dns_failures=0
+dns_recoveries=0
+dns_probe_skipped=0
 while true; do
   if [ -f "$RUNTIME_DIR/warp-restart-required" ]; then
     log "scheduled Zero Trust restart; stopping sniproxy and exiting"
@@ -138,12 +145,14 @@ while true; do
     [ ! -f "$RUNTIME_DIR/socks5d.pid" ] || kill "$(cat "$RUNTIME_DIR/socks5d.pid")" 2>/dev/null || true
     exit 1
   fi
-  "$ROOT/scripts/warp-zt.sh" status || {
+  if ! "$ROOT/scripts/warp-zt.sh" status; then
+    # Preserve the original fail-closed policy. Do not introduce a grace period:
+    # SOCKS workers are forked, so pausing only a listener PID is insufficient.
     log "Zero Trust WARP unhealthy; stopping sniproxy/SOCKS and exiting"
     [ ! -f "$RUNTIME_DIR/sniproxy.pid" ] || kill "$(cat "$RUNTIME_DIR/sniproxy.pid")" 2>/dev/null || true
     [ ! -f "$RUNTIME_DIR/socks5d.pid" ] || kill "$(cat "$RUNTIME_DIR/socks5d.pid")" 2>/dev/null || true
     exit 1
-  }
+  fi
   for name in smartdns sniproxy; do
     pidfile="$RUNTIME_DIR/$name.pid"
     [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null || {
@@ -151,6 +160,36 @@ while true; do
       exit 1
     }
   done
+  probe_status=0
+  timeout -k 1 3 python3 "$ROOT/scripts/dns-health.py" >/dev/null 2>&1 || probe_status=$?
+  if [ "$probe_status" -eq 0 ]; then
+    dns_failures=0
+    dns_recoveries=0
+    dns_probe_skipped=0
+  elif [ "$probe_status" -eq 2 ]; then
+    # Existing custom rules may not expose a static UDP answer to test.
+    # Lack of an applicable probe is not evidence of a stuck DNS worker.
+    [ "$dns_probe_skipped" -eq 1 ] || log "SmartDNS liveness probe not applicable; retaining process supervision"
+    dns_probe_skipped=1
+    dns_failures=0
+    dns_recoveries=0
+  else
+    dns_failures=$((dns_failures + 1))
+    log "SmartDNS probe failed ($dns_failures/3)"
+    if [ "$dns_failures" -ge 3 ]; then
+      # One local recovery per continuous outage. Do not loop-restart a broken
+      # configuration; a failed recovery exits to the existing restart policy.
+      [ "$dns_recoveries" -eq 0 ] || { log "SmartDNS recovery failed; exiting"; exit 1; }
+      dns_recoveries=1
+      dns_failures=0
+      log "SmartDNS alive but unresponsive; restarting only SmartDNS"
+      dns_pid="$(cat "$RUNTIME_DIR/smartdns.pid")"
+      timeout -k 1 5 python3 "$ROOT/scripts/smartdns-process.py" stop "$dns_pid"
+      wait "$dns_pid" 2>/dev/null || true
+      python3 "$ROOT/scripts/smartdns-process.py" start "$CONF_DIR/smartdns.conf" >>"$RUNTIME_DIR/smartdns.log" 2>&1 &
+      echo $! >"$RUNTIME_DIR/smartdns.pid"
+    fi
+  fi
   case "${ENABLE_SOCKS5:-0}" in
     1|true|yes)
       [ -f "$RUNTIME_DIR/socks5d.pid" ] && kill -0 "$(cat "$RUNTIME_DIR/socks5d.pid")" 2>/dev/null || {
