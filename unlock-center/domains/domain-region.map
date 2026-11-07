@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 1763 (global=1149 regional=592 ai=22)
+# generated entries: 1764 (global=1150 regional=592 ai=22)
 # sources: unlock/all.txt + geosite + Rules Domain + 1-stream
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
@@ -1736,6 +1736,7 @@ x-live-fox-stgec.uplynk.com	regional	us
 xz.pphimalayanrt.com	global	-
 yahoovod.hs.llnwd.net	regional	tw
 yb.uncn.jp	regional	jp
+ydshengxue.com	global	-
 ydstatic.com	global	-
 yeah.net	global	-
 yep.video.yahoo.com	regional	tw
