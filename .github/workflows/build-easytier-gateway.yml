@@ -7,6 +7,8 @@ on:
       - '.github/workflows/build-easytier-gateway.yml'
     tags:
       - 'easytier-gateway-v*'
+    branches:
+      - main
   pull_request:
     paths:
       - 'easytier/gateway/**'
@@ -17,7 +19,9 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.22.x'
+  GO_VERSION: '1.27.3'
+  GOTOOLCHAIN: local
+  GOMAXPROCS: '2'
 
 jobs:
   test:
@@ -38,8 +42,12 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Vet
         run: go vet ./...
-      - name: Unit tests
-        run: go test -count=1 ./...
+      - name: Check pinned toolchain
+        run: test "$(go env GOVERSION)" = "go${GO_VERSION}"
+      - name: Unit tests including root control and supervisor
+        run: sudo env PATH="$PATH" GOTOOLCHAIN=local GOMAXPROCS=2 go test -count=1 -v ./...
+      - name: Race detector including root control and supervisor
+        run: sudo env PATH="$PATH" GOTOOLCHAIN=local GOMAXPROCS=2 CGO_ENABLED=1 go test -race -count=1 ./...
       - name: Build native test binary
         env:
           CGO_ENABLED: '0'
@@ -80,8 +88,12 @@ jobs:
           mkdir -p dist
           go build -trimpath -buildvcs=false -ldflags='-s -w' -o "dist/easytier-gateway-${{ matrix.suffix }}" ./
           chmod 0755 "dist/easytier-gateway-${{ matrix.suffix }}"
-          "dist/easytier-gateway-${{ matrix.suffix }}" --version 2>/dev/null || test '${{ matrix.goarch }}' = arm64
-          sha256sum "dist/easytier-gateway-${{ matrix.suffix }}" > "dist/easytier-gateway-${{ matrix.suffix }}.sha256"
+          binary="easytier-gateway-${{ matrix.suffix }}"
+          go version -m "dist/$binary"
+          test "$(go env GOVERSION)" = "go${GO_VERSION}"
+          if readelf -l "dist/$binary" | grep -q 'INTERP'; then exit 1; fi
+          if test '${{ matrix.goarch }}' = amd64; then "dist/$binary" --version; fi
+          (cd dist && sha256sum "$binary" > "$binary.sha256")
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -112,9 +124,18 @@ jobs:
           test -f release/easytier-gateway-linux-amd64.sha256
           test -f release/easytier-gateway-linux-arm64.sha256
           (cd release && sha256sum -c easytier-gateway-linux-amd64.sha256 && sha256sum -c easytier-gateway-linux-arm64.sha256)
+      - name: Record build provenance
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 -c 'import hashlib,json,os,pathlib; p=pathlib.Path("release"); a=[dict(name=x.name,size=x.stat().st_size,sha256=hashlib.sha256(x.read_bytes()).hexdigest()) for x in sorted(p.glob("easytier-gateway-linux-*")) if not x.name.endswith(".sha256")]; (p/"gateway-build.json").write_text(json.dumps(dict(format="easytier-gateway-build-v1",commit=os.environ["SOURCE_SHA"],go=os.environ["GO_VERSION"],cgo=False,run=os.environ["RUN_URL"],assets=a),indent=2)+"\n")'
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: release/easytier-gateway-linux-*
+          files: |
+            release/easytier-gateway-linux-*
+            release/gateway-build.json
+          make_latest: false
           generate_release_notes: true
           fail_on_unmatched_files: true
