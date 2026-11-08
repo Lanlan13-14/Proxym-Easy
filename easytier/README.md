@@ -80,7 +80,11 @@ python3 -u "$f" --repair
 
 [KNOWN] 服务端迁移成功后执行 `sudo easytier-easy --invite`。客户端尚未安装时，直接用本文最上面的安装命令，选择 `2`；已安装客户端用以上迁移命令更新脚本。已领取的旧网络密钥依旧有效，不需重新加入。
 
-[KNOWN] 遇到 HTTP 403 时检查已有访问策略/WAF 是否阻止非浏览器 POST；502/504 表示检查你的 Tunnel 回源服务和端口；404 可能是邀请已领取/过期、路径没回到新入口或旧 service 未迁移。新版会输出具体 HTTP 状态或 DNS/TLS/连接错误类别，不输出完整 token。不要把完整邀请链接、密钥或配置正文发到聊天。
+[KNOWN] HTTP 403 不是足以断定 WAF 的证据。新版客户端发送明确的 `easytier-easy/<版本>` 应用 User-Agent，而不是 Python 标准库的默认签名；识别 403 响应正文的 `error code: 1010`（Browser Integrity Check）和 `cf-mitigated: challenge`，不打印正文或完整链接。1010 先更新客户端，不要为了本脚本关闭整站防护。官方说明：[Error 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/)。
+
+[KNOWN] 如果收到 HTTP 200 但正文为空，不能视作成功；本脚本的领取入口不这样应答，需检查现有域名 `/join/*` 是否被 Worker、其他回源或固定响应覆盖。**不要让无效 token 的空 200 掩盖配置问题，也不要把主页 200 当作组网已通。** 502/504 检查 Tunnel 回源；404 可能是邀请已领取/过期、路径未到新入口或旧 service 未迁移。不要把完整邀请链接、密钥或配置正文发到聊天。
+
+[KNOWN] 本地服务检查与公网组网分开：systemd active 后，指定 `cf-mesh` 实例执行轻量 `connector list` RPC，允许 connector 未连接但必须返回合法 JSON 数组；单次探针超时会在约 30 秒窗口内重试，不再一次 5 秒超时就回滚。此检查仅证明本地实例管理可用，不证明 TUN 收发或公网可达。安装后 peer 查询失败只输出未确认连通，不因此删除已安装服务。最终本地检查失败仍回滚，回滚前保存 root 0600、脱敏的 `backups/<时间>/failure-diagnostics.json`，含 systemd 状态、80 行 journal 和虚拟网卡状态；备份不可公开。
 
 ## 卸载
 
@@ -90,6 +94,8 @@ sudo easytier-easy --uninstall
 ```
 
 [KNOWN] 输入 `UNINSTALL` 确认才操作；取消不会修改。先备份，再停止/禁用本脚本的组网服务，移除程序、运行配置、systemd 链接和快捷命令。保留 `/etc/easytier/backups`，不递归删除用户其他文件；**不卸载 cloudflared，不改你的 Tunnel、防火墙、DNS、默认路由**。备份含密钥，仍需 root 私有保存；卸载不是网络密钥撤销，其他已加入节点不因此被撤权。
+
+[KNOWN] 卸载前的备份按原始字节复制，不依赖把二进制或损坏的 `settings.json` 解码为文本；本地化命令输出采用 UTF-8 容错解码。只有确认受管 service 标记、路径和状态文件存在后才备份/停止服务；程序文件和未知文件仍受原来的边界检查。安装/修复不会以容错方式忽略损坏状态，避免覆盖错误配置。
 
 ## 测试
 

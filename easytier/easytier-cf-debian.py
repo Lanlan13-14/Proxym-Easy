@@ -49,20 +49,26 @@ MARK = '# Managed by easytier-cf-debian.py'
 MANAGED = (CFG, STATE, CORE, CLI, SCRIPT, UNIT_FILE)
 ARCHES = {'x86_64': 'x86_64', 'aarch64': 'aarch64', 'arm64': 'aarch64'}
 JOIN_TTL = 900
+HTTP_USER_AGENT = 'easytier-easy/3 (+https://github.com/Lanlan13-14/Proxym-Easy)'
 
 
 class SetupError(Exception):
     pass
 
 
+class CommandTimeout(SetupError):
+    pass
+
+
 def run(argv, timeout=30, check=True):
     try:
         p = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, text=True, timeout=timeout, check=False)
+                           stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
+                           timeout=timeout, check=False)
     except FileNotFoundError:
         raise SetupError('系统缺少命令：' + str(argv[0])) from None
     except subprocess.TimeoutExpired:
-        raise SetupError('命令超时：' + str(argv[0])) from None
+        raise CommandTimeout('命令超时：' + str(argv[0])) from None
     if check and p.returncode:
         raise SetupError(f'{argv[0]} 失败，退出码 {p.returncode}。')
     return p
@@ -313,8 +319,11 @@ def snapshot():
 def load_state():
     if not STATE.exists(): return None
     if STATE.is_symlink() or STATE.stat().st_mode & 0o077: raise SetupError('状态文件不是安全的 root 私有文件。')
-    d=json.loads(STATE.read_text())
-    if d.get('format')!='easytier-cf-state-v1': raise SetupError('现有状态不属于此脚本。')
+    try:
+        d=json.loads(STATE.read_text(encoding='utf-8'))
+    except (UnicodeError,ValueError):
+        raise SetupError('settings.json 不是有效 UTF-8 状态文件；拒绝安装/修复覆盖。卸载会按原始字节备份，不需要解析此文件。') from None
+    if not isinstance(d,dict) or d.get('format')!='easytier-cf-state-v1': raise SetupError('现有状态不属于此脚本。')
     return d
 
 
@@ -370,16 +379,33 @@ def fetch_join_link(link):
         def redirect_request(self,*args,**kwargs): return None
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect)
     try:
-        req=urllib.request.Request(link,method='POST',data=b'',headers={'Cache-Control':'no-store','X-EasyTier-Join':'1'})
+        req=urllib.request.Request(link,method='POST',data=b'',headers={
+            'User-Agent':HTTP_USER_AGENT,'Accept':'application/json',
+            'Cache-Control':'no-store','X-EasyTier-Join':'1'})
         with opener.open(req,timeout=25) as r: raw=r.read(32769)
     except urllib.error.HTTPError as exc:
-        meaning={301:'意外重定向',302:'意外重定向',403:'访问策略或 WAF 拦截',404:'链接过期、已领取或不是最新版服务端入口',405:'领取方法被拒绝',502:'Tunnel 回源失败',503:'服务未就绪',504:'Tunnel 回源超时'}.get(exc.code,'HTTP 请求失败')
-        raise SetupError(f'一次性领取失败：HTTP {exc.code}（{meaning}）；请勿发送完整令牌。') from None
+        # Inspect only bounded error content for a diagnostic code; never echo it or the URL.
+        diagnostic=b''
+        if exc.code==403:
+            try: diagnostic=exc.read(16384)
+            except (OSError,TimeoutError,ValueError): pass
+        headers=exc.headers or {}
+        ray=headers.get('CF-Ray','')
+        ray='；Ray ID '+ray if re.fullmatch(r'[A-Za-z0-9-]{1,80}',ray) else ''
+        meaning={301:'意外重定向',302:'意外重定向',403:'请求被拒绝，需查看边缘错误类型',404:'链接过期、已领取或不是最新版服务端入口',405:'领取方法被拒绝',502:'Tunnel 回源失败',503:'服务未就绪',504:'Tunnel 回源超时'}.get(exc.code,'HTTP 请求失败')
+        if exc.code==403:
+            if re.search(rb'(?:error\s*code\s*:\s*1010|\bError\s+1010\b)',diagnostic,re.I):
+                meaning='边缘错误 1010：客户端签名被 Browser Integrity Check 拒绝；请更新客户端，不要关闭整站防护'
+            elif headers.get('cf-mitigated','').lower()=='challenge':
+                meaning='边缘返回人机挑战，程序无法完成；检查此路径的策略'
+        raise SetupError(f'一次性领取失败：HTTP {exc.code}（{meaning}）{ray}；请勿发送完整令牌。') from None
     except urllib.error.URLError as exc:
         reason=exc.reason
         detail='TLS 证书校验失败' if isinstance(reason,ssl.SSLError) else ('DNS 解析失败' if isinstance(reason,socket.gaierror) else ('连接超时' if isinstance(reason,(TimeoutError,socket.timeout)) else '网络连接失败'))
         raise SetupError('一次性领取失败：'+detail+'；检查本机到自己 Tunnel 域名的 HTTPS，勿发送完整令牌。') from None
     except (OSError,TimeoutError): raise SetupError('一次性领取失败：连接中断或超时；凭据可能已领取，请重新生成链接。') from None
+    if not raw.strip():
+        raise SetupError('领取地址返回 HTTP 200 但响应为空；未收到凭据。请检查此域名 /join/* 是否被 Worker、其他回源或固定响应覆盖，不能将空 200 当作成功。')
     joined=parse_join(raw)
     if joined['domain'].lower()!=u.hostname.lower():
         raise SetupError('领取数据中的组网域名与链接域名不一致；拒绝安装，请核对服务端 Tunnel 配置。')
@@ -810,10 +836,14 @@ def install(args,rel):
             if s['role']=='server':
                 print(f"CF Tunnel 你自己配置：回源 http://127.0.0.1:{s['listen_port']}，cloudflared 固定 --protocol http2。")
                 print('加入客户端：sudo python3 /etc/easytier/easytier-cf-debian.py --invite（生成一次性 HTTPS 链接，无需客户端 SSH 登录 VPS）。')
-            else:print(peer_check())
+            else:
+                try: print(peer_check())
+                except (SetupError,OSError): print('本地安装成功，公网 peer 状态暂不可用；保留已安装服务，不因此回滚。')
             print('状态：sudo python3 /etc/easytier/easytier-cf-debian.py --status')
             print('回滚：sudo python3 /etc/easytier/easytier-cf-debian.py --rollback '+str(bak))
         except Exception as exc:
+            try: capture_failure_diagnostics(bak,exc)
+            except Exception: print('保存失败诊断未完成；继续安全回滚。',file=sys.stderr)
             print('安装失败，正在回滚：'+str(bak),file=sys.stderr)
             try:rollback(bak)
             except Exception as e:print('自动回滚失败：'+type(e).__name__+'；保留备份。',file=sys.stderr)
@@ -821,28 +851,79 @@ def install(args,rel):
         finally:shutil.rmtree(stage,ignore_errors=True)
 
 
+def cli_query(command,timeout=4):
+    # Always target our one instance; the default CLI fans out to every instance.
+    result=run([str(CLI),'-p',f'127.0.0.1:{RPC}','-n','cf-mesh','-o','json']+list(command),timeout=timeout,check=False)
+    if result.returncode: return None
+    try: return json.loads(result.stdout)
+    except (ValueError,UnicodeError): return None
+
+
 def health():
-    end=time.monotonic()+20
-    while time.monotonic()<end:
-        if run(['systemctl','is-active',UNIT],check=False).stdout.strip()=='active' and run([str(CLI),'-p',f'127.0.0.1:{RPC}','node','info'],timeout=5,check=False).returncode==0:
-            state=load_state()
-            if not state or state['role']!='server' or state.get('gateway_version')!=2: return
-            try:
-                if control_call('health').get('gateway_version')==2: return
-            except SetupError: pass
-        time.sleep(1)
-    raise SetupError('服务健康检查失败；使用回滚备份目录。')
+    deadline=time.monotonic()+30
+    print('等待本机服务与管理 RPC 就绪（最多约 30 秒，不要求公网 peer 已连接）…',flush=True)
+    while time.monotonic()<deadline:
+        try:
+            active=run(['systemctl','is-active',UNIT],timeout=3,check=False).stdout.strip()=='active'
+            if active:
+                connectors=cli_query(['connector','list'],timeout=min(4,max(0.1,deadline-time.monotonic())))
+                if isinstance(connectors,list):
+                    state=load_state()
+                    if not state or state['role']!='server' or state.get('gateway_version')!=2: return
+                    if control_call('health').get('gateway_version')==2: return
+        except (CommandTimeout,SetupError,OSError):
+            # A startup probe is not a transaction failure. Retry within the outer deadline.
+            pass
+        if time.monotonic()<deadline: time.sleep(min(1,max(0,deadline-time.monotonic())))
+    raise SetupError('本机服务/RPC 在约 30 秒内未就绪；不是已证实的公网 peer 失败。已触发安全回滚，请查看回滚前诊断。')
 
 
 def peer_check():
-    end=time.monotonic()+15
-    while time.monotonic()<end:
-        p=run([str(CLI),'-p',f'127.0.0.1:{RPC}','-o','json','peer'],check=False)
-        try:d=json.loads(p.stdout) if p.returncode==0 else []
-        except ValueError:d=[]
-        if any(x.get('hostname')==load_state().get('server_name','vps') and x.get('tunnel_proto')=='wss' for x in d if isinstance(x,dict)):return 'WSS peer 已连接。'
-        time.sleep(1)
-    return '本地服务运行，但暂未确认 WSS peer。检查你的 Tunnel 回源端口与服务端设置相同，cloudflared 使用 HTTP/2。'
+    deadline=time.monotonic()+12
+    state=load_state() or {}
+    last='尚未检测到服务端 WSS peer'
+    while time.monotonic()<deadline:
+        try:
+            rows=cli_query(['peer'],timeout=min(3,max(0.1,deadline-time.monotonic())))
+            if isinstance(rows,list):
+                for row in rows:
+                    if not isinstance(row,dict) or row.get('cost')=='Local': continue
+                    protos={part.strip().lower() for part in str(row.get('tunnel_proto','')).split(',')}
+                    # Manual enrollment does not know the server hostname; WS/TLS proves a tunnel,
+                    # and the inner network authentication proves membership, not its chosen name.
+                    if 'wss' in protos and row.get('ipv4')!=str(state.get('ip','')).split('/')[0]:
+                        return 'WSS peer 已连接（不等于已完成跨节点 TUN 数据收发测试）。'
+        except (CommandTimeout,SetupError,OSError): last='本机 peer 查询超时或暂不可用'
+        if time.monotonic()<deadline: time.sleep(min(1,max(0,deadline-time.monotonic())))
+    return '本地安装保留；'+last+'。未确认组网连通，请检查正式 Tunnel 回源和组网认证。'
+
+
+def capture_failure_diagnostics(backup,reason):
+    """Persist bounded, redacted evidence BEFORE rollback stops/removes the new program."""
+    secrets_to_remove=[]
+    try: secrets_to_remove.append(read_secret_from_config())
+    except (SetupError,OSError,UnicodeError): pass
+    def scrub(text):
+        text=str(text)
+        for value in secrets_to_remove:
+            if value: text=text.replace(value,'[REDACTED]')
+        text=re.sub(r'(?i)(/join/)[0-9a-f]{64}',r'\1[REDACTED]',text)
+        text=re.sub(r'(?im)((?:network_secret|password|access_token|"secret")\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|\x27[^\x27]*\x27|[^\s,}]+)',r'\1"[REDACTED]"',text)
+        return text[:65536]
+    report={'format':'easytier-failure-v1','reason':scrub(reason),'note':'Captured before rollback; redacted, root-private. Do not publish full logs.'}
+    commands=(('systemd',['systemctl','show',UNIT,'--no-pager','--property=ActiveState,SubState,MainPID,ExecMainStatus,Result,NRestarts']),
+              ('journal',['journalctl','-u',UNIT,'-b','-n','80','--no-pager','-o','cat']),
+              ('rpc_listener',['ss','-ltnp','sport = :'+str(RPC)]),
+              ('interface',['ip','-j','addr','show','dev','etcf0']))
+    for key,argv in commands:
+        try:
+            result=run(argv,timeout=4,check=False)
+            report[key]={'exit':result.returncode,'stdout':scrub(result.stdout),'stderr':scrub(result.stderr)}
+        except (SetupError,OSError) as exc: report[key]={'error':type(exc).__name__}
+    target=Path(backup)/'failure-diagnostics.json'
+    atom(target,json.dumps(report,ensure_ascii=False,indent=2),0o600)
+    print('回滚前诊断已保存（root 私有、已脱敏）：'+str(target),file=sys.stderr,flush=True)
+    return target
 
 
 def status():
@@ -875,7 +956,9 @@ def repair_gateway():
             if was['active']:
                 run(['systemctl','restart',UNIT]); health()
             print('本机脚本/服务已更新；保留核心版本、网络密钥、虚拟 IP、回源端口。'+('服务已重启，连接会短暂重连。' if was['active'] else '原服务未运行，未自动启动。'),flush=True)
-        except BaseException:
+        except BaseException as exc:
+            try: capture_failure_diagnostics(backup,exc)
+            except Exception: print('保存失败诊断未完成；继续安全回滚。',file=sys.stderr)
             print('修复失败，正在恢复原服务。',file=sys.stderr)
             rollback(backup); raise
 
@@ -891,8 +974,11 @@ def uninstall():
     lockpath=ROOT/'.installer.lock'
     with lockpath.open('a') as lock:
         os.chmod(lockpath,0o600); fcntl.flock(lock,fcntl.LOCK_EX); ownership()
-        state=load_state()
-        if not state: raise SetupError('未找到安全的本脚本安装状态，拒绝删除文件。')
+        if not UNIT_FILE.is_file() or MARK.encode() not in UNIT_FILE.read_bytes():
+            raise SetupError('缺少本脚本的受管 service 标记，拒绝卸载未知程序。')
+        if not STATE.is_file():
+            raise SetupError('缺少本脚本状态文件，拒绝删除未知程序。')
+        # Uninstall backs up metadata byte-for-byte; corrupt JSON/locale must not brick removal.
         if JOIN.is_symlink() or (JOIN.exists() and not JOIN.is_file()): raise SetupError('旧加入文件路径冲突，拒绝卸载。')
         backup=snapshot(); print('卸载前备份：'+str(backup),flush=True)
         # Stop must succeed: never unlink a live supervised program.
