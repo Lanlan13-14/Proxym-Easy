@@ -274,6 +274,74 @@ class GatewayTransactionTests(unittest.TestCase):
             self.assertEqual({key: paths[key].read_bytes() for key in MANAGED_NAMES}, before)
             self.assertEqual(list(paths['TMP'].iterdir()), [])
 
+    def _interrupt_install_at(self, phase):
+        with tempfile.TemporaryDirectory() as td, contextlib.ExitStack() as stack:
+            paths, args, rel, run = self.setup_install(td, stack)
+            before = {key: paths[key].read_bytes() for key in MANAGED_NAMES}
+            service = {'active': True, 'enabled': True}
+            stack.enter_context(mock.patch.object(m, 'svc_state', side_effect=lambda: dict(service)))
+            stack.enter_context(mock.patch.object(m, 'download', side_effect=self.fake_core_download))
+            injected = []
+            original_atom = m.atom
+
+            def download_gateway(stage):
+                if phase == 'download':
+                    injected.append(phase)
+                    raise KeyboardInterrupt()
+                return lifecycle.fake_gateway_download(stage)
+
+            def atom(path, data, mode=0o600):
+                original_atom(path, data, mode)
+                if phase == 'gateway-write' and path == paths['GATEWAY'] and not injected:
+                    injected.append(phase)
+                    raise KeyboardInterrupt()
+
+            def command(argv, **kwargs):
+                if argv[:2] == ['systemctl', 'stop']:
+                    service['active'] = False
+                    if phase == 'service-stop' and not injected:
+                        injected.append(phase)
+                        raise KeyboardInterrupt()
+                elif argv[:2] == ['systemctl', 'start']:
+                    service['active'] = True
+                elif argv[:2] == ['systemctl', 'enable']:
+                    service['enabled'] = True
+                elif argv[:2] == ['systemctl', 'disable']:
+                    service['enabled'] = False
+                return subprocess.CompletedProcess(argv, 0, '', '')
+
+            run.side_effect = command
+            stack.enter_context(mock.patch.object(m, 'download_gateway', side_effect=download_gateway))
+            stack.enter_context(mock.patch.object(m, 'atom', side_effect=atom))
+            rollback = stack.enter_context(mock.patch.object(m, 'rollback', wraps=m.rollback))
+            diagnostics = stack.enter_context(mock.patch.object(m, 'capture_failure_diagnostics'))
+            with self.assertRaises(KeyboardInterrupt):
+                m.install(args, rel)
+            self.assertEqual(injected, [phase])
+            self.assertEqual({key: paths[key].read_bytes() for key in MANAGED_NAMES}, before)
+            self.assertEqual(service, {'active': True, 'enabled': True})
+            self.assertEqual(paths['UNIT_LINK'].resolve(), paths['UNIT_FILE'])
+            self.assertEqual(paths['COMMAND'].resolve(), paths['SCRIPT'])
+            self.assertEqual(list(paths['TMP'].iterdir()), [])
+            if phase == 'download':
+                rollback.assert_not_called()
+                diagnostics.assert_not_called()
+                self.assertFalse(any(call.args[0][:2] in (['systemctl', 'stop'], ['systemctl', 'start'])
+                                     for call in run.call_args_list))
+            else:
+                rollback.assert_called_once()
+                diagnostics.assert_called_once()
+                self.assertIn(mock.call(['systemctl', 'start', m.UNIT], check=False), run.call_args_list)
+
+    def test_install_interrupt_during_download_preserves_live_service_without_rollback(self):
+        self._interrupt_install_at('download')
+
+    def test_install_interrupt_after_gateway_write_restores_all_managed_files(self):
+        self._interrupt_install_at('gateway-write')
+
+    def test_install_interrupt_after_service_stop_restores_files_and_service(self):
+        self._interrupt_install_at('service-stop')
+
     def test_repair_gateway_download_failure_never_restarts_or_mutates_old_service(self):
         with tempfile.TemporaryDirectory() as td, contextlib.ExitStack() as stack:
             paths, _, _, run = self.setup_install(td, stack)

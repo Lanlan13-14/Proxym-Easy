@@ -32,7 +32,7 @@ trap 'rm -f "$f"' EXIT
 curl -fL --connect-timeout 15 --max-time 90 --proto '=https' --tlsv1.2 \
   https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/easytier/easytier-cf-debian.py \
   -o "$f"
-printf '%s  %s\n' 'e854e0dc1ddc6b8d7f185fd16d62076df9955ee1fe78836a02c3cbd446831b3f' "$f" | sha256sum -c -
+printf '%s  %s\n' 'adf2a345f7878ab45b43d951d6a5037d557e77e4fae423f5fe16ef4db1d25678' "$f" | sha256sum -c -
 python3 -c 'import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_bytes())' "$f"
 if [ -f "$d/tmp/easytier-setup.py" ]; then
   cp -p "$d/tmp/easytier-setup.py" "$d/backups/setup-before-download-$(date +%Y%m%d-%H%M%S).py"

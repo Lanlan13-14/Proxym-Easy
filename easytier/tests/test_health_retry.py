@@ -74,7 +74,7 @@ class HealthTests(unittest.TestCase):
 
     def test_failed_install_captures_evidence_before_rollback(self):
         text=P.read_text();start=text.index('def install(');end=text.index('def cli_query(',start)
-        failure=text[start:end].split('except Exception as exc:',1)[1]
+        failure=text[start:end].split('except BaseException as exc:',1)[1]
         self.assertLess(failure.index('capture_failure_diagnostics'),failure.index('rollback(bak)'))
 
 

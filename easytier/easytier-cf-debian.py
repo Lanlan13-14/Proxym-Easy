@@ -814,7 +814,8 @@ def install(args,rel):
                 except (SetupError,OSError): print('本地安装成功，公网 peer 状态暂不可用；保留已安装服务，不因此回滚。')
             print('状态：sudo python3 /etc/easytier/easytier-cf-debian.py --status')
             print('回滚：sudo python3 /etc/easytier/easytier-cf-debian.py --rollback '+str(bak))
-        except Exception as exc:
+        except BaseException as exc:
+            # Ctrl-C/SystemExit during commit must restore files and service too.
             if not committing:
                 print('安装前下载/配置校验失败；未更改旧安装、未停止现有服务。',file=sys.stderr)
                 raise
