@@ -135,7 +135,7 @@ jobs:
           binary="easytier-gateway-${{ matrix.suffix }}"
           go version -m "dist/$binary"
           test "$(go env GOVERSION)" = "go${GO_VERSION}"
-          readelf -l "dist/$binary" > /tmp/program-header.txt
+          readelf -lW "dist/$binary" > /tmp/program-header.txt
           if rg -q '^\s+INTERP\s' /tmp/program-header.txt; then exit 1; fi
           if test '${{ matrix.goarch }}' = amd64; then "dist/$binary" --version; fi
           (cd dist && sha256sum "$binary" > "$binary.sha256")
@@ -184,7 +184,7 @@ jobs:
             test -x "$file"
             readelf -h "$file" > /tmp/file-header.txt
             rg -q 'Class:.*ELF64' /tmp/file-header.txt
-            readelf -l "$file" > /tmp/program-header.txt
+            readelf -lW "$file" > /tmp/program-header.txt
             if rg -q '^\s+INTERP\s' /tmp/program-header.txt; then
               echo "Dynamic gateway binary rejected for $arch" >&2
               exit 1
