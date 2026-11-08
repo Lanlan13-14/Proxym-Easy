@@ -1,9 +1,9 @@
 {
   "format": "easytier-gateway-build-v1",
-  "commit": "b94077590075aa7358c3082f7693f9034af5de36",
+  "commit": "6052c6eb264cb6268d88a318e2270611d276cd07",
   "go": "1.27.3",
   "cgo": false,
-  "run": "https://github.com/Lanlan13-14/Proxym-Easy/actions/runs/42530624597",
+  "run": "https://github.com/Lanlan13-14/Proxym-Easy/actions/runs/42531265255",
   "assets": [
     {
       "name": "easytier-gateway-linux-amd64",
