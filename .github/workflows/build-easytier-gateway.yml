@@ -135,7 +135,8 @@ jobs:
           binary="easytier-gateway-${{ matrix.suffix }}"
           go version -m "dist/$binary"
           test "$(go env GOVERSION)" = "go${GO_VERSION}"
-          if readelf -l "dist/$binary" | grep -q '^\s+INTERP\s'; then exit 1; fi
+          readelf -l "dist/$binary" > /tmp/program-header.txt
+          if rg -q '^\s+INTERP\s' /tmp/program-header.txt; then exit 1; fi
           if test '${{ matrix.goarch }}' = amd64; then "dist/$binary" --version; fi
           (cd dist && sha256sum "$binary" > "$binary.sha256")
       - name: Upload build artifact
@@ -179,10 +180,12 @@ jobs:
           test -f staged/easytier-gateway-linux-arm64.sha256
           (cd staged && sha256sum -c easytier-gateway-linux-amd64.sha256 && sha256sum -c easytier-gateway-linux-arm64.sha256)
           for arch in amd64 arm64; do
-            test -x "staged/easytier-gateway-linux-$arch"
-            readelf -h "staged/easytier-gateway-linux-$arch" | rg -q 'Class:.*ELF64'
-            readelf -l "staged/easytier-gateway-linux-$arch" > "/tmp/program-header-$arch.txt"
-            if rg -q '^\s+INTERP\s' "/tmp/program-header-$arch.txt"; then
+            file="staged/easytier-gateway-linux-$arch"
+            test -x "$file"
+            readelf -h "$file" > /tmp/file-header.txt
+            rg -q 'Class:.*ELF64' /tmp/file-header.txt
+            readelf -l "$file" > /tmp/program-header.txt
+            if rg -q '^\s+INTERP\s' /tmp/program-header.txt; then
               echo "Dynamic gateway binary rejected for $arch" >&2
               exit 1
             fi
