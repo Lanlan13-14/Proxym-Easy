@@ -330,7 +330,7 @@ grep -q 'CLOUDFLARE_DNS_API_TOKEN' scripts/cert-manager.sh || { echo "lego Cloud
 grep -q 'WARP_ORGANIZATION' docker-compose.yml || { echo "compose missing Zero Trust organization"; fail=1; }
 grep -q 'WARP_CLIENT_ID' docker-compose.yml || { echo "compose missing Zero Trust Client ID"; fail=1; }
 grep -q 'WARP_CLIENT_SECRET' docker-compose.yml || { echo "compose missing Zero Trust Client Secret"; fail=1; }
-grep -q 'cloudflare-warp_' Dockerfile || { echo "official Cloudflare One Client package missing"; fail=1; }
+grep -q 'WARP_VERSION=2026.8.2115.0' Dockerfile || { echo "Cloudflare One Client security floor not enforced"; fail=1; }
 grep -q 'warp-svc' Dockerfile || { echo "official warp-svc missing"; fail=1; }
 grep -q 'unlock-socks5d' Dockerfile || { echo "unlock-socks5d SOCKS5 server missing"; fail=1; }
 grep -q 'socks5d.c' Dockerfile || { echo "socks5d.c not built in image"; fail=1; }

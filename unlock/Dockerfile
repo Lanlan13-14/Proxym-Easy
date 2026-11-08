@@ -7,7 +7,9 @@ LABEL org.opencontainers.image.source="https://github.com/Lanlan13-14/Proxym-Eas
 ARG SMARTDNS_RELEASE=Release48.3
 ARG SMARTDNS_VERSION=1.2026.07.28-0446
 ARG LEGO_VERSION=v5.3.1
-ARG WARP_VERSION=2026.6.880.0
+ARG WARP_VERSION=2026.8.2115.0
+ARG WARP_SHA256_AMD64=9667fccceb7b9b80c18cfeafb0a0f183b3070424c8d9f8a1cfba35311aa155c1
+ARG WARP_SHA256_ARM64=47b9f310b1eb5bea674aca6cbc9a1df9bcb5e6987215d9eda3d15e51e5d839b7
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
@@ -51,8 +53,14 @@ RUN set -eu; \
 # vendor package and omit the ~50MB GUI/taskbar assets. Both amd64/arm64 exist.
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) expected_sha256="$WARP_SHA256_AMD64" ;; \
+      arm64) expected_sha256="$WARP_SHA256_ARM64" ;; \
+      *) echo "unsupported Cloudflare WARP architecture: $arch" >&2; exit 1 ;; \
+    esac; \
     url="https://pkg.cloudflareclient.com/pool/bookworm/main/c/cloudflare-warp/cloudflare-warp_${WARP_VERSION}_${arch}.deb"; \
     wget -q -O /tmp/cloudflare-warp.deb "$url"; \
+    echo "$expected_sha256  /tmp/cloudflare-warp.deb" | sha256sum --check --status || { echo "Cloudflare WARP package SHA256 mismatch" >&2; exit 1; }; \
     dpkg-deb --fsys-tarfile /tmp/cloudflare-warp.deb \
       | tar -xOf - ./bin/warp-svc > /usr/local/bin/warp-svc; \
     dpkg-deb --fsys-tarfile /tmp/cloudflare-warp.deb \
