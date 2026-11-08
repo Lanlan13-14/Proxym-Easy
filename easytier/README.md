@@ -3,13 +3,26 @@
 [KNOWN] 运行同一个交互脚本，选择 VPS 服务端或加入客户端。安装时查询 EasyTier 最新稳定正式版并校验官方资产 SHA-256；程序、运行配置、备份位于 `/etc/easytier`。
 
 ```sh
-sudo install -d -m 700 /etc/easytier
-sudo curl -fL --proto '=https' --tlsv1.2 \
+sudo sh -c '
+set -eu
+d=/etc/easytier
+install -d -m 700 "$d" "$d/tmp" "$d/backups"
+f=$(mktemp "$d/tmp/installer.XXXXXX.py")
+trap '\''rm -f "$f"'\'' EXIT HUP INT TERM
+curl -fL --retry 2 --connect-timeout 15 --max-time 90 --proto '=https' --tlsv1.2 \
   https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/easytier/easytier-cf-debian.py \
-  -o /etc/easytier/easytier-cf-debian.py
-sudo chmod 700 /etc/easytier/easytier-cf-debian.py
-sudo python3 /etc/easytier/easytier-cf-debian.py
+  -o "$f"
+python3 -c "import ast,pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); assert len(b)>10000; ast.parse(b)" "$f"
+if [ -f "$d/easytier-cf-debian.py" ]; then
+  cp -p "$d/easytier-cf-debian.py" "$d/backups/installer-before-download-$(date +%Y%m%d-%H%M%S).py"
+fi
+chmod 700 "$f"
+mv -f "$f" "$d/easytier-cf-debian.py"
+exec python3 -u "$d/easytier-cf-debian.py"
+'
 ```
+
+[KNOWN] 下载先写临时文件，检查非空、大小和 Python 语法后才替换脚本，并在替换前保留原脚本；下载失败即停止，不运行空文件。启动立即输出提示，首次先选择角色，再查询最新稳定版；版本请求超时为 25 秒。上述启动提示不等于安装成功，后续仍会进行环境检查和安装。
 
 ## 一次性加入（不需要客户端登录 VPS）
 

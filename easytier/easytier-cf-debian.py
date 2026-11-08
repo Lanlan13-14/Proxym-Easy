@@ -116,7 +116,12 @@ def latest_release():
 def download(rel, stage):
     TMP.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(TMP, 0o700)
-    stage.mkdir(mode=0o700)
+    if stage.is_symlink() or (stage.exists() and not stage.is_dir()):
+        raise SetupError('下载暂存路径不是安全目录。')
+    stage.mkdir(mode=0o700,exist_ok=True)
+    if any(stage.iterdir()):
+        raise SetupError('下载暂存目录必须为空。')
+    os.chmod(stage,0o700)
     archive = stage / rel['asset']
     h, total = hashlib.sha256(), 0
     req = urllib.request.Request(rel['url'], headers={'User-Agent': 'easytier-cf-debian', 'Accept': 'application/octet-stream'})
@@ -682,6 +687,8 @@ def main():
     p=argparse.ArgumentParser(description='Debian EasyTier 虚拟局域网；WSS/WS over TCP；不配置 Cloudflare Tunnel。')
     p.add_argument('--role',choices=('server','client'));p.add_argument('--domain');p.add_argument('--listen-port',type=int,help='服务端回源 WS 端口，交互时询问，升级保留原值');p.add_argument('--ip');p.add_argument('--name');p.add_argument('--network');p.add_argument('--join');p.add_argument('--join-output',help=argparse.SUPPRESS);p.add_argument('--join-link');p.add_argument('--invite',action='store_true');p.add_argument('--no-prompt',action='store_true');p.add_argument('--update',action='store_true');p.add_argument('--dry-run',action='store_true');p.add_argument('--status',action='store_true');p.add_argument('--latest-version',action='store_true');p.add_argument('--rollback')
     args=p.parse_args()
+    if not args.latest_version:
+        print('EasyTier 安装/管理脚本已启动。',flush=True)
     if not sys.argv[1:] and STATE.exists():
         if os.geteuid()!=0: raise SetupError('请运行 sudo easytier-easy。')
         print('\nEasyTier 管理\n1) 查看状态\n2) 生成一次性加入链接\n3) 升级最新版\n4) 修改服务端回源端口\n0) 退出')
@@ -703,13 +710,19 @@ def main():
     if args.status:
         if os.geteuid()!=0:raise SetupError('请用 sudo。')
         status();return 0
-    if args.dry_run:
-        r=latest_release()
-        install(args,r)
-        return 0
     if args.rollback:env_check();rollback(args.rollback);return 0
-    r=latest_release();install(args,r)
-    if not args.no_prompt and not args.update:
+    if not args.role and not args.update and not args.join and not args.join_link:
+        if args.no_prompt: raise SetupError('--no-prompt 时必须提供 --role。')
+        print('\n1) VPS 服务端\n2) 加入客户端\n0) 退出',flush=True)
+        choice=input('选择 1/2/0: ').strip()
+        if choice=='0': return 0
+        args.role={'1':'server','2':'client'}.get(choice)
+        if not args.role: raise SetupError('必须选择 VPS 服务端或加入客户端。')
+    print('正在查询最新稳定版（GitHub 网络超时为 25 秒）…',flush=True)
+    r=latest_release()
+    print('已找到 '+r['tag']+'；进入环境检查与配置向导。',flush=True)
+    install(args,r)
+    if not args.dry_run and not args.no_prompt and not args.update:
         s=load_state()
         if s and s['role']=='server': issue_join_link()
     return 0

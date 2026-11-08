@@ -1,5 +1,7 @@
 import importlib.util
+import io
 import json
+from contextlib import redirect_stdout
 from pathlib import Path
 import tempfile
 import types
@@ -55,5 +57,35 @@ class ManagementTests(unittest.TestCase):
     def test_fetch_requires_https_valid_host_and_disallows_redirects(self):
         for link in ('http://unsafe.test/join/'+'a'*64,'https://evil.test/join/'+'a'*64,'https://test.trycloudflare.com.evil.test/join/'+'a'*64,'https://test.trycloudflare.com/join/'+'a'*64+'?x=1'):
             with self.subTest(link=link),self.assertRaises(m.SetupError):m.fetch_join_link(link)
+
+    def test_first_launch_menu_precedes_network_and_quit_is_offline(self):
+        with tempfile.TemporaryDirectory() as td:
+            state=Path(td)/'missing-settings.json'
+            output=io.StringIO()
+            def choose(prompt):
+                self.assertIn('脚本已启动',output.getvalue())
+                self.assertIn('1) VPS 服务端',output.getvalue())
+                return '0'
+            with mock.patch.object(m,'STATE',state),mock.patch.object(m.sys,'argv',['easytier-easy']),mock.patch('builtins.input',side_effect=choose),mock.patch.object(m,'latest_release') as latest,mock.patch.object(m,'install') as install,redirect_stdout(output):
+                self.assertEqual(m.main(),0)
+                latest.assert_not_called();install.assert_not_called()
+
+    def test_first_launch_shows_query_progress_before_release_request(self):
+        with tempfile.TemporaryDirectory() as td:
+            output=io.StringIO();events=[]
+            def choose(prompt):events.append('choose');return '1'
+            def release():
+                self.assertIn('正在查询最新稳定版',output.getvalue());events.append('release');return {'tag':'v2.6.4'}
+            with mock.patch.object(m,'STATE',Path(td)/'missing-settings.json'),mock.patch.object(m.sys,'argv',['easytier-easy']),mock.patch('builtins.input',side_effect=choose),mock.patch.object(m,'latest_release',side_effect=release),mock.patch.object(m,'install') as install,mock.patch.object(m,'load_state',return_value=None),redirect_stdout(output):
+                self.assertEqual(m.main(),0)
+            self.assertEqual(events,['choose','release'])
+            self.assertEqual(install.call_args.args[0].role,'server')
+
+    def test_version_query_output_keeps_machine_readable_format(self):
+        output=io.StringIO()
+        rel={'tag':'v2.6.4','asset':'asset.zip','digest':'0'*64}
+        with mock.patch.object(m.sys,'argv',['easytier-easy','--latest-version']),mock.patch.object(m,'latest_release',return_value=rel),redirect_stdout(output):
+            self.assertEqual(m.main(),0)
+        self.assertEqual(output.getvalue(),'v2.6.4 asset.zip sha256:'+'0'*64+'\n')
 
 if __name__=='__main__':unittest.main()
