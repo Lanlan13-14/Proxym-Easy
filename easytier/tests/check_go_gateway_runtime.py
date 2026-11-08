@@ -237,6 +237,10 @@ class RuntimeCheck:
                             subnet="10.66.66.0/24", server_name="server")
         base = dict(self.payload, role="server", name="server", ip="10.66.66.1/24",
                     listen_port=self.ports["public"])
+        # Actions and Android PRoot expose loopback-only/no-TUN networking.
+        # The production config must retain EasyTier's bind_device=true because
+        # it protects proxied subnets from overlapping physical routes; override
+        # it only in this isolated single-loopback integration fixture.
         server_text = self.client.render(base, "v2.6.4").replace("no_tun = false", "no_tun = true")
         server_text = server_text.replace("[flags]", '[[proxy_network]]\ncidr="127.0.0.1/32"\n'
                                           'mapped_cidr="10.77.77.1/32"\nallow=["tcp"]\n\n[flags]')
@@ -244,6 +248,7 @@ class RuntimeCheck:
         private_write(server_cfg, server_text)
         client_text = self.client.render(dict(base, role="client", name="client", ip="10.66.66.2/24"),
                                          "v2.6.4").replace("no_tun = false", "no_tun = true")
+        client_text = client_text.replace("[flags]", "[flags]\nbind_device = false\n")
         client_text = client_text.replace("wss://mesh.example.test:443/",
                                           f'ws://127.0.0.1:{self.ports["public"]}/')
         client_text = client_text.replace("[network_identity]",
