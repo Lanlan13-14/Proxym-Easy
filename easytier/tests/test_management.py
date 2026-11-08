@@ -55,8 +55,31 @@ class ManagementTests(unittest.TestCase):
                 self.assertEqual(m.main(),0);latest.assert_not_called();install.assert_not_called()
 
     def test_fetch_requires_https_valid_host_and_disallows_redirects(self):
-        for link in ('http://unsafe.test/join/'+'a'*64,'https://evil.test/join/'+'a'*64,'https://test.trycloudflare.com.evil.test/join/'+'a'*64,'https://test.trycloudflare.com/join/'+'a'*64+'?x=1'):
-            with self.subTest(link=link),self.assertRaises(m.SetupError):m.fetch_join_link(link)
+        for link in ('http://mesh.example.test/join/'+'a'*64,'https://test.trycloudflare.com/join/'+'a'*64,'https://mesh.example.test:8443/join/'+'a'*64,'https://mesh.example.test/join/'+'a'*64+'?x=1','https://user@mesh.example.test/join/'+'a'*64):
+            with self.subTest(link=link),mock.patch.object(m.urllib.request,'build_opener') as opener,self.assertRaises(m.SetupError):m.fetch_join_link(link)
+            opener.assert_not_called()
+
+    def test_own_tunnel_domain_post_tls_redirect_policy_and_domain_binding(self):
+        payload=dict(format='easytier-cf-join-v1',domain='mesh.example.test',network='test',secret='s'*54,subnet='10.66.66.0/24',server_name='vps')
+        response=mock.MagicMock();response.__enter__.return_value.read.return_value=json.dumps(payload).encode()
+        opener=mock.Mock();opener.open.return_value=response
+        link='https://mesh.example.test/join/'+'a'*64
+        with mock.patch.object(m.urllib.request,'build_opener',return_value=opener) as factory:
+            self.assertEqual(m.fetch_join_link(link)['domain'],'mesh.example.test')
+        req=opener.open.call_args.args[0]
+        self.assertEqual(req.method,'POST');self.assertEqual(req.data,b'')
+        self.assertEqual(req.get_header('X-easytier-join'),'1')
+        proxy,redirect=factory.call_args.args
+        self.assertEqual(proxy.proxies,{})
+        self.assertIsNone(redirect.redirect_request(None,None,302,'',{},'https://other.test'))
+        payload['domain']='wrong.example.test';response.__enter__.return_value.read.return_value=json.dumps(payload).encode()
+        with mock.patch.object(m.urllib.request,'build_opener',return_value=opener),self.assertRaisesRegex(m.SetupError,'不一致'):m.fetch_join_link(link)
+
+    def test_claim_http_error_is_reported_without_token(self):
+        link='https://mesh.example.test/join/'+'a'*64
+        opener=mock.Mock();opener.open.side_effect=m.urllib.error.HTTPError(link,502,'Bad Gateway',{},None)
+        with mock.patch.object(m.urllib.request,'build_opener',return_value=opener),self.assertRaises(m.SetupError) as exc:m.fetch_join_link(link)
+        self.assertIn('502',str(exc.exception));self.assertNotIn('a'*64,str(exc.exception))
 
     def test_first_launch_menu_precedes_network_and_quit_is_offline(self):
         with tempfile.TemporaryDirectory() as td:

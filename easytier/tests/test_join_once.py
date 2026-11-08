@@ -45,7 +45,14 @@ def request(address, method, path, headers=None, timeout=2):
 
 class JoinOnceTests(unittest.TestCase):
     def launch(self, ttl=900):
-        server, thread, token, consumed = installer.make_join_server(dict(PAYLOAD), ttl=ttl)
+        server=installer.build_gateway(0,1)
+        token=server.grant.issue(dict(PAYLOAD),ttl=ttl)['token']
+        thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':0.1},daemon=True)
+        thread.start()
+        class Consumed:
+            def is_set(self): return server.grant.status(token)=='consumed'
+            def wait(self,timeout): return self.is_set()
+        consumed=Consumed()
         self.assertRegex(token, r"^[0-9a-f]{64}$")
         self.assertEqual(server.server_address[0], "127.0.0.1", "join service must bind loopback only")
         self.assertGreater(server.server_address[1], 0, "tests require an ephemeral bound port")
@@ -65,13 +72,12 @@ class JoinOnceTests(unittest.TestCase):
         except OSError:
             pass
 
-    def assert_closed(self, server, thread):
-        # The server owns expiry/consumption shutdown and socket closure.
-        thread.join(timeout=4)
-        self.assertFalse(thread.is_alive(), "one-time server thread did not terminate")
-        self.assertEqual(server.fileno(), -1, "server did not independently close its socket")
+    def assert_gateway_alive(self, server, thread):
+        # Only the invitation closes: the shared origin must remain alive for mesh WS.
+        self.assertTrue(thread.is_alive(), 'redeeming a grant stopped the shared gateway')
+        self.assertGreaterEqual(server.fileno(),0)
 
-    def test_valid_token_returns_payload_once_and_closes_server(self):
+    def test_valid_token_returns_payload_once_and_preserves_gateway(self):
         server, thread, token, consumed = self.launch()
         path = "/join/" + token
         headers = {"X-EasyTier-Join": "1", "Content-Length": "0"}
@@ -82,9 +88,9 @@ class JoinOnceTests(unittest.TestCase):
         repeat_status, repeat_body = request(server.server_address, "POST", path, headers)
         self.assertNotEqual(repeat_status, 200, "same token succeeded more than once")
         self.assertNotIn(PAYLOAD["secret"].encode(), repeat_body)
-        self.assert_closed(server, thread)
+        self.assert_gateway_alive(server, thread)
 
-    def test_two_concurrent_gets_have_at_most_one_success(self):
+    def test_two_concurrent_posts_have_exactly_one_success(self):
         server, thread, token, consumed = self.launch()
         path = "/join/" + token
         barrier = threading.Barrier(3)
@@ -99,11 +105,11 @@ class JoinOnceTests(unittest.TestCase):
             barrier.wait(timeout=3)
             results = [f.result(timeout=4) for f in futures]
         successes = [(status, body) for status, body in results if status == 200]
-        self.assertLessEqual(len(successes), 1, "concurrent requests both received the secret")
+        self.assertEqual(len(successes), 1, "expected exactly one concurrent redemption")
         if successes:
             self.assertEqual(json.loads(successes[0][1]), PAYLOAD)
             self.assertTrue(consumed.wait(1))
-        self.assert_closed(server, thread)
+        self.assert_gateway_alive(server, thread)
 
     def test_wrong_path_and_head_do_not_consume_valid_token(self):
         server, thread, token, consumed = self.launch()
@@ -123,9 +129,9 @@ class JoinOnceTests(unittest.TestCase):
         self.assertEqual(status, 200, "valid POST should still work after invalid path and HEAD")
         self.assertEqual(json.loads(body), PAYLOAD)
         self.assertTrue(consumed.wait(1))
-        self.assert_closed(server, thread)
+        self.assert_gateway_alive(server, thread)
 
-    def test_expired_token_never_returns_secret_and_server_closes(self):
+    def test_expired_token_never_returns_secret_and_preserves_gateway(self):
         server, thread, token, consumed = self.launch(ttl=0.15)
         time.sleep(0.35)
         status, body = request(server.server_address, "POST", "/join/" + token,
@@ -133,14 +139,14 @@ class JoinOnceTests(unittest.TestCase):
         self.assertNotEqual(status, 200, "expired token returned credentials")
         self.assertNotIn(PAYLOAD["secret"].encode(), body)
         self.assertFalse(consumed.is_set(), "expiry must not signal successful consumption")
-        self.assert_closed(server, thread)
+        self.assert_gateway_alive(server, thread)
 
 
 class JoinParsingTests(unittest.TestCase):
     def test_dry_run_refuses_link_without_fetching(self):
         args = type("Args", (), {
             "join": None,
-            "join_link": "https://unit-test.trycloudflare.com/join/" + "a" * 64,
+            "join_link": "https://mesh.example.test/join/" + "a" * 64,
             "role": "client", "name": None, "ip": None, "update": False,
             "domain": None, "network": None, "dry_run": True,
         })()

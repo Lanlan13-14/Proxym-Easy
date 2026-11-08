@@ -12,7 +12,10 @@ from pathlib import Path
 import platform
 import re
 import secrets
-import selectors
+import select
+import signal
+import socketserver
+import struct
 import shutil
 import socket
 import stat
@@ -22,6 +25,8 @@ import tempfile
 import threading
 import time
 import urllib.request
+import urllib.error
+import ssl
 from urllib.parse import urlsplit
 import zipfile
 
@@ -259,7 +264,9 @@ accept_dns = false
 '''
 
 
-def unit_text():
+def unit_text(s=None):
+    s=s or load_state() or {}
+    command=(str(SCRIPT)+' --serve-gateway') if s.get('role')=='server' else (str(CORE)+' -c '+str(CFG)+' --rpc-portal 127.0.0.1:15888 --console-log-level warn --file-log-level off')
     return f'''{MARK}
 [Unit]
 Description=EasyTier Cloudflare Tunnel TCP LAN
@@ -272,7 +279,7 @@ UMask=0077
 Environment=RUST_LOG=warn
 WorkingDirectory={ROOT}
 ExecStartPre={CORE} -c {CFG} --check-config
-ExecStart={CORE} -c {CFG} --rpc-portal 127.0.0.1:15888 --console-log-level warn --file-log-level off
+ExecStart={command}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65536
@@ -351,53 +358,150 @@ def fetch_join_link(link):
     try:
         u=urlsplit(link)
         good=(u.scheme=='https' and u.port in (None,443) and u.hostname is not None
-              and re.fullmatch(r'[a-z0-9-]+\.trycloudflare\.com',u.hostname)
+              and not u.hostname.endswith('.trycloudflare.com')
+              and not re.fullmatch(r'[0-9.]+',u.hostname)
+              and len(u.hostname)<=253 and '.' in u.hostname
+              and all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',part) for part in u.hostname.split('.'))
               and not u.username and not u.password and not u.query and not u.fragment
               and re.fullmatch(r'/join/[0-9a-f]{64}',u.path))
     except ValueError: good=False
-    if not good: raise SetupError('请输入脚本生成的完整 https://*.trycloudflare.com/join/<token> 一次性链接。')
+    if not good: raise SetupError('请输入最新版服务端生成的 https://你的Tunnel域名/join/<64位令牌>；旧随机域名链接已停用。')
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self,*args,**kwargs): return None
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect)
     try:
         req=urllib.request.Request(link,method='POST',data=b'',headers={'Cache-Control':'no-store','X-EasyTier-Join':'1'})
         with opener.open(req,timeout=25) as r: raw=r.read(32769)
-    except Exception as exc: raise SetupError('一次性链接领取失败：'+type(exc).__name__+'；请在服务端重新生成链接。') from None
-    return parse_join(raw)
+    except urllib.error.HTTPError as exc:
+        meaning={301:'意外重定向',302:'意外重定向',403:'访问策略或 WAF 拦截',404:'链接过期、已领取或不是最新版服务端入口',405:'领取方法被拒绝',502:'Tunnel 回源失败',503:'服务未就绪',504:'Tunnel 回源超时'}.get(exc.code,'HTTP 请求失败')
+        raise SetupError(f'一次性领取失败：HTTP {exc.code}（{meaning}）；请勿发送完整令牌。') from None
+    except urllib.error.URLError as exc:
+        reason=exc.reason
+        detail='TLS 证书校验失败' if isinstance(reason,ssl.SSLError) else ('DNS 解析失败' if isinstance(reason,socket.gaierror) else ('连接超时' if isinstance(reason,(TimeoutError,socket.timeout)) else '网络连接失败'))
+        raise SetupError('一次性领取失败：'+detail+'；检查本机到自己 Tunnel 域名的 HTTPS，勿发送完整令牌。') from None
+    except (OSError,TimeoutError): raise SetupError('一次性领取失败：连接中断或超时；凭据可能已领取，请重新生成链接。') from None
+    joined=parse_join(raw)
+    if joined['domain'].lower()!=u.hostname.lower():
+        raise SetupError('领取数据中的组网域名与链接域名不一致；拒绝安装，请核对服务端 Tunnel 配置。')
+    return joined
 
 
-def make_join_server(payload,ttl=JOIN_TTL):
-    body=json.dumps(parse_join(json.dumps(payload)),separators=(',',':')).encode()
-    token=secrets.token_hex(32); deadline=time.monotonic()+ttl
-    lock=threading.Lock(); consumed=threading.Event()
+class JoinGrant:
+    """Single active, in-memory invitation. Rotation never changes the mesh secret."""
+    def __init__(self):
+        self.lock=threading.Lock(); self.token=None; self.body=None; self.deadline=0; self.result='none'
+
+    def issue(self,payload,ttl=JOIN_TTL):
+        body=json.dumps(parse_join(json.dumps(payload)),separators=(',',':')).encode()
+        with self.lock:
+            self.token=secrets.token_hex(32); self.body=body
+            self.deadline=time.monotonic()+ttl; self.result='active'
+            return {'token':self.token,'ttl':ttl}
+
+    def _status(self,token):
+        if not self.token or not secrets.compare_digest(str(token),self.token): return 'superseded'
+        if self.result=='active' and time.monotonic()>=self.deadline:
+            self.body=None; self.result='expired'
+        return self.result
+
+    def status(self,token):
+        with self.lock: return self._status(token)
+
+    def claim(self,token):
+        with self.lock:
+            if self._status(token)!='active': return None
+            body=self.body; self.body=None; self.result='consumed'; return body
+
+    def revoke(self,token):
+        with self.lock:
+            if self._status(token)=='active': self.body=None; self.result='revoked'
+            return self._status(token)
+
+
+def build_gateway(port,upstream_port,grant=None):
+    """Same-origin POST invitation + byte-transparent WebSocket gateway."""
     class Handler(http.server.BaseHTTPRequestHandler):
+        rbufsize=0  # Never prefetch and lose WebSocket bytes after the HTTP headers.
         def setup(self):
-            super().setup(); self.connection.settimeout(5)
+            super().setup(); self.connection.settimeout(10)
         def log_message(self,*args): pass
         def reject(self,code):
             self.send_response(code); self.send_header('Content-Length','0')
-            self.send_header('Cache-Control','no-store'); self.end_headers()
-        def do_HEAD(self): self.reject(405)
-        def do_GET(self): self.reject(405)
+            self.send_header('Cache-Control','no-store'); self.send_header('Connection','close'); self.end_headers()
+        def do_HEAD(self): self.reject(405 if self.path.startswith('/join/') else 404)
         def do_POST(self):
-            with lock:
-                if (self.path!='/join/'+token or time.monotonic()>=deadline or consumed.is_set()
-                        or self.headers.get('X-EasyTier-Join')!='1'
-                        or self.headers.get('Content-Length','0')!='0'
-                        or self.headers.get('Transfer-Encoding')):
-                    self.reject(404); return
-                consumed.set()
+            match=re.fullmatch(r'/join/([0-9a-f]{64})',self.path)
+            if (not match or self.headers.get('X-EasyTier-Join')!='1'
+                    or self.headers.get('Content-Length','0')!='0' or self.headers.get('Transfer-Encoding')):
+                self.reject(404); return
+            body=self.server.grant.claim(match.group(1))
+            if body is None: self.reject(404); return
             try:
                 self.send_response(200); self.send_header('Content-Type','application/json')
                 self.send_header('Content-Length',str(len(body))); self.send_header('Cache-Control','no-store, no-cache, must-revalidate')
-                self.send_header('Pragma','no-cache'); self.send_header('X-Content-Type-Options','nosniff'); self.end_headers()
-                self.wfile.write(body); self.wfile.flush()
+                self.send_header('Pragma','no-cache'); self.send_header('X-Content-Type-Options','nosniff')
+                self.send_header('Connection','close'); self.end_headers(); self.wfile.write(body); self.wfile.flush()
             except (OSError,TimeoutError): pass
-            finally: threading.Thread(target=close_server,daemon=True).start()
-    class Server(http.server.ThreadingHTTPServer):
-        daemon_threads=True
-        def __init__(self,*a,**k):
-            self.slots=threading.BoundedSemaphore(16); super().__init__(*a,**k)
+        def do_GET(self):
+            if self.path.startswith('/join/'):
+                self.reject(405); return
+            if (self.path!='/' or self.headers.get('Upgrade','').lower()!='websocket'
+                    or 'upgrade' not in self.headers.get('Connection','').lower()
+                    or self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length','0')!='0'):
+                self.reject(404); return
+            upstream=None
+            try:
+                upstream=socket.create_connection(('127.0.0.1',self.server.upstream_port),timeout=10)
+                request=self.requestline.encode('ascii')+b'\r\n'
+                request+=b''.join((k+': '+v+'\r\n').encode('latin-1') for k,v in self.headers.items())+b'\r\n'
+                if len(request)>32768: self.reject(431); return
+                upstream.sendall(request); head=b''
+                while b'\r\n\r\n' not in head:
+                    data=upstream.recv(4096)
+                    if not data: raise OSError('upstream closed during handshake')
+                    head+=data
+                    if len(head)>32768: raise OSError('upstream headers too large')
+                if head.split(b'\r\n',1)[0].split(b' ')[1:2]!=[b'101']:
+                    self.reject(502); return
+                self.connection.sendall(head)
+                self.connection.setblocking(False); upstream.setblocking(False)
+                with self.server.connections_lock: self.server.connections.update((self.connection,upstream))
+                sockets=(self.connection,upstream)
+                pending={s:bytearray() for s in sockets}; eof=set(); shut=set()
+                while not self.server.stopping.is_set():
+                    readers=[s for s in sockets if s not in eof and len(pending[sockets[1] if s is sockets[0] else sockets[0]])<262144]
+                    writers=[s for s in sockets if pending[s]]
+                    if not readers and not writers: return
+                    readable,writable,_=select.select(readers,writers,(),1)
+                    for src in readable:
+                        dst=sockets[1] if src is sockets[0] else sockets[0]
+                        try: data=src.recv(min(65536,262144-len(pending[dst])))
+                        except (BlockingIOError,InterruptedError): continue
+                        if data: pending[dst].extend(data)
+                        else: eof.add(src)
+                    for dst in writable:
+                        try: sent=dst.send(pending[dst])
+                        except (BlockingIOError,InterruptedError): continue
+                        if not sent: return
+                        del pending[dst][:sent]
+                    for src in tuple(eof):
+                        dst=sockets[1] if src is sockets[0] else sockets[0]
+                        if not pending[dst] and dst not in shut:
+                            dst.shutdown(socket.SHUT_WR); shut.add(dst)
+            except (OSError,ValueError): pass
+            finally:
+                with self.server.connections_lock:
+                    self.server.connections.discard(self.connection)
+                    if upstream: self.server.connections.discard(upstream)
+                if upstream: upstream.close()
+                self.close_connection=True
+    class Gateway(http.server.ThreadingHTTPServer):
+        daemon_threads=True; allow_reuse_address=True; request_queue_size=64
+        def __init__(self,address):
+            self.slots=threading.BoundedSemaphore(64); self.grant=grant or JoinGrant()
+            self.upstream_port=upstream_port; self.stopping=threading.Event()
+            self.connections=set(); self.connections_lock=threading.Lock()
+            super().__init__(address,Handler)
         def process_request(self,request,address):
             if not self.slots.acquire(blocking=False): request.close(); return
             try: super().process_request(request,address)
@@ -406,68 +510,129 @@ def make_join_server(payload,ttl=JOIN_TTL):
             try: super().process_request_thread(request,address)
             finally: self.slots.release()
         def handle_error(self,*args): pass
-    server=Server(('127.0.0.1',0),Handler)
-    def serve():
-        try: server.serve_forever(poll_interval=0.1)
-        finally: server.server_close()
-    thread=threading.Thread(target=serve,daemon=True); thread.start()
-    def close_server():
-        server.shutdown(); server.server_close()
-    timer=threading.Timer(max(ttl,0.01),close_server); timer.daemon=True; timer.start()
-    server.join_timer=timer
-    return server,thread,token,consumed
+        def close_streams(self):
+            self.stopping.set()
+            with self.connections_lock:
+                for connection in tuple(self.connections):
+                    try: connection.shutdown(socket.SHUT_RDWR)
+                    except OSError: pass
+                    connection.close()
+    return Gateway(('127.0.0.1',port))
+
+
+def control_path(): return TMP/'invite-control.sock'
+
+
+def control_call(command,token=None):
+    try:
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
+            connection.settimeout(5); connection.connect(str(control_path()))
+            connection.sendall(json.dumps({'command':command,'token':token}).encode()+b'\n')
+            with connection.makefile('rb') as stream: raw=stream.readline(4097)
+        if len(raw)>4096: raise ValueError()
+        result=json.loads(raw)
+        if not isinstance(result,dict) or not result.get('ok'): raise ValueError()
+        return result
+    except (OSError,ValueError):
+        raise SetupError('同域领取入口未运行；请先用最新版脚本 --repair 更新本机服务，不需重设密钥、IP 或 Tunnel。') from None
+
+
+def make_control_server(gateway,payload_factory,domain):
+    path=control_path()
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not stat.S_ISSOCK(path.stat().st_mode): raise SetupError('领取控制路径冲突。')
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as probe:
+            probe.settimeout(1)
+            if probe.connect_ex(str(path))==0: raise SetupError('领取控制服务已在运行。')
+        path.unlink()
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self):
+            self.request.settimeout(5)
+            if hasattr(socket,'SO_PEERCRED'):
+                _,uid,_=struct.unpack('3i',self.request.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
+                if uid!=0: return
+            try:
+                raw=self.rfile.readline(4097)
+                if len(raw)>4096: return
+                request=json.loads(raw); command=request.get('command'); token=request.get('token')
+                if command=='health': response={'ok':True,'gateway_version':2,'port':gateway.server_port,'domain':domain}
+                elif command=='issue': response=dict(ok=True,domain=domain,**gateway.grant.issue(payload_factory()))
+                elif command=='status': response={'ok':True,'status':gateway.grant.status(token)}
+                elif command=='revoke': response={'ok':True,'status':gateway.grant.revoke(token)}
+                else: response={'ok':False}
+                self.wfile.write(json.dumps(response,separators=(',',':')).encode()+b'\n')
+            except (OSError,ValueError,AttributeError,SetupError): pass
+    class Control(socketserver.ThreadingUnixStreamServer):
+        daemon_threads=True; request_queue_size=8
+        def handle_error(self,*args): pass
+    control=Control(str(path),Handler); os.chmod(path,0o600)
+    return control
 
 
 def issue_join_link():
     if os.geteuid()!=0: raise SetupError('请使用 sudo 运行。')
-    s=load_state()
-    if not s or s['role']!='server': raise SetupError('请先安装本机服务端，再生成一次性链接。')
-    binary=shutil.which('cloudflared')
-    if not binary: raise SetupError('未找到 cloudflared；先安装你管理 Tunnel 所用的 cloudflared，再执行 --invite。')
-    s['secret']=read_secret_from_config(); purge_legacy_join()
-    server,thread,token,consumed=make_join_server(join_payload(s))
-    TMP.mkdir(parents=True,exist_ok=True,mode=0o700); os.chmod(TMP,0o700)
-    proc=None
+    state=load_state()
+    if not state or state['role']!='server': raise SetupError('请先安装本机服务端，再生成一次性链接。')
+    purge_legacy_join(); result=control_call('issue'); token=result['token']
+    print('\n一次性链接（粘贴到已更新的客户端向导）：\nhttps://'+result['domain']+'/join/'+token,flush=True)
+    print('复用你设置的 Tunnel 和回源端口；15 分钟内单次有效。保持窗口运行，Ctrl+C 撤销；不会关闭组网。',flush=True)
     try:
-        # 独立临时 HOME 避免读取现有 config.yml；不改动现有 cloudflared 服务。
-        with tempfile.TemporaryDirectory(prefix='invite-',dir=TMP) as td:
-            env=dict(os.environ,HOME=td)
-            for k in tuple(env):
-                if k.startswith('TUNNEL_') or k in ('CLOUDFLARED_CONFIG','XDG_CONFIG_HOME'): env.pop(k,None)
-            cmd=[binary,'tunnel','--config','/dev/null','--no-autoupdate','--protocol','http2',
-                 '--url','http://127.0.0.1:'+str(server.server_port),'--loglevel','info']
-            proc=subprocess.Popen(cmd,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
-                                  env=env,close_fds=True,start_new_session=True)
-            sel=selectors.DefaultSelector(); sel.register(proc.stdout,selectors.EVENT_READ)
-            buf=b''; url=None; ready=time.monotonic()+60
-            try:
-                while time.monotonic()<ready and proc.poll() is None:
-                    for key,_ in sel.select(timeout=0.3):
-                        chunk=os.read(key.fileobj.fileno(),4096)
-                        if not chunk: continue
-                        buf=(buf+chunk)[-16384:]
-                        m=re.search(rb'https://[a-z0-9-]+\.trycloudflare\.com',buf)
-                        if m: url=m.group().decode()
-                    if url and b'Registered tunnel connection' in buf: break
-                if not url or b'Registered tunnel connection' not in buf:
-                    raise SetupError('临时 HTTPS Tunnel 未能连通；检查 TCP 7844 出站，现有 Tunnel 未修改。')
-                print('\n一次性链接（不要用浏览器打开，粘贴到客户端向导）：\n'+url+'/join/'+token,flush=True)
-                print('15 分钟内有效；仅一次有效领取，领取或超时后临时 Tunnel 自动关闭。保持此窗口运行；Ctrl+C 立即撤销。',flush=True)
-                while not consumed.wait(0.2) and thread.is_alive():
-                    if proc.poll() is not None: raise SetupError('临时 Tunnel 已中断，请重新生成链接。')
-                    for key,_ in sel.select(timeout=0): os.read(key.fileobj.fileno(),4096)
-                # 允许 HTTP 响应经 connector 完整发出；此时令牌已失效，不能再次领取。
-                if consumed.is_set(): time.sleep(2); print('已领取；链接已失效，正在关闭临时 Tunnel。',flush=True)
-                else: print('已到期；链接已失效。',flush=True)
-            finally: sel.close()
+        while True:
+            status=control_call('status',token)['status']
+            if status!='active':
+                print({'consumed':'已领取，领取入口已关闭；组网保持运行。','expired':'链接已到期。','revoked':'链接已撤销。','superseded':'链接已被新邀请替换。'}.get(status,'链接已失效。'),flush=True)
+                return
+            time.sleep(0.5)
     finally:
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-            try: proc.wait(timeout=5)
-            except subprocess.TimeoutExpired: proc.kill(); proc.wait(timeout=5)
-        if proc is not None and proc.stdout is not None: proc.stdout.close()
-        server.join_timer.cancel(); server.shutdown(); server.server_close(); thread.join(timeout=2)
-        s.pop('secret',None)
+        try: control_call('revoke',token)
+        except SetupError: pass
+
+
+def serve_gateway():
+    if os.geteuid()!=0: raise SetupError('请用 root 启动组网入口。')
+    state=load_state()
+    if not state or state['role']!='server': raise SetupError('同域入口仅用于已安装的服务端。')
+    port=parse_port(state.get('listen_port',11011)); TMP.mkdir(mode=0o700,parents=True,exist_ok=True); os.chmod(TMP,0o700)
+    gateway=build_gateway(port,0)
+    with socket.socket() as reservation:
+        reservation.bind(('127.0.0.1',0)); internal_port=reservation.getsockname()[1]
+    gateway.upstream_port=internal_port
+    core=None; control=None; threads=[]; stopping=threading.Event()
+    previous={}
+    try:
+        for signum in (signal.SIGTERM,signal.SIGINT): previous[signum]=signal.signal(signum,lambda *_:stopping.set())
+        command=[str(CORE),'-c',str(CFG),'--listeners','ws://127.0.0.1:'+str(internal_port),
+                 '--rpc-portal','127.0.0.1:'+str(RPC),'--console-log-level','warn','--file-log-level','off']
+        core=subprocess.Popen(command,stdin=subprocess.DEVNULL,close_fds=True)
+        deadline=time.monotonic()+15
+        while True:
+            if core.poll() is not None: raise SetupError('组网核心启动失败，请检查 service 日志。')
+            try:
+                with socket.create_connection(('127.0.0.1',internal_port),timeout=0.2): break
+            except OSError:
+                if stopping.wait(0.1) or time.monotonic()>deadline: raise SetupError('组网内部 WS 监听未能就绪。')
+        def payload_factory():
+            return join_payload(dict(state,secret=read_secret_from_config()))
+        control=make_control_server(gateway,payload_factory,state['domain'])
+        for server in (gateway,control):
+            thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':0.1},daemon=True)
+            thread.start(); threads.append(thread)
+        print('同域组网/领取入口已启动：127.0.0.1:'+str(port),flush=True)
+        while not stopping.wait(0.3):
+            if core.poll() is not None or any(not t.is_alive() for t in threads): raise SetupError('组网子进程或入口异常退出。')
+    finally:
+        gateway.close_streams()
+        if control:
+            if len(threads)>1: control.shutdown()
+            control.server_close(); control_path().unlink(missing_ok=True)
+        if threads: gateway.shutdown()
+        gateway.server_close()
+        if core and core.poll() is None:
+            core.terminate()
+            try: core.wait(timeout=5)
+            except subprocess.TimeoutExpired: core.kill(); core.wait(timeout=5)
+        for thread in threads: thread.join(timeout=2)
+        for signum,handler in previous.items(): signal.signal(signum,handler)
 
 
 def purge_legacy_join():
@@ -631,9 +796,9 @@ def install(args,rel):
             core_new,cli_new=download(rel,stage)
             check=stage/'check.toml';check.write_text(render(s,rel['tag']))
             if run([str(core_new),'-c',str(check),'--check-config'],check=False).returncode:raise SetupError('最新官方二进制 TOML 校验失败；旧服务未停止。')
-            atom(CFG,render(s,rel['tag']),0o600);atom(CORE,core_new.read_bytes(),0o755);atom(CLI,cli_new.read_bytes(),0o755);atom(SCRIPT,Path(__file__).read_bytes(),0o700);atom(UNIT_FILE,unit_text(),0o600)
+            atom(CFG,render(s,rel['tag']),0o600);atom(CORE,core_new.read_bytes(),0o755);atom(CLI,cli_new.read_bytes(),0o755);atom(SCRIPT,Path(__file__).read_bytes(),0o700);atom(UNIT_FILE,unit_text(s),0o600)
             state={k:s[k] for k in ('role','name','ip','domain','network','subnet','server_name')};state.update({'format':'easytier-cf-state-v1','version':rel['tag'],'backup':str(bak)})
-            if s['role']=='server': state['listen_port']=s['listen_port']
+            if s['role']=='server': state.update(listen_port=s['listen_port'],gateway_version=2)
             atom(STATE,json.dumps(state,indent=2),0o600)
             if not UNIT_LINK.exists():UNIT_LINK.symlink_to(UNIT_FILE)
             run(['systemctl','daemon-reload'])
@@ -659,7 +824,12 @@ def install(args,rel):
 def health():
     end=time.monotonic()+20
     while time.monotonic()<end:
-        if run(['systemctl','is-active',UNIT],check=False).stdout.strip()=='active' and run([str(CLI),'-p',f'127.0.0.1:{RPC}','node','info'],timeout=5,check=False).returncode==0:return
+        if run(['systemctl','is-active',UNIT],check=False).stdout.strip()=='active' and run([str(CLI),'-p',f'127.0.0.1:{RPC}','node','info'],timeout=5,check=False).returncode==0:
+            state=load_state()
+            if not state or state['role']!='server' or state.get('gateway_version')!=2: return
+            try:
+                if control_call('health').get('gateway_version')==2: return
+            except SetupError: pass
         time.sleep(1)
     raise SetupError('服务健康检查失败；使用回滚备份目录。')
 
@@ -670,7 +840,7 @@ def peer_check():
         p=run([str(CLI),'-p',f'127.0.0.1:{RPC}','-o','json','peer'],check=False)
         try:d=json.loads(p.stdout) if p.returncode==0 else []
         except ValueError:d=[]
-        if any(x.get('hostname')=='vps' and x.get('tunnel_proto')=='wss' for x in d if isinstance(x,dict)):return 'WSS peer 已连接。'
+        if any(x.get('hostname')==load_state().get('server_name','vps') and x.get('tunnel_proto')=='wss' for x in d if isinstance(x,dict)):return 'WSS peer 已连接。'
         time.sleep(1)
     return '本地服务运行，但暂未确认 WSS peer。检查你的 Tunnel 回源端口与服务端设置相同，cloudflared 使用 HTTP/2。'
 
@@ -683,19 +853,87 @@ def status():
     print('只声明组网数据隧道使用 TCP；不承诺系统绝无 UDP socket。')
 
 
+def repair_gateway():
+    env_check(for_write=False); os.umask(0o077); ownership()
+    with (ROOT/'.installer.lock').open('a') as lock:
+        os.chmod(ROOT/'.installer.lock',0o600); fcntl.flock(lock,fcntl.LOCK_EX)
+        state=load_state()
+        if not state: raise SetupError('请先安装，再使用 --repair。')
+        backup=snapshot(); print('已备份：'+str(backup),flush=True)
+        was=svc_state()
+        try:
+            if state['role']=='server':
+                previous=re.search(r'ws://127\.0\.0\.1:(\d+)',CFG.read_text())
+                state['listen_port']=parse_port(state.get('listen_port') or (int(previous.group(1)) if previous else 11011))
+                state['gateway_version']=2
+            source=Path(__file__).read_bytes()
+            atom(SCRIPT,source,0o700); atom(STATE,json.dumps(state,indent=2),0o600)
+            atom(UNIT_FILE,unit_text(state),0o600)
+            if not UNIT_LINK.exists(): UNIT_LINK.symlink_to(UNIT_FILE)
+            purge_legacy_join(); install_shortcut()
+            run(['systemctl','daemon-reload'])
+            if was['active']:
+                run(['systemctl','restart',UNIT]); health()
+            print('本机脚本/服务已更新；保留核心版本、网络密钥、虚拟 IP、回源端口。'+('服务已重启，连接会短暂重连。' if was['active'] else '原服务未运行，未自动启动。'),flush=True)
+        except BaseException:
+            print('修复失败，正在恢复原服务。',file=sys.stderr)
+            rollback(backup); raise
+
+
+def uninstall():
+    if os.geteuid()!=0: raise SetupError('请运行 sudo easytier-easy --uninstall。')
+    if ROOT.is_symlink(): raise SetupError('安装目录是符号链接，拒绝卸载。')
+    if not ROOT.exists(): raise SetupError('未找到本脚本安装目录。')
+    print('将停止并移除本脚本的 EasyTier 服务、程序、运行配置和 easytier-easy 命令。',flush=True)
+    print('会先保留 root 私有备份；不删除 cloudflared，不修改你的 Tunnel、DNS、默认路由或防火墙。',flush=True)
+    if input('确认卸载请输入 UNINSTALL（其他输入取消）: ').strip()!='UNINSTALL':
+        print('已取消，未修改。'); return
+    lockpath=ROOT/'.installer.lock'
+    with lockpath.open('a') as lock:
+        os.chmod(lockpath,0o600); fcntl.flock(lock,fcntl.LOCK_EX); ownership()
+        state=load_state()
+        if not state: raise SetupError('未找到安全的本脚本安装状态，拒绝删除文件。')
+        if JOIN.is_symlink() or (JOIN.exists() and not JOIN.is_file()): raise SetupError('旧加入文件路径冲突，拒绝卸载。')
+        backup=snapshot(); print('卸载前备份：'+str(backup),flush=True)
+        # Stop must succeed: never unlink a live supervised program.
+        run(['systemctl','stop',UNIT])
+        if svc_state()['active']: raise SetupError('服务仍在运行，停止卸载；备份已保留。')
+        run(['systemctl','disable',UNIT],check=False)
+        if UNIT_LINK.is_symlink() and os.path.realpath(UNIT_LINK)==str(UNIT_FILE): UNIT_LINK.unlink()
+        if COMMAND.is_symlink() and os.path.realpath(COMMAND)==str(SCRIPT): COMMAND.unlink()
+        for path in MANAGED:
+            if path.is_symlink() or (path.exists() and not path.is_file()): raise SetupError('受管文件被替换，停止卸载。')
+            path.unlink(missing_ok=True)
+        purge_legacy_join()
+        control=control_path()
+        if control.exists() and not control.is_symlink() and stat.S_ISSOCK(control.stat().st_mode): control.unlink()
+        run(['systemctl','daemon-reload'])
+        run(['systemctl','reset-failed',UNIT],check=False)
+    lockpath.unlink(missing_ok=True)
+    print('卸载完成。保留备份：'+str(backup),flush=True)
+    print('备份可能含组网密钥，不要公开；未递归删除 /etc/easytier 中的其他文件。',flush=True)
+
+
 def main():
     p=argparse.ArgumentParser(description='Debian EasyTier 虚拟局域网；WSS/WS over TCP；不配置 Cloudflare Tunnel。')
-    p.add_argument('--role',choices=('server','client'));p.add_argument('--domain');p.add_argument('--listen-port',type=int,help='服务端回源 WS 端口，交互时询问，升级保留原值');p.add_argument('--ip');p.add_argument('--name');p.add_argument('--network');p.add_argument('--join');p.add_argument('--join-output',help=argparse.SUPPRESS);p.add_argument('--join-link');p.add_argument('--invite',action='store_true');p.add_argument('--no-prompt',action='store_true');p.add_argument('--update',action='store_true');p.add_argument('--dry-run',action='store_true');p.add_argument('--status',action='store_true');p.add_argument('--latest-version',action='store_true');p.add_argument('--rollback')
+    p.add_argument('--serve-gateway',action='store_true',help=argparse.SUPPRESS);p.add_argument('--uninstall',action='store_true',help='确认后备份卸载，仅移除本脚本组件');p.add_argument('--repair',action='store_true',help='保留二进制和组网设置，修复/升级本机同域入口');p.add_argument('--role',choices=('server','client'));p.add_argument('--domain');p.add_argument('--listen-port',type=int,help='服务端回源 WS 端口，交互时询问，升级保留原值');p.add_argument('--ip');p.add_argument('--name');p.add_argument('--network');p.add_argument('--join');p.add_argument('--join-output',help=argparse.SUPPRESS);p.add_argument('--join-link');p.add_argument('--invite',action='store_true');p.add_argument('--no-prompt',action='store_true');p.add_argument('--update',action='store_true');p.add_argument('--dry-run',action='store_true');p.add_argument('--status',action='store_true');p.add_argument('--latest-version',action='store_true');p.add_argument('--rollback')
     args=p.parse_args()
+    if args.uninstall:
+        uninstall();return 0
+    if args.serve_gateway:
+        serve_gateway();return 0
+    if args.repair:
+        repair_gateway();return 0
     if not args.latest_version:
         print('EasyTier 安装/管理脚本已启动。',flush=True)
     if not sys.argv[1:] and STATE.exists():
         if os.geteuid()!=0: raise SetupError('请运行 sudo easytier-easy。')
-        print('\nEasyTier 管理\n1) 查看状态\n2) 生成一次性加入链接\n3) 升级最新版\n4) 修改服务端回源端口\n0) 退出')
+        print('\nEasyTier 管理\n1) 查看状态\n2) 生成一次性加入链接\n3) 升级最新版\n4) 修改服务端回源端口\n5) 卸载（保留备份）\n0) 退出')
         choice=input('选择: ').strip()
         if choice=='0': return 0
         if choice=='1': status();return 0
         if choice=='2': issue_join_link();return 0
+        if choice=='5': uninstall();return 0
         if choice=='3': args.update=True
         elif choice=='4':
             state=load_state()
