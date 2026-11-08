@@ -1,0 +1,120 @@
+name: build-easytier-gateway
+
+on:
+  push:
+    paths:
+      - 'easytier/gateway/**'
+      - '.github/workflows/build-easytier-gateway.yml'
+    tags:
+      - 'easytier-gateway-v*'
+  pull_request:
+    paths:
+      - 'easytier/gateway/**'
+      - '.github/workflows/build-easytier-gateway.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.22.x'
+
+jobs:
+  test:
+    name: Go tests and static checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: easytier/gateway
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: easytier/gateway/go.mod
+      - name: Format check
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Unit tests
+        run: go test -count=1 ./...
+      - name: Build native test binary
+        env:
+          CGO_ENABLED: '0'
+        run: go build -trimpath -buildvcs=false -ldflags='-s -w' -o /tmp/easytier-gateway-linux-amd64 ./
+      - name: Smoke test
+        run: /tmp/easytier-gateway-linux-amd64 --version
+
+  build:
+    name: Cross-compile ${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: easytier/gateway
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            suffix: linux-amd64
+          - goarch: arm64
+            suffix: linux-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: easytier/gateway/go.mod
+      - name: Build static gateway
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          go build -trimpath -buildvcs=false -ldflags='-s -w' -o "dist/easytier-gateway-${{ matrix.suffix }}" ./
+          chmod 0755 "dist/easytier-gateway-${{ matrix.suffix }}"
+          "dist/easytier-gateway-${{ matrix.suffix }}" --version 2>/dev/null || test '${{ matrix.goarch }}' = arm64
+          sha256sum "dist/easytier-gateway-${{ matrix.suffix }}" > "dist/easytier-gateway-${{ matrix.suffix }}.sha256"
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytier-gateway-${{ matrix.suffix }}
+          path: easytier/gateway/dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish tagged gateway release
+    if: startsWith(github.ref, 'refs/tags/easytier-gateway-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: easytier-gateway-linux-*
+          path: release
+          merge-multiple: true
+      - name: Verify release files
+        run: |
+          set -euo pipefail
+          test -f release/easytier-gateway-linux-amd64
+          test -f release/easytier-gateway-linux-arm64
+          test -f release/easytier-gateway-linux-amd64.sha256
+          test -f release/easytier-gateway-linux-arm64.sha256
+          (cd release && sha256sum -c easytier-gateway-linux-amd64.sha256 && sha256sum -c easytier-gateway-linux-arm64.sha256)
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/easytier-gateway-linux-*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
