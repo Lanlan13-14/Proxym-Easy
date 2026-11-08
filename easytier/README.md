@@ -41,7 +41,7 @@ sudo python3 /etc/easytier/easytier-cf-debian.py --invite
 
 [KNOWN] Go 网关硬限制最多 64 个并发 HTTP/连接处理槽位、HTTP 请求头最多 32 KiB；不是无限并发服务，也不保证转发零开销。转发使用 Go `net.TCPConn` 直连复制路径，避免旧 Python 手写缓冲循环；实际 Linux 内核是否使用 `splice` 需在支持 ptrace 的目标 VPS / CI runner 单独检查，无法使用 ptrace 时测试会如实跳过，不以连接 inode 连续冒充证据。
 
-[KNOWN] GitHub Actions 对每个受支持架构运行 `go test` 单测、Python 全部安装回归、固定官方 EasyTier v2.6.4 no-TUN 真实组网与领取前后 2 MiB 随机载荷连续性检查、哈希/卸载/信号收尾检查；这只证明 Actions runner 上的 loopback 测试，**不等于真实 CF、用户 VPS、跨洲性能验收**。本地 PRoot 的 ptrace 限制也不证明 splice 是否命中。
+[KNOWN] GitHub Actions 在 amd64 runner 上运行 Go 单测/竞态检测、Python 全部安装回归，以及固定官方 EasyTier v2.6.4 的 no-TUN 真实组网、领取前后各 1 MiB 随机载荷连续性与哈希、卸载、信号收尾检查；另为 amd64/arm64 交叉编译静态产物。arm64 的相同真实核心回归已在本机 PRoot 验证，不冒称两个架构都在 CI 原生运行。这些 loopback 测试**不等于真实 CF、用户 VPS、跨洲性能验收**；PRoot 的 ptrace 限制也不证明 splice 是否命中。
 
 [KNOWN] 不再生成长期 `join.json`，升级成功或生成新链接时会移除根目录下的旧 `join.json`。旧备份没有自动删除：其中可能保留旧凭据，且备份运行配置本来就含网络密钥。旧脚本的 `--join-output` 已禁用，`--join` 私有文件导入仅保留兼容。
 
@@ -113,7 +113,7 @@ python3 -m unittest discover -s easytier/tests -v
 
 ## Go 网关构建与安全供应链
 
-**状态（2026-11-08）**：Go 网关迁移已完成核心 CI 验收。提交 `e6dc398` 的 push run `42512312008` 已通过 Go vet/unit/race、Python 安装器回归、官方 EasyTier v2.6.4 no-TUN 真实核心组网与前后各 1 MiB 随机载荷，amd64/arm64 静态交叉编译也通过。此前两次失败来自测试诊断和 staging 检查问题，已修复。仓库 Actions 默认 workflow 权限已改为 write；手动 run `42512583000` 的完整测试和编译通过，但按设计跳过仅 push main 执行的 staging。**因此在下一次正常 push 触发并完成自动 staging 前，同目录二进制和 manifest 尚未出现，正式服务器不得迁移。**
+[KNOWN] 源码位于 `easytier/gateway/`；固定 Go 1.27.3，`CGO_ENABLED=0`，由 GitHub Actions 编译 Linux amd64 / arm64 静态二进制。成功的 `push main` 流程会将二进制、SHA-256 和 `easytier-gateway-build.json` 提交到 `easytier/`，**与 Python 安装器同目录，不创建 Release，也不在 VPS 编译**。是否已经发布，以目录中的清单及它指向的完整 run 为准；手动运行跳过 staging 不算发布。工件下载会丢失执行权限，staging 先校验文件内容，再用 `install -m 0755` 设置最终权限；不依赖下载工件的执行位。仅 staging 作业拥有 `contents: write`，仓库默认 workflow 权限保持只读。
 
 - [KNOWN] 安装器在线验证清单所指 Actions run 为成功的本仓库 workflow `push main`，验证提交仍位于当前 main 历史，然后逐一校验架构、大小、SHA-256、ELF 静态链接及 `--version`。绝不在 VPS 编译；客户端下载不获取网关。
 - [KNOWN] `--repair` 与首装在 Go binary 下载和验证完成之前保持旧程序和服务；校验或网络失败不静默回退 Python 转发层。成功迁移会重启一次服务，已有会话短暂重连。

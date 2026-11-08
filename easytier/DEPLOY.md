@@ -1,6 +1,6 @@
 # Debian 从零部署教程
 
-[KNOWN] **当前 Go 迁移已完成 CI 验收**：提交 `e6dc398` 的 push run `42512312008` 已通过 Go vet/unit/race、Python 安装器回归、官方 EasyTier v2.6.4 no-TUN 真实核心组网与前后各 1 MiB 随机载荷检查；amd64/arm64 静态交叉编译也通过。首次 staging 因仓库 Actions 默认 token 是只读而失败；已将仓库 workflow 默认权限改为 write，并通过手动 run `42512583000` 完成完整测试与编译，但该手动 run 按设计跳过只在 push main 执行的 staging。**因此下一次正常 push 后才会自动把二进制提交到 `easytier/`；在同目录二进制和 build manifest 出现前，正式服务器仍不得迁移。**
+[KNOWN] Go 网关由固定 Go 1.27.3 的 GitHub Actions 测试并静态编译。正式分发不使用 Release：仅在 `push main` 的测试、双架构编译和 staging 全部成功后，将 `easytier-gateway-linux-amd64`、`easytier-gateway-linux-arm64`、逐文件 SHA-256 及 `easytier-gateway-build.json` 提交到安装器同目录。安装器会在线核实清单对应的完整 run 为成功；工件未发布或该 run 未成功时，在停止旧服务前失败退出。请以同目录实际清单和它指向的 run 为准，不以单个 job 通过或手动 run 跳过 staging 当作发布完成。
 
 [KNOWN] **已有服务端不要为了升级而卸载重装**：只有 GitHub Actions 已完成并把 Go 二进制与清单提交到 `easytier/` 后，才从新版部署教程下载脚本并用 `--repair` 保留网络密钥、IP、端口，再运行 `--invite`。在该条件满足之前不要运行 Go 迁移；现有服务保持原样。客户端被旧版回滚撤销时，重新运行 `--role client`；保留中的客户端用 `--repair`。RPC 管理来源改写根因仍未确定；邀请签发前的同实例回源检查可拒绝错误应答，不等同完整公网验收。
 

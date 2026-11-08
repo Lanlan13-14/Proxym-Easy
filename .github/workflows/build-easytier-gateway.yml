@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   GO_VERSION: '1.27.3'
@@ -181,10 +181,13 @@ jobs:
           (cd staged && sha256sum -c easytier-gateway-linux-amd64.sha256 && sha256sum -c easytier-gateway-linux-arm64.sha256)
           for arch in amd64 arm64; do
             file="staged/easytier-gateway-linux-$arch"
-            test -x "$file"
+            # Artifact ZIP download restores contents, not executable mode.
+            # Verify bytes before install -m 0755 restores the final mode.
+            test -f "$file" && test -s "$file"
             readelf -h "$file" > /tmp/file-header.txt
             rg -q 'Class:.*ELF64' /tmp/file-header.txt
-            if readelf -lW "$file" | rg -q '^\s+INTERP\s'; then
+            readelf -lW "$file" > /tmp/program-header.txt
+            if rg -q '^\s+INTERP\s' /tmp/program-header.txt; then
               echo "Dynamic gateway binary rejected for $arch" >&2
               exit 1
             fi
