@@ -182,6 +182,8 @@ def validate(s):
     s['domain']=domain
     if not isinstance(s.get('secret'),str) or not 32<=len(s['secret'])<=256 or any(not 33<=ord(c)<=126 for c in s['secret']):
         raise SetupError('网络密钥需 32-256 个可打印 ASCII 字符。')
+    if s.get('role') == 'client' and len(s['secret']) < 40:
+        raise SetupError('客户端网络密钥长度不足；请用服务端生成的 320-bit 密钥。')
     return s
 
 
