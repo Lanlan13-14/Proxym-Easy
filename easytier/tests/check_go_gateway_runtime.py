@@ -293,7 +293,28 @@ class RuntimeCheck:
         self.client_process = self.spawn([str(self.args.core), "-c", str(client_cfg), "--rpc-portal",
                     f'127.0.0.1:{self.ports["client_rpc"]}', "--console-log-level", "warn",
                     "--file-log-level", "off", "--no-tun"], "client")
-        self.wait_for("official WS peer", self.peer_ready)
+        try:
+            self.wait_for("official WS peer", self.peer_ready)
+        except CheckFailure:
+            # Preserve only bounded, secret-free node/connector and socket state.
+            diagnostics = {}
+            for label, port in (("client", self.ports["client_rpc"]),
+                                ("server", self.ports["server_rpc"])):
+                for command in (("peer",), ("connector", "list")):
+                    try:
+                        result = subprocess.run([str(self.args.cli), "-p", f"127.0.0.1:{port}",
+                                                 "-n", "cf-mesh", "-o", "json", *command],
+                                                capture_output=True, text=True, timeout=3, env=self.env)
+                        diagnostics[label + "." + ".".join(command)] = {
+                            "returncode": result.returncode,
+                            "stdout": result.stdout[-4096:], "stderr": result.stderr[-2048:]}
+                    except Exception as exc:
+                        diagnostics[label + "." + ".".join(command)] = type(exc).__name__
+            diagnostics["gateway_tcp"] = owned_tcp_streams(self.gateway.pid, self.ports["public"])[0]
+            diagnostics["client_log"] = (self.root / "client.log").read_text(errors="replace")[-2048:]
+            diagnostics["gateway_log"] = (self.root / "gateway.log").read_text(errors="replace")[-2048:]
+            self.report["peer_diagnostics"] = diagnostics
+            raise
         self.start_trace()
         self.stream_mode, self.stream_inodes = owned_tcp_streams(self.gateway.pid, self.ports["public"])
         require(len(self.stream_inodes) == 1 if self.stream_mode == "public_established_tcp_inode"
