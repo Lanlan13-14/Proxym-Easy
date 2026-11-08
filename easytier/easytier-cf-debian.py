@@ -285,6 +285,10 @@ def load_state():
     return d
 
 
+def join_payload(s):
+    return {'format':'easytier-cf-join-v1','domain':s['domain'],'network':s['network'],'secret':s['secret'],'subnet':s['subnet'],'server_name':s['server_name']}
+
+
 def read_secret_from_config():
     text=CFG.read_text()
     m=re.search(r'^network_secret\s*=\s*("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')\s*$',text,re.M)
@@ -294,9 +298,6 @@ def read_secret_from_config():
     try: return json.loads(value)
     except ValueError: raise SetupError('现有网络密钥解析失败。') from None
 
-
-def join_payload(s):
-    return {'format':'easytier-cf-join-v1','domain':s['domain'],'network':s['network'],'secret':s['secret'],'subnet':s['subnet'],'server_name':s['server_name']}
 
 
 def read_join(path):
@@ -314,6 +315,7 @@ def get_config(args,old,version):
     if args.join:
         j=read_join(args.join)
         if args.role=='server': raise SetupError('--join 只用于客户端。')
+        if str(Path(args.join).resolve()) == str(JOIN.resolve()): raise SetupError('该文件含 VPS 本机服务端密钥；请显式粘贴客户端安全接收的网络密钥，禁止把服务端文件当客户端加入文件。')
         name=args.name or input('设备名 [client-1]: ').strip() or 'client-1'
         ip=args.ip or input(f"虚拟 IP，必须是 {j['subnet']} 内未占用地址: ").strip()
         if not ip: raise SetupError('每台客户端必须指定唯一虚拟 IP。')
@@ -329,17 +331,28 @@ def get_config(args,old,version):
         return validate(s)
     role=args.role
     if not role:
-        print('1) VPS 服务端\n2) 加入客户端（需 --join 加入文件）')
         role={'1':'server','2':'client'}.get(input('选择 1/2: ').strip())
-    if role!='server': raise SetupError('客户端需 --join /安全路径/join.json。')
-    if args.no_prompt and not all((args.domain,args.ip,args.name,args.network)): raise SetupError('--no-prompt 需提供 --domain --ip --name --network。')
-    host=re.sub(r'[^A-Za-z0-9_.-]','-',socket.gethostname().lower())[:63].strip('-.') or 'vps'
-    domain=args.domain or input('CF Tunnel 域名: ').strip()
-    ip=args.ip or input('虚拟 IP [10.66.66.1/24]: ').strip() or '10.66.66.1/24'
+    if role not in ('server','client'):
+        raise SetupError('必须选择 VPS 服务端或加入客户端。')
+    if args.no_prompt and not all((args.domain,args.ip,args.name,args.network)):
+        raise SetupError('--no-prompt 需提供 --domain --ip --name --network。')
+    host=re.sub(r'[^A-Za-z0-9_.-]','-',socket.gethostname().lower())[:63].strip('-.') or ('vps' if role=='server' else 'client-1')
     name=args.name or input(f'设备名 [{host}]: ').strip() or host
-    network=args.network or input('私有组网名 [my-cf-mesh]: ').strip() or 'my-cf-mesh'
+    if role == 'server':
+        domain=args.domain or input('CF Tunnel 公网主机名（例如 mesh.example.com）: ').strip()
+        ip=args.ip or input('本机虚拟 IPv4 [10.66.66.1/24]: ').strip() or '10.66.66.1/24'
+        network=args.network or input('私有网络名 [my-cf-mesh]: ').strip() or 'my-cf-mesh'
+        subnet=str(ipaddress.ip_interface(ip).network)
+        secret=secrets.token_urlsafe(40)
+        print('已生成 320-bit 随机组网密钥；只保存在 root-only /etc/easytier/join.json，不显示在终端。')
+        return validate({'role':'server','name':name,'ip':ip,'domain':domain,'network':network,'secret':secret,'subnet':subnet,'server_name':'vps','version':version})
+    domain=args.domain or input('VPS 的 CF Tunnel 公网主机名: ').strip()
+    network=args.network or input('服务端设置的私有网络名: ').strip()
+    ip=args.ip or input('本机虚拟 IPv4，必须和 VPS 使用同一 /24 [10.66.66.2/24]: ').strip() or '10.66.66.2/24'
     subnet=str(ipaddress.ip_interface(ip).network)
-    return validate({'role':'server','name':name,'ip':ip,'domain':domain,'network':network,'secret':secrets.token_urlsafe(40),'subnet':subnet,'server_name':'vps','version':version})
+    server_name='vps'
+    secret=getpass.getpass('输入 VPS 安装时安全传来的 320-bit 组网密钥（不会回显）: ')
+    return validate({'role':'client','name':name,'ip':ip,'domain':domain,'network':network,'secret':secret,'subnet':subnet,'server_name':server_name,'version':version})
 
 
 def env_check(for_write=True):
