@@ -113,7 +113,8 @@ python3 -m unittest discover -s easytier/tests -v
 
 ## Go 网关构建与安全供应链
 
-- [KNOWN] Go 网关源码测试、固定 Go 1.27.3 的 `go vet` / race detector、静态 amd64/arm64 编译、完整 Python 安装器回归和官方 EasyTier no-TUN 集成均由 GitHub Actions 负责；一次成功的完整 Actions 构建再由机器人提交双架构二进制、逐文件 SHA-256 与 JSON 构建清单到同一 `easytier/` 目录，不另外发 GitHub Release。Go 1.27.3 是为修复 `crypto/x509` `CVE-2026-111943` 而固定的工具链版本。
+**状态（2026-11-08）**：Go 网关迁移提交 `211e086` 和集成测试修订 `6d6c9b8` 均已推送；本地 ARM64 PRoot 使用 Actions arm64 产物和官方 EasyTier 核心完整通过 no-TUN peer、领取、SIGTERM 清理及总计 2 MiB 随机数据。GitHub Actions 的完整 AMD64 集成仍失败于官方 WS peer 握手、0 MiB；静态检查、race、Python 安装回归和 Go 本机版构建步骤则通过。自动提交的双架构仓库二进制/manifest 尚未生成，脚本因 fail-closed 不允许正式服务器迁移。失败归因仍未确定，不可将本机 ARM64 PASS 外推成 AMD64 通过。
+
 - [KNOWN] 安装器在线验证清单所指 Actions run 为成功的本仓库 workflow `push main`，验证提交仍位于当前 main 历史，然后逐一校验架构、大小、SHA-256、ELF 静态链接及 `--version`。绝不在 VPS 编译；客户端下载不获取网关。
 - [KNOWN] `--repair` 与首装在 Go binary 下载和验证完成之前保持旧程序和服务；校验或网络失败不静默回退 Python 转发层。成功迁移会重启一次服务，已有会话短暂重连。
 - [KNOWN] GitHub Actions 完整通过、生成的双架构二进制/清单经哈希检查并提交之前，仓库 Go 源码可以审查/测试，但正式脚本不能把它当作可部署构建。Actions 没在运行或失败时应保留现有服务，不能声称已完成安装迁移。
