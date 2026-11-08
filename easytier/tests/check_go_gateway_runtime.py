@@ -289,12 +289,12 @@ class RuntimeCheck:
         require(b"--no-tun" in argv, "BootConfig no_tun was not passed to supervised core")
         self.checked("inherited_fd_boot_and_python_control_health")
         self.checked("official_core_supervision_no_tun")
-        self.start_trace()
         self.release("client_rpc", "socks")
         self.client_process = self.spawn([str(self.args.core), "-c", str(client_cfg), "--rpc-portal",
                     f'127.0.0.1:{self.ports["client_rpc"]}', "--console-log-level", "warn",
                     "--file-log-level", "off", "--no-tun"], "client")
         self.wait_for("official WS peer", self.peer_ready)
+        self.start_trace()
         self.stream_mode, self.stream_inodes = owned_tcp_streams(self.gateway.pid, self.ports["public"])
         require(len(self.stream_inodes) == 1 if self.stream_mode == "public_established_tcp_inode"
                 else len(self.stream_inodes) >= 4, "cannot identify stable Go-owned WebSocket sockets")
