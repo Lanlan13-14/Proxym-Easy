@@ -181,7 +181,11 @@ jobs:
           for arch in amd64 arm64; do
             test -x "staged/easytier-gateway-linux-$arch"
             readelf -h "staged/easytier-gateway-linux-$arch" | rg -q 'Class:.*ELF64'
-            readelf -l "staged/easytier-gateway-linux-$arch" | if grep -q INTERP; then echo 'Dynamic gateway binary rejected' >&2; exit 1; else cat >/dev/null; fi
+            readelf -l "staged/easytier-gateway-linux-$arch" > "/tmp/program-header-$arch.txt"
+            if rg -q 'INTERP' "/tmp/program-header-$arch.txt"; then
+              echo "Dynamic gateway binary rejected for $arch" >&2
+              exit 1
+            fi
           done
           for arch in amd64 arm64; do
             install -m 0755 "staged/easytier-gateway-linux-$arch" "easytier/easytier-gateway-linux-$arch"
