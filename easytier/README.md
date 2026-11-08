@@ -113,7 +113,7 @@ python3 -m unittest discover -s easytier/tests -v
 
 ## Go 网关构建与安全供应链
 
-**状态（2026-11-08）**：Go 网关迁移提交 `211e086` 和测试/文档修订 `6d6c9b8`、`2f7856e` 已推送。两个完整 Actions run（`42505065587`、`42506046282`）都在 no-TUN 正式核心 peer 检查处失败，报告 0 MiB；Go vet/unit/race、Python 回归和启动/监管探针成功。ARM64 本地 PRoot 用官方核心通过 peer、领取与 2 MiB 数据回环，但先前没指出 CI 的实际根因：在这里找到 peer 查询还需明确指定生产配置的 EasyTier `instance_name=cf-mesh`（CLI 默认值不同）；测试已修正该选择，ARM64 完整流程再次通过。这个诊断修正还**没有推送/没有新 Actions 证据**，且不能仅凭此推断两个 AMD64 失败一定同因。构建工件/manifest 尚未发布，正式服务器不得迁移。
+**状态（2026-11-08）**：Go 网关迁移已完成核心 CI 验收。提交 `e6dc398` 的 push run `42512312008` 已通过 Go vet/unit/race、Python 安装器回归、官方 EasyTier v2.6.4 no-TUN 真实核心组网与前后各 1 MiB 随机载荷，amd64/arm64 静态交叉编译也通过。此前两次失败来自测试诊断和 staging 检查问题，已修复。仓库 Actions 默认 workflow 权限已改为 write；手动 run `42512583000` 的完整测试和编译通过，但按设计跳过仅 push main 执行的 staging。**因此在下一次正常 push 触发并完成自动 staging 前，同目录二进制和 manifest 尚未出现，正式服务器不得迁移。**
 
 - [KNOWN] 安装器在线验证清单所指 Actions run 为成功的本仓库 workflow `push main`，验证提交仍位于当前 main 历史，然后逐一校验架构、大小、SHA-256、ELF 静态链接及 `--version`。绝不在 VPS 编译；客户端下载不获取网关。
 - [KNOWN] `--repair` 与首装在 Go binary 下载和验证完成之前保持旧程序和服务；校验或网络失败不静默回退 Python 转发层。成功迁移会重启一次服务，已有会话短暂重连。

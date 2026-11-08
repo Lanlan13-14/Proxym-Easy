@@ -1,6 +1,6 @@
 # Debian 从零部署教程
 
-[KNOWN] Go 网关迁移提交 `211e086` 和测试/文档修订 `6d6c9b8`、`2f7856e` 已推送。两个完整 Actions run（`42505065587`、`42506046282`）都在 no-TUN 正式核心 peer 检查处失败，报告 0 MiB；Go vet/unit/race、Python 回归和启动/监管探针成功。ARM64 本地 PRoot 用官方核心通过 peer、领取与 2 MiB 数据回环。定位中发现集成脚本调用 EasyTier CLI 时未指定受管配置实例 `cf-mesh`，而 CLI 默认选择器并不等于它；已修正本地测试并再次 ARM64 全流程通过。但诊断修正尚未推送/尚无新 Actions 结果，也未证明它解释此前 AMD64 runner 的失败。构建工件/manifest 尚未发布，正式服务器不得迁移。
+[KNOWN] **当前 Go 迁移已完成 CI 验收**：提交 `e6dc398` 的 push run `42512312008` 已通过 Go vet/unit/race、Python 安装器回归、官方 EasyTier v2.6.4 no-TUN 真实核心组网与前后各 1 MiB 随机载荷检查；amd64/arm64 静态交叉编译也通过。首次 staging 因仓库 Actions 默认 token 是只读而失败；已将仓库 workflow 默认权限改为 write，并通过手动 run `42512583000` 完成完整测试与编译，但该手动 run 按设计跳过只在 push main 执行的 staging。**因此下一次正常 push 后才会自动把二进制提交到 `easytier/`；在同目录二进制和 build manifest 出现前，正式服务器仍不得迁移。**
 
 [KNOWN] **已有服务端不要为了升级而卸载重装**：只有 GitHub Actions 已完成并把 Go 二进制与清单提交到 `easytier/` 后，才从新版部署教程下载脚本并用 `--repair` 保留网络密钥、IP、端口，再运行 `--invite`。在该条件满足之前不要运行 Go 迁移；现有服务保持原样。客户端被旧版回滚撤销时，重新运行 `--role client`；保留中的客户端用 `--repair`。RPC 管理来源改写根因仍未确定；邀请签发前的同实例回源检查可拒绝错误应答，不等同完整公网验收。
 
