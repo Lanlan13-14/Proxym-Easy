@@ -1,6 +1,6 @@
 # Debian 从零部署教程
 
-[KNOWN] 第一次 Go 迁移 Actions 中，Go 单测、race、Python 安装回归、二进制 smoke 和核心启动/监督探针都通过，但完整核心 peer / 代理载荷回归两次在 Actions AMD64 runner 上失败（握手 EOF，0 MiB 转发）。把可选 syscall 跟踪移到 peer 建立后仍未解决；本机 ARM64 PRoot 使用同一 Go ARM64 产物与官方 v2.6.4 核心完整通过两段各 1 MiB 随机载荷，但这不足以解释 AMD64 差异。须先定位并让新完整 workflow 成功；Actions 因测试失败没有发布二进制，正式服务器暂不执行 Go 迁移。
+[KNOWN] Go 网关迁移提交 `211e086` 和测试/文档修订 `6d6c9b8`、`2f7856e` 已推送。两个完整 Actions run（`42505065587`、`42506046282`）都在 no-TUN 正式核心 peer 检查处失败，报告 0 MiB；Go vet/unit/race、Python 回归和启动/监管探针成功。ARM64 本地 PRoot 用官方核心通过 peer、领取与 2 MiB 数据回环。定位中发现集成脚本调用 EasyTier CLI 时未指定受管配置实例 `cf-mesh`，而 CLI 默认选择器并不等于它；已修正本地测试并再次 ARM64 全流程通过。但诊断修正尚未推送/尚无新 Actions 结果，也未证明它解释此前 AMD64 runner 的失败。构建工件/manifest 尚未发布，正式服务器不得迁移。
 
 [KNOWN] **已有服务端不要为了升级而卸载重装**：只有 GitHub Actions 已完成并把 Go 二进制与清单提交到 `easytier/` 后，才从新版部署教程下载脚本并用 `--repair` 保留网络密钥、IP、端口，再运行 `--invite`。在该条件满足之前不要运行 Go 迁移；现有服务保持原样。客户端被旧版回滚撤销时，重新运行 `--role client`；保留中的客户端用 `--repair`。RPC 管理来源改写根因仍未确定；邀请签发前的同实例回源检查可拒绝错误应答，不等同完整公网验收。
 

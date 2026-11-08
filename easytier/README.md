@@ -113,7 +113,7 @@ python3 -m unittest discover -s easytier/tests -v
 
 ## Go 网关构建与安全供应链
 
-**状态（2026-11-08）**：Go 网关迁移提交 `211e086` 和集成测试修订 `6d6c9b8` 均已推送；本地 ARM64 PRoot 使用 Actions arm64 产物和官方 EasyTier 核心完整通过 no-TUN peer、领取、SIGTERM 清理及总计 2 MiB 随机数据。GitHub Actions 的完整 AMD64 集成仍失败于官方 WS peer 握手、0 MiB；静态检查、race、Python 安装回归和 Go 本机版构建步骤则通过。自动提交的双架构仓库二进制/manifest 尚未生成，脚本因 fail-closed 不允许正式服务器迁移。失败归因仍未确定，不可将本机 ARM64 PASS 外推成 AMD64 通过。
+**状态（2026-11-08）**：Go 网关迁移提交 `211e086` 和测试/文档修订 `6d6c9b8`、`2f7856e` 已推送。两个完整 Actions run（`42505065587`、`42506046282`）都在 no-TUN 正式核心 peer 检查处失败，报告 0 MiB；Go vet/unit/race、Python 回归和启动/监管探针成功。ARM64 本地 PRoot 用官方核心通过 peer、领取与 2 MiB 数据回环，但先前没指出 CI 的实际根因：在这里找到 peer 查询还需明确指定生产配置的 EasyTier `instance_name=cf-mesh`（CLI 默认值不同）；测试已修正该选择，ARM64 完整流程再次通过。这个诊断修正还**没有推送/没有新 Actions 证据**，且不能仅凭此推断两个 AMD64 失败一定同因。构建工件/manifest 尚未发布，正式服务器不得迁移。
 
 - [KNOWN] 安装器在线验证清单所指 Actions run 为成功的本仓库 workflow `push main`，验证提交仍位于当前 main 历史，然后逐一校验架构、大小、SHA-256、ELF 静态链接及 `--version`。绝不在 VPS 编译；客户端下载不获取网关。
 - [KNOWN] `--repair` 与首装在 Go binary 下载和验证完成之前保持旧程序和服务；校验或网络失败不静默回退 Python 转发层。成功迁移会重启一次服务，已有会话短暂重连。

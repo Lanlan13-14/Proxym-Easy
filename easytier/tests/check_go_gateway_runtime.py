@@ -309,7 +309,7 @@ class RuntimeCheck:
     def peer_ready(self):
         try:
             result = subprocess.run([str(self.args.cli), "-p", f'127.0.0.1:{self.ports["client_rpc"]}',
-                                     "-o", "json", "peer"], capture_output=True, text=True,
+                                     "-n", "cf-mesh", "-o", "json", "peer"], capture_output=True, text=True,
                                     timeout=3, env=self.env)
             peers = json.loads(result.stdout) if result.returncode == 0 else []
         except (ValueError, subprocess.TimeoutExpired):
