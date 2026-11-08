@@ -37,9 +37,11 @@ exec python3 -u "$d/easytier-cf-debian.py"
 sudo python3 /etc/easytier/easytier-cf-debian.py --invite
 ```
 
-[KNOWN] 正式域名全部回源到 `http://127.0.0.1:<你指定的端口>`。脚本的同端口网关把 `/` 的 WebSocket 转给只监听本机的组网核心，把 `/join/<令牌>` 的 POST 交给内存单次凭据处理。没有新增公网端口、不创建其他 Tunnel，也不改动 cloudflared 服务或配置。只给 `/join` 发放临时权限，领取/超时后再请求返回 404；正式组网入口持续运行。本机控制 socket 是 `/etc/easytier/tmp/invite-control.sock`（0600，Linux root 身份校验），邀请凭据不落盘。
+[KNOWN] 正式域名全部回源到 `http://127.0.0.1:<你指定的端口>`。Go 同端口网关把 `/` 的 WebSocket 接到只监听本机的 EasyTier 核心，把 `/join/<令牌>` 的有效 POST 交给内存中的单次邀请处理。Go 网关在服务端 systemd 服务中直接监管核心；安装器 Python 只做交互、事务和管理控制，不再承载持续的 WebSocket 数据转发。没有新增公网端口、不创建其他 Tunnel，也不改动 cloudflared 服务或配置。领取/过期后该邀请即不能再次兑换；正式组网入口保持运行。本机控制 socket 是 `/etc/easytier/tmp/invite-control.sock`（0600，Linux root 身份校验），邀请凭据不落盘。
 
-[KNOWN] 这个同端口网关承载组网字节转发，会增加一跳本机转发；每连接双向缓冲上限各 256 KiB，最多 64 个同时处理的连接。不是无限连接服务，不是性能零开销承诺。
+[KNOWN] Go 网关硬限制最多 64 个并发 HTTP/连接处理槽位、HTTP 请求头最多 32 KiB；不是无限并发服务，也不保证转发零开销。转发使用 Go `net.TCPConn` 直连复制路径，避免旧 Python 手写缓冲循环；实际 Linux 内核是否使用 `splice` 需在支持 ptrace 的目标 VPS / CI runner 单独检查，无法使用 ptrace 时测试会如实跳过，不以连接 inode 连续冒充证据。
+
+[KNOWN] GitHub Actions 对每个受支持架构运行 `go test` 单测、Python 全部安装回归、固定官方 EasyTier v2.6.4 no-TUN 真实组网与领取前后 2 MiB 随机载荷连续性检查、哈希/卸载/信号收尾检查；这只证明 Actions runner 上的 loopback 测试，**不等于真实 CF、用户 VPS、跨洲性能验收**。本地 PRoot 的 ptrace 限制也不证明 splice 是否命中。
 
 [KNOWN] 不再生成长期 `join.json`，升级成功或生成新链接时会移除根目录下的旧 `join.json`。旧备份没有自动删除：其中可能保留旧凭据，且备份运行配置本来就含网络密钥。旧脚本的 `--join-output` 已禁用，`--join` 私有文件导入仅保留兼容。
 
@@ -108,3 +110,11 @@ sudo easytier-easy --uninstall
 ```sh
 python3 -m unittest discover -s easytier/tests -v
 ```
+
+## Go 网关构建与安全供应链
+
+- [KNOWN] Go 网关源码测试、固定 Go 1.27.3 的 `go vet` / race detector、静态 amd64/arm64 编译、完整 Python 安装器回归和官方 EasyTier no-TUN 集成均由 GitHub Actions 负责；一次成功的完整 Actions 构建再由机器人提交双架构二进制、逐文件 SHA-256 与 JSON 构建清单到同一 `easytier/` 目录，不另外发 GitHub Release。Go 1.27.3 是为修复 `crypto/x509` `CVE-2026-111943` 而固定的工具链版本。
+- [KNOWN] 安装器在线验证清单所指 Actions run 为成功的本仓库 workflow `push main`，验证提交仍位于当前 main 历史，然后逐一校验架构、大小、SHA-256、ELF 静态链接及 `--version`。绝不在 VPS 编译；客户端下载不获取网关。
+- [KNOWN] `--repair` 与首装在 Go binary 下载和验证完成之前保持旧程序和服务；校验或网络失败不静默回退 Python 转发层。成功迁移会重启一次服务，已有会话短暂重连。
+- [KNOWN] GitHub Actions 完整通过、生成的双架构二进制/清单经哈希检查并提交之前，仓库 Go 源码可以审查/测试，但正式脚本不能把它当作可部署构建。Actions 没在运行或失败时应保留现有服务，不能声称已完成安装迁移。
+- [KNOWN] Go+官方核心集成测试作用于 Actions 上的 Linux loopback / no-TUN，不代表用户的 Debian、真实 Cloudflare Tunnel、公网 TUN 或跨洲吞吐已验收。

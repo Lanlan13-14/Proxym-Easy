@@ -1,8 +1,8 @@
 # Debian 从零部署教程
 
-[KNOWN] 本教程服务端和客户端使用同一份 `main` 修复脚本（下方固定 SHA-256 校验），安装时仍动态获取 EasyTier 最新稳定正式版。以下命令均在各机器的 root 终端运行。
+[KNOWN] Go 网关源码与固定 Go 1.27.3 的 GitHub Actions 工作流已准备；截至此文档版本，自动提交双架构二进制和 SHA-256 清单到 `easytier/` 的新流程尚无最终版本运行证据。工作流完整成功并提交产物后，安装器才会允许服务端安装/迁移；在此之前正式服务器继续保持现有服务，不可因源码已存在就手动安装 Go 网关。
 
-[KNOWN] **已有服务端不要为了升级而卸载重装**：下载后用 `--repair` 保留网络密钥、IP 和端口，再运行 `--invite`。客户端被旧版回滚撤销时，重新运行 `--role client`；保留中的客户端用 `--repair`。本版修复已证实的“RPC 管理拒绝导致误回滚”，不宣称 RPC 来源改写的底层诱因已修复。生成邀请前新增同实例回源验证；公网空 200 时拒绝签发，避免继续发出不可用链接。
+[KNOWN] **已有服务端不要为了升级而卸载重装**：只有 GitHub Actions 已完成并把 Go 二进制与清单提交到 `easytier/` 后，才从新版部署教程下载脚本并用 `--repair` 保留网络密钥、IP、端口，再运行 `--invite`。在该条件满足之前不要运行 Go 迁移；现有服务保持原样。客户端被旧版回滚撤销时，重新运行 `--role client`；保留中的客户端用 `--repair`。RPC 管理来源改写根因仍未确定；邀请签发前的同实例回源检查可拒绝错误应答，不等同完整公网验收。
 
 ## 1. 前提与范围
 
@@ -32,7 +32,7 @@ trap 'rm -f "$f"' EXIT
 curl -fL --connect-timeout 15 --max-time 90 --proto '=https' --tlsv1.2 \
   https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/easytier/easytier-cf-debian.py \
   -o "$f"
-printf '%s  %s\n' '1300db260a1bd0355a4eefed10bedba4908118e6f1cb9de8bf88c834f23d6e9e' "$f" | sha256sum -c -
+printf '%s  %s\n' 'e854e0dc1ddc6b8d7f185fd16d62076df9955ee1fe78836a02c3cbd446831b3f' "$f" | sha256sum -c -
 python3 -c 'import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_bytes())' "$f"
 if [ -f "$d/tmp/easytier-setup.py" ]; then
   cp -p "$d/tmp/easytier-setup.py" "$d/backups/setup-before-download-$(date +%Y%m%d-%H%M%S).py"

@@ -4,7 +4,6 @@ import argparse
 import fcntl
 import hashlib
 import getpass
-import http.server
 import ipaddress
 import json
 import os
@@ -13,8 +12,6 @@ import platform
 import re
 import secrets
 import select
-import signal
-import socketserver
 import struct
 import shutil
 import socket
@@ -22,7 +19,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import urllib.request
 import urllib.error
@@ -35,6 +31,7 @@ BACKUPS = ROOT / 'backups'
 TMP = ROOT / 'tmp'
 CORE = ROOT / 'easytier-core'
 CLI = ROOT / 'easytier-cli'
+GATEWAY = ROOT / 'easytier-gateway'
 CFG = ROOT / 'config.toml'
 STATE = ROOT / 'settings.json'
 JOIN = ROOT / 'join.json'
@@ -46,10 +43,15 @@ UNIT_LINK = Path('/etc/systemd/system') / UNIT
 RPC = 15888
 API = 'https://api.github.com/repos/EasyTier/EasyTier/releases/latest'
 MARK = '# Managed by easytier-cf-debian.py'
-MANAGED = (CFG, STATE, CORE, CLI, SCRIPT, UNIT_FILE)
+MANAGED = (CFG, STATE, CORE, CLI, GATEWAY, SCRIPT, UNIT_FILE)
 ARCHES = {'x86_64': 'x86_64', 'aarch64': 'aarch64', 'arm64': 'aarch64'}
 JOIN_TTL = 900
-HTTP_USER_AGENT = 'easytier-easy/3 (+https://github.com/Lanlan13-14/Proxym-Easy)'
+GATEWAY_VERSION = '1.0.0'
+MINIMUM_GO_TOOLCHAIN = (1, 27, 3)
+GATEWAY_BUILD = 'github-actions/go1.27.3-or-newer'
+GATEWAY_BASE_URL = 'https://raw.githubusercontent.com/Lanlan13-14/Proxym-Easy/main/easytier/'
+GATEWAY_MANIFEST_URL = GATEWAY_BASE_URL + 'easytier-gateway-build.json'
+HTTP_USER_AGENT = 'easytier-easy/4 (+https://github.com/Lanlan13-14/Proxym-Easy)'
 
 
 class SetupError(Exception):
@@ -412,151 +414,6 @@ def fetch_join_link(link):
     return joined
 
 
-class JoinGrant:
-    """Single active, in-memory invitation. Rotation never changes the mesh secret."""
-    def __init__(self):
-        self.lock=threading.Lock(); self.token=None; self.body=None; self.deadline=0; self.result='none'
-
-    def issue(self,payload,ttl=JOIN_TTL):
-        body=json.dumps(parse_join(json.dumps(payload)),separators=(',',':')).encode()
-        with self.lock:
-            self.token=secrets.token_hex(32); self.body=body
-            self.deadline=time.monotonic()+ttl; self.result='active'
-            return {'token':self.token,'ttl':ttl}
-
-    def _status(self,token):
-        if not self.token or not secrets.compare_digest(str(token),self.token): return 'superseded'
-        if self.result=='active' and time.monotonic()>=self.deadline:
-            self.body=None; self.result='expired'
-        return self.result
-
-    def status(self,token):
-        with self.lock: return self._status(token)
-
-    def claim(self,token):
-        with self.lock:
-            if self._status(token)!='active': return None
-            body=self.body; self.body=None; self.result='consumed'; return body
-
-    def revoke(self,token):
-        with self.lock:
-            if self._status(token)=='active': self.body=None; self.result='revoked'
-            return self._status(token)
-
-
-def build_gateway(port,upstream_port,grant=None):
-    """Same-origin POST invitation + byte-transparent WebSocket gateway."""
-    class Handler(http.server.BaseHTTPRequestHandler):
-        rbufsize=0  # Never prefetch and lose WebSocket bytes after the HTTP headers.
-        def setup(self):
-            super().setup(); self.connection.settimeout(10)
-        def log_message(self,*args): pass
-        def reject(self,code):
-            self.send_response(code); self.send_header('Content-Length','0')
-            self.send_header('Cache-Control','no-store'); self.send_header('Connection','close'); self.end_headers()
-        def do_HEAD(self): self.reject(405 if self.path.startswith('/join/') else 404)
-        def do_POST(self):
-            check=re.fullmatch(r'/join/check/([0-9a-f]{32})',self.path)
-            if (check and self.headers.get('X-EasyTier-Join')=='1'
-                    and self.headers.get('Content-Length','0')=='0' and not self.headers.get('Transfer-Encoding')):
-                # Non-secret route proof, completely independent from invitation state.
-                body=json.dumps({'format':'easytier-cf-gateway-v1','nonce':check.group(1),
-                                 'instance_id':self.server.instance_id},separators=(',',':')).encode()
-                self.send_response(200); self.send_header('Content-Type','application/json')
-                self.send_header('Content-Length',str(len(body))); self.send_header('Cache-Control','no-store')
-                self.send_header('X-Content-Type-Options','nosniff'); self.send_header('Connection','close')
-                self.end_headers(); self.wfile.write(body); self.wfile.flush(); return
-            match=re.fullmatch(r'/join/([0-9a-f]{64})',self.path)
-            if (not match or self.headers.get('X-EasyTier-Join')!='1'
-                    or self.headers.get('Content-Length','0')!='0' or self.headers.get('Transfer-Encoding')):
-                self.reject(404); return
-            body=self.server.grant.claim(match.group(1))
-            if body is None: self.reject(404); return
-            try:
-                self.send_response(200); self.send_header('Content-Type','application/json')
-                self.send_header('Content-Length',str(len(body))); self.send_header('Cache-Control','no-store, no-cache, must-revalidate')
-                self.send_header('Pragma','no-cache'); self.send_header('X-Content-Type-Options','nosniff')
-                self.send_header('Connection','close'); self.end_headers(); self.wfile.write(body); self.wfile.flush()
-            except (OSError,TimeoutError): pass
-        def do_GET(self):
-            if self.path.startswith('/join/'):
-                self.reject(405); return
-            if (self.path!='/' or self.headers.get('Upgrade','').lower()!='websocket'
-                    or 'upgrade' not in self.headers.get('Connection','').lower()
-                    or self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length','0')!='0'):
-                self.reject(404); return
-            upstream=None
-            try:
-                upstream=socket.create_connection(('127.0.0.1',self.server.upstream_port),timeout=10)
-                request=self.requestline.encode('ascii')+b'\r\n'
-                request+=b''.join((k+': '+v+'\r\n').encode('latin-1') for k,v in self.headers.items())+b'\r\n'
-                if len(request)>32768: self.reject(431); return
-                upstream.sendall(request); head=b''
-                while b'\r\n\r\n' not in head:
-                    data=upstream.recv(4096)
-                    if not data: raise OSError('upstream closed during handshake')
-                    head+=data
-                    if len(head)>32768: raise OSError('upstream headers too large')
-                if head.split(b'\r\n',1)[0].split(b' ')[1:2]!=[b'101']:
-                    self.reject(502); return
-                self.connection.sendall(head)
-                self.connection.setblocking(False); upstream.setblocking(False)
-                with self.server.connections_lock: self.server.connections.update((self.connection,upstream))
-                sockets=(self.connection,upstream)
-                pending={s:bytearray() for s in sockets}; eof=set(); shut=set()
-                while not self.server.stopping.is_set():
-                    readers=[s for s in sockets if s not in eof and len(pending[sockets[1] if s is sockets[0] else sockets[0]])<262144]
-                    writers=[s for s in sockets if pending[s]]
-                    if not readers and not writers: return
-                    readable,writable,_=select.select(readers,writers,(),1)
-                    for src in readable:
-                        dst=sockets[1] if src is sockets[0] else sockets[0]
-                        try: data=src.recv(min(65536,262144-len(pending[dst])))
-                        except (BlockingIOError,InterruptedError): continue
-                        if data: pending[dst].extend(data)
-                        else: eof.add(src)
-                    for dst in writable:
-                        try: sent=dst.send(pending[dst])
-                        except (BlockingIOError,InterruptedError): continue
-                        if not sent: return
-                        del pending[dst][:sent]
-                    for src in tuple(eof):
-                        dst=sockets[1] if src is sockets[0] else sockets[0]
-                        if not pending[dst] and dst not in shut:
-                            dst.shutdown(socket.SHUT_WR); shut.add(dst)
-            except (OSError,ValueError): pass
-            finally:
-                with self.server.connections_lock:
-                    self.server.connections.discard(self.connection)
-                    if upstream: self.server.connections.discard(upstream)
-                if upstream: upstream.close()
-                self.close_connection=True
-    class Gateway(http.server.ThreadingHTTPServer):
-        daemon_threads=True; allow_reuse_address=True; request_queue_size=64
-        def __init__(self,address):
-            self.slots=threading.BoundedSemaphore(64); self.grant=grant or JoinGrant()
-            self.instance_id=secrets.token_hex(16)
-            self.upstream_port=upstream_port; self.stopping=threading.Event()
-            self.connections=set(); self.connections_lock=threading.Lock()
-            super().__init__(address,Handler)
-        def process_request(self,request,address):
-            if not self.slots.acquire(blocking=False): request.close(); return
-            try: super().process_request(request,address)
-            except BaseException: self.slots.release(); raise
-        def process_request_thread(self,request,address):
-            try: super().process_request_thread(request,address)
-            finally: self.slots.release()
-        def handle_error(self,*args): pass
-        def close_streams(self):
-            self.stopping.set()
-            with self.connections_lock:
-                for connection in tuple(self.connections):
-                    try: connection.shutdown(socket.SHUT_RDWR)
-                    except OSError: pass
-                    connection.close()
-    return Gateway(('127.0.0.1',port))
-
-
 def control_path(): return TMP/'invite-control.sock'
 
 
@@ -572,38 +429,6 @@ def control_call(command,token=None):
         return result
     except (OSError,ValueError):
         raise SetupError('同域领取入口未运行；请先用最新版脚本 --repair 更新本机服务，不需重设密钥、IP 或 Tunnel。') from None
-
-
-def make_control_server(gateway,payload_factory,domain):
-    path=control_path()
-    if path.exists() or path.is_symlink():
-        if path.is_symlink() or not stat.S_ISSOCK(path.stat().st_mode): raise SetupError('领取控制路径冲突。')
-        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as probe:
-            probe.settimeout(1)
-            if probe.connect_ex(str(path))==0: raise SetupError('领取控制服务已在运行。')
-        path.unlink()
-    class Handler(socketserver.StreamRequestHandler):
-        def handle(self):
-            self.request.settimeout(5)
-            if hasattr(socket,'SO_PEERCRED'):
-                _,uid,_=struct.unpack('3i',self.request.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
-                if uid!=0: return
-            try:
-                raw=self.rfile.readline(4097)
-                if len(raw)>4096: return
-                request=json.loads(raw); command=request.get('command'); token=request.get('token')
-                if command=='health': response={'ok':True,'gateway_version':2,'port':gateway.server_port,'domain':domain,'instance_id':gateway.instance_id}
-                elif command=='issue': response=dict(ok=True,domain=domain,**gateway.grant.issue(payload_factory()))
-                elif command=='status': response={'ok':True,'status':gateway.grant.status(token)}
-                elif command=='revoke': response={'ok':True,'status':gateway.grant.revoke(token)}
-                else: response={'ok':False}
-                self.wfile.write(json.dumps(response,separators=(',',':')).encode()+b'\n')
-            except (OSError,ValueError,AttributeError,SetupError): pass
-    class Control(socketserver.ThreadingUnixStreamServer):
-        daemon_threads=True; request_queue_size=8
-        def handle_error(self,*args): pass
-    control=Control(str(path),Handler); os.chmod(path,0o600)
-    return control
 
 
 def probe_tunnel_endpoint(url,nonce):
@@ -670,51 +495,132 @@ def issue_join_link():
         except SetupError: pass
 
 
+def fetch_gateway_manifest():
+    request=urllib.request.Request(GATEWAY_MANIFEST_URL,headers={'User-Agent':HTTP_USER_AGENT,'Accept':'application/json'})
+    try:
+        with urllib.request.urlopen(request,timeout=15) as response: raw=response.read(32769)
+    except Exception as exc: raise SetupError('获取 Go 网关构建清单失败：'+type(exc).__name__+'；未切换旧服务。') from None
+    if len(raw)>32768: raise SetupError('Go 网关构建清单超过大小限制。')
+    try: data=json.loads(raw)
+    except (ValueError,UnicodeError): raise SetupError('Go 网关构建清单不是有效 JSON。') from None
+    if not isinstance(data,dict) or data.get('format')!='easytier-gateway-build-v1' or data.get('go')!='1.27.3' or data.get('cgo') is not False:
+        raise SetupError('Go 网关构建清单格式/Go 安全工具链版本不符，拒绝下载。')
+    if not isinstance(data.get('commit'),str) or not re.fullmatch(r'[0-9a-f]{40}',data['commit']):
+        raise SetupError('Go 网关构建清单缺少合法的源码提交。')
+    run_url='https://github.com/Lanlan13-14/Proxym-Easy/actions/runs/'
+    if not isinstance(data.get('run'),str) or not data['run'].startswith(run_url) or not data['run'][len(run_url):].isdigit():
+        raise SetupError('Go 网关构建清单不是来自该项目的 Actions 运行。')
+    run_id=data['run'][len(run_url):]
+    api_root='https://api.github.com/repos/Lanlan13-14/Proxym-Easy/'
+    def api_json(url,limit):
+        req=urllib.request.Request(url,headers={'User-Agent':HTTP_USER_AGENT,'Accept':'application/vnd.github+json'})
+        with urllib.request.urlopen(req,timeout=12) as response: raw=response.read(limit+1)
+        if len(raw)>limit: raise ValueError('GitHub API response too large')
+        return json.loads(raw)
+    try:
+        run_meta=api_json(api_root+'actions/runs/'+run_id,32768)
+    except Exception: raise SetupError('无法在线核验 Go 网关 Actions 运行及 main 最新源码提交，拒绝使用未验证二进制。') from None
+    if (not isinstance(run_meta,dict) or run_meta.get('path')!='.github/workflows/build-easytier-gateway.yml'
+            or run_meta.get('head_sha')!=data['commit'] or run_meta.get('event')!='push' or run_meta.get('head_branch')!='main'
+            or run_meta.get('status')!='completed' or run_meta.get('conclusion')!='success'):
+        raise SetupError('Go 网关不是 GitHub main 当前 Go 源码的成功 Actions 构建；等待 CI 完成后重试。')
+    assets=data.get('assets')
+    if not isinstance(assets,list) or len(assets)!=2: raise SetupError('Go 网关清单必须精确列出两个目标架构。')
+    parsed={}
+    for item in assets:
+        if not isinstance(item,dict): raise SetupError('Go 网关资产记录无效。')
+        name=item.get('name',''); match=re.fullmatch(r'easytier-gateway-linux-(amd64|arm64)',name)
+        size=item.get('size'); digest=item.get('sha256')
+        if (not match or not isinstance(size,int) or isinstance(size,bool) or not 100_000<=size<=20_000_000
+                or not isinstance(digest,str) or not re.fullmatch(r'[0-9a-f]{64}',digest) or name in parsed):
+            raise SetupError('Go 网关资产名称、大小或 SHA-256 不合法。')
+        arch='x86_64' if match.group(1)=='amd64' else 'aarch64'
+        parsed[arch]={'name':name,'size':size,'sha256':digest}
+    if set(parsed)!= {'x86_64','aarch64'}: raise SetupError('Go 网关构建缺少固定支持的架构。')
+    compare_url='https://api.github.com/repos/Lanlan13-14/Proxym-Easy/compare/'+data['commit']+'...main'
+    latest=urllib.request.Request(compare_url,headers={'User-Agent':HTTP_USER_AGENT,'Accept':'application/vnd.github+json'})
+    try:
+        with urllib.request.urlopen(latest,timeout=12) as response: current_raw=response.read(16385)
+        if len(current_raw)>16384: raise ValueError('oversized commit response')
+        current=json.loads(current_raw)
+    except Exception: raise SetupError('无法在线核验 GitHub main 是否包含网关构建源码，拒绝运行可能过期的二进制。') from None
+    if not isinstance(current,dict) or current.get('status') not in ('ahead','identical'):
+        raise SetupError('Go 网关源码不属于 GitHub main 当前历史，拒绝使用该构建。')
+    data['_validated_run']=run_meta
+    return data,parsed
+
+
+def download_gateway(stage):
+    """Fetch only the pinned, Actions-built static executable; never compile on a VPS."""
+    arch=ARCHES.get(platform.machine().lower())
+    if arch is None: raise SetupError('Go 网关仅支持 x86_64/aarch64。')
+    manifest,assets=fetch_gateway_manifest()
+    asset=assets.get(arch,{})
+    digest=asset.get('sha256',''); size=asset.get('size',0); name=asset.get('name','')
+    if (not re.fullmatch(r'[0-9a-f]{64}',digest) or not 100_000<=size<=20_000_000
+            or name not in ('easytier-gateway-linux-amd64','easytier-gateway-linux-arm64')):
+        raise SetupError('此安装器尚未固定经 GitHub Actions 验证的 Go 网关资产；拒绝回退到 Python 数据面。')
+    folder=Path(stage)/'gateway-download'
+    if folder.exists() or folder.is_symlink(): raise SetupError('Go 网关暂存路径冲突。')
+    folder.mkdir(mode=0o700)
+    target=folder/'easytier-gateway'
+    url=GATEWAY_BASE_URL+name
+    request=urllib.request.Request(url,headers={'User-Agent':HTTP_USER_AGENT,'Accept':'application/octet-stream'})
+    h=hashlib.sha256(); total=0
+    try:
+        with urllib.request.urlopen(request,timeout=45) as response,target.open('xb') as output:
+            while True:
+                block=response.read(262144)
+                if not block: break
+                total+=len(block)
+                if total>size: raise SetupError('Go 网关下载超过固定资产大小。')
+                h.update(block); output.write(block)
+            output.flush(); os.fsync(output.fileno())
+    except SetupError: raise
+    except Exception as exc: raise SetupError('下载 GitHub Actions 构建的 Go 网关失败：'+type(exc).__name__+'；旧服务未切换。') from None
+    if total!=size or not secrets.compare_digest(h.hexdigest(),digest):
+        raise SetupError('Go 网关大小或 SHA-256 不匹配，拒绝执行。')
+    check_gateway_elf(target,arch)
+    os.chmod(target,0o755)
+    if run([str(target),'--version'],timeout=8).stdout.strip()!='easytier-gateway '+GATEWAY_VERSION:
+        raise SetupError('Go 网关版本与固定资产不一致。')
+    return target,manifest
+
+
+def check_gateway_elf(path,arch):
+    raw=Path(path).read_bytes()
+    machine={'x86_64':62,'aarch64':183}.get(arch)
+    if (len(raw)<64 or raw[:6]!=b'\x7fELF\x02\x01' or machine is None
+            or struct.unpack_from('<H',raw,18)[0]!=machine):
+        raise SetupError('Go 网关不是匹配本机架构的 ELF64 可执行文件。')
+    offset=struct.unpack_from('<Q',raw,32)[0]
+    stride,count=struct.unpack_from('<HH',raw,54)
+    if count>256 or stride<56 or offset+stride*count>len(raw):
+        raise SetupError('Go 网关 ELF 程序头不完整。')
+    if any(struct.unpack_from('<I',raw,offset+i*stride)[0] in (2,3) for i in range(count)):
+        raise SetupError('Go 网关必须是 CGO_ENABLED=0 构建的无动态链接依赖程序。')
+
+
 def serve_gateway():
+    """Exec the Go supervisor; no long-lived Python process or Python data plane."""
     if os.geteuid()!=0: raise SetupError('请用 root 启动组网入口。')
     state=load_state()
-    if not state or state['role']!='server': raise SetupError('同域入口仅用于已安装的服务端。')
-    port=parse_port(state.get('listen_port',11011)); TMP.mkdir(mode=0o700,parents=True,exist_ok=True); os.chmod(TMP,0o700)
-    gateway=build_gateway(port,0)
-    with socket.socket() as reservation:
-        reservation.bind(('127.0.0.1',0)); internal_port=reservation.getsockname()[1]
-    gateway.upstream_port=internal_port
-    core=None; control=None; threads=[]; stopping=threading.Event()
-    previous={}
+    if not state or state.get('role')!='server': raise SetupError('同域入口仅用于已安装的服务端。')
+    if GATEWAY.is_symlink() or not GATEWAY.is_file(): raise SetupError('缺少受管 Go 网关；请用新版 --repair 迁移。')
+    os.umask(0o077); TMP.mkdir(mode=0o700,parents=True,exist_ok=True); os.chmod(TMP,0o700)
+    payload=join_payload(validate(dict(state,secret=read_secret_from_config())))
+    boot={'listen_port':parse_port(state['listen_port']),'control_path':str(control_path()),
+          'domain':state['domain'],'payload':payload,'core_path':str(CORE),'config_path':str(CFG),'rpc_port':RPC}
+    raw=json.dumps(boot,separators=(',',':')).encode()
+    if len(raw)>65536 or not hasattr(os,'memfd_create'): raise SetupError('系统不支持安全的内存启动描述符。')
+    fd=os.memfd_create('easytier-gateway-boot',flags=os.MFD_CLOEXEC)
     try:
-        for signum in (signal.SIGTERM,signal.SIGINT): previous[signum]=signal.signal(signum,lambda *_:stopping.set())
-        command=[str(CORE),'-c',str(CFG),'--listeners','ws://127.0.0.1:'+str(internal_port),
-                 '--rpc-portal','127.0.0.1:'+str(RPC),'--console-log-level','warn','--file-log-level','off']
-        core=subprocess.Popen(command,stdin=subprocess.DEVNULL,close_fds=True)
-        deadline=time.monotonic()+15
-        while True:
-            if core.poll() is not None: raise SetupError('组网核心启动失败，请检查 service 日志。')
-            try:
-                with socket.create_connection(('127.0.0.1',internal_port),timeout=0.2): break
-            except OSError:
-                if stopping.wait(0.1) or time.monotonic()>deadline: raise SetupError('组网内部 WS 监听未能就绪。')
-        def payload_factory():
-            return join_payload(dict(state,secret=read_secret_from_config()))
-        control=make_control_server(gateway,payload_factory,state['domain'])
-        for server in (gateway,control):
-            thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':0.1},daemon=True)
-            thread.start(); threads.append(thread)
-        print('同域组网/领取入口已启动：127.0.0.1:'+str(port),flush=True)
-        while not stopping.wait(0.3):
-            if core.poll() is not None or any(not t.is_alive() for t in threads): raise SetupError('组网子进程或入口异常退出。')
+        with os.fdopen(fd,'w+b',closefd=False) as config:
+            config.write(raw); config.flush(); config.seek(0)
+        os.set_inheritable(fd,True)
+        os.execve(str(GATEWAY),[str(GATEWAY),'--config-fd',str(fd)],os.environ.copy())
     finally:
-        gateway.close_streams()
-        if control:
-            if len(threads)>1: control.shutdown()
-            control.server_close(); control_path().unlink(missing_ok=True)
-        if threads: gateway.shutdown()
-        gateway.server_close()
-        if core and core.poll() is None:
-            core.terminate()
-            try: core.wait(timeout=5)
-            except subprocess.TimeoutExpired: core.kill(); core.wait(timeout=5)
-        for thread in threads: thread.join(timeout=2)
-        for signum,handler in previous.items(): signal.signal(signum,handler)
+        os.close(fd)
 
 
 def purge_legacy_join():
@@ -836,7 +742,7 @@ def rollback(path):
         src=files/name
         if src.is_symlink() or not src.is_file():raise SetupError('拒绝恢复符号链接。')
         dst=next(x for x in MANAGED if x.name==name)
-        mode=0o755 if dst in (CORE,CLI,SCRIPT) else 0o600
+        mode=0o755 if dst in (CORE,CLI,GATEWAY,SCRIPT) else 0o600
         atom(dst,src.read_bytes(),mode)
     if UNIT_LINK.is_symlink() and os.path.realpath(UNIT_LINK)==str(UNIT_FILE):UNIT_LINK.unlink()
     elif UNIT_LINK.exists():raise SetupError('systemd unit 由其他进程替换。')
@@ -873,14 +779,22 @@ def install(args,rel):
         s=get_config(args,old,rel['tag'])
         bak=snapshot();print('已备份：'+str(bak))
         TMP.mkdir(mode=0o700,exist_ok=True);os.chmod(TMP,0o700)
-        stage=Path(tempfile.mkdtemp(prefix='stage-',dir=TMP));was=svc_state()
+        stage=Path(tempfile.mkdtemp(prefix='stage-',dir=TMP));was=svc_state();committing=False
         try:
             core_new,cli_new=download(rel,stage)
+            if s['role']=='server':
+                gateway_new,gateway_manifest=download_gateway(stage)
+            else:
+                gateway_new=None; gateway_manifest=None
             check=stage/'check.toml';check.write_text(render(s,rel['tag']))
             if run([str(core_new),'-c',str(check),'--check-config'],check=False).returncode:raise SetupError('最新官方二进制 TOML 校验失败；旧服务未停止。')
+            # Until every downloaded asset and the generated config pass checks,
+            # the existing install remains live and no rollback is necessary.
+            committing=True
             atom(CFG,render(s,rel['tag']),0o600);atom(CORE,core_new.read_bytes(),0o755);atom(CLI,cli_new.read_bytes(),0o755);atom(SCRIPT,Path(__file__).read_bytes(),0o700);atom(UNIT_FILE,unit_text(s),0o600)
+            if gateway_new: atom(GATEWAY,gateway_new.read_bytes(),0o755)
             state={k:s[k] for k in ('role','name','ip','domain','network','subnet','server_name')};state.update({'format':'easytier-cf-state-v1','version':rel['tag'],'backup':str(bak)})
-            if s['role']=='server': state.update(listen_port=s['listen_port'],gateway_version=2)
+            if s['role']=='server': state.update(listen_port=s['listen_port'],gateway_version=3,gateway_build='go'+gateway_manifest['go']+':'+gateway_manifest['commit'])
             atom(STATE,json.dumps(state,indent=2),0o600)
             if not UNIT_LINK.exists():UNIT_LINK.symlink_to(UNIT_FILE)
             run(['systemctl','daemon-reload'])
@@ -901,6 +815,9 @@ def install(args,rel):
             print('状态：sudo python3 /etc/easytier/easytier-cf-debian.py --status')
             print('回滚：sudo python3 /etc/easytier/easytier-cf-debian.py --rollback '+str(bak))
         except Exception as exc:
+            if not committing:
+                print('安装前下载/配置校验失败；未更改旧安装、未停止现有服务。',file=sys.stderr)
+                raise
             try: capture_failure_diagnostics(bak,exc)
             except Exception: print('保存失败诊断未完成；继续安全回滚。',file=sys.stderr)
             print('安装失败，正在回滚：'+str(bak),file=sys.stderr)
@@ -961,8 +878,8 @@ def health():
                 connectors=cli_query(['connector','list'],timeout=min(4,max(0.1,deadline-time.monotonic())))
                 if isinstance(connectors,list):
                     state=load_state()
-                    if not state or state['role']!='server' or state.get('gateway_version')!=2: return
-                    if control_call('health').get('gateway_version')==2: return
+                    if not state or state['role']!='server' or state.get('gateway_version',0)<2: return
+                    if control_call('health').get('gateway_version') in (2,3): return
         except (CommandTimeout,SetupError,OSError):
             # A startup probe is not a transaction failure. Retry within the outer deadline.
             pass
@@ -1036,12 +953,23 @@ def repair_gateway():
         state=load_state()
         if not state: raise SetupError('请先安装，再使用 --repair。')
         backup=snapshot(); print('已备份：'+str(backup),flush=True)
+        TMP.mkdir(mode=0o700,parents=True,exist_ok=True); os.chmod(TMP,0o700)
+        stage=Path(tempfile.mkdtemp(prefix='gateway-stage-',dir=TMP))
+        try:
+            gateway_new,gateway_manifest=download_gateway(stage) if state['role']=='server' else (None,None)
+            gateway_build=(f"go{gateway_manifest['go']}:{gateway_manifest['commit']}" if gateway_manifest else None)
+        except BaseException:
+            shutil.rmtree(stage,ignore_errors=True)
+            print('Go 网关下载/校验失败；未替换文件、未重启旧服务。',file=sys.stderr)
+            raise
         was=svc_state()
         try:
+            if gateway_new: atom(GATEWAY,gateway_new.read_bytes(),0o755)
             if state['role']=='server':
                 previous=re.search(r'ws://127\.0\.0\.1:(\d+)',CFG.read_text())
                 state['listen_port']=parse_port(state.get('listen_port') or (int(previous.group(1)) if previous else 11011))
-                state['gateway_version']=2
+                state['gateway_version']=3
+                state['gateway_build']=gateway_build
             source=Path(__file__).read_bytes()
             atom(SCRIPT,source,0o700); atom(STATE,json.dumps(state,indent=2),0o600)
             atom(UNIT_FILE,unit_text(state),0o600)
@@ -1056,6 +984,8 @@ def repair_gateway():
             except Exception: print('保存失败诊断未完成；继续安全回滚。',file=sys.stderr)
             print('修复失败，正在恢复原服务。',file=sys.stderr)
             rollback(backup); raise
+        finally:
+            shutil.rmtree(stage,ignore_errors=True)
 
 
 def uninstall():

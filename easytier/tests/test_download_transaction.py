@@ -11,6 +11,8 @@ import unittest
 from unittest import mock
 import zipfile
 
+from test_lifecycle import FAKE_GATEWAY, fake_gateway_download
+
 SCRIPT=Path(__file__).resolve().parents[1]/'easytier-cf-debian.py'
 spec=importlib.util.spec_from_file_location('installer_transaction_tests',SCRIPT)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -65,9 +67,9 @@ class DownloadTransactionTests(unittest.TestCase):
         args=types.SimpleNamespace(dry_run=False,update=False,join=None,no_prompt=False)
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)/'etc/easytier';root.mkdir(parents=True)
-            paths=dict(ROOT=root,BACKUPS=root/'backups',TMP=root/'tmp',CORE=root/'easytier-core',CLI=root/'easytier-cli',CFG=root/'config.toml',STATE=root/'settings.json',JOIN=root/'join.json',SCRIPT=root/'easytier-cf-debian.py',UNIT_FILE=root/'easytier-cf.service',UNIT_LINK=Path(td)/'systemd/easytier-cf.service',COMMAND=Path(td)/'bin/easytier-easy')
+            paths=dict(ROOT=root,BACKUPS=root/'backups',TMP=root/'tmp',CORE=root/'easytier-core',CLI=root/'easytier-cli',GATEWAY=root/'easytier-gateway',CFG=root/'config.toml',STATE=root/'settings.json',JOIN=root/'join.json',SCRIPT=root/'easytier-cf-debian.py',UNIT_FILE=root/'easytier-cf.service',UNIT_LINK=Path(td)/'systemd/easytier-cf.service',COMMAND=Path(td)/'bin/easytier-easy')
             paths['UNIT_LINK'].parent.mkdir();paths['SCRIPT'].write_bytes(SCRIPT.read_bytes())
-            managed=tuple(paths[k] for k in ('CFG','STATE','CORE','CLI','SCRIPT','UNIT_FILE'))
+            managed=tuple(paths[k] for k in ('CFG','STATE','CORE','CLI','GATEWAY','SCRIPT','UNIT_FILE'))
             import contextlib
             with contextlib.ExitStack() as stack:
                 for key,value in paths.items():stack.enter_context(mock.patch.object(m,key,value))
@@ -78,9 +80,14 @@ class DownloadTransactionTests(unittest.TestCase):
                 stack.enter_context(mock.patch.object(m,'health'))
                 stack.enter_context(mock.patch.object(m,'run',side_effect=self.fake_run))
                 stack.enter_context(mock.patch.object(m.urllib.request,'urlopen',return_value=io.BytesIO(data)))
+                gateway=stack.enter_context(mock.patch.object(m,'download_gateway',side_effect=fake_gateway_download))
                 stack.enter_context(mock.patch.object(m,'rollback'))
                 m.install(args,rel)
-                self.assertEqual(json.loads(paths['STATE'].read_text())['listen_port'],22222)
+                state=json.loads(paths['STATE'].read_text())
+                gateway.assert_called_once()
+                self.assertEqual(state['listen_port'],22222);self.assertEqual(state['gateway_version'],3)
+                self.assertEqual(state['gateway_build'], 'go1.27.3:'+'a'*40)
+                self.assertEqual(paths['GATEWAY'].read_bytes(),FAKE_GATEWAY)
                 self.assertIn('ws://127.0.0.1:22222',paths['CFG'].read_text())
                 self.assertEqual(paths['UNIT_LINK'].resolve(),paths['UNIT_FILE'])
                 self.assertEqual(paths['COMMAND'].resolve(),paths['SCRIPT'])

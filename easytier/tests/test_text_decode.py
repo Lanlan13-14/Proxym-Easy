@@ -31,7 +31,7 @@ class TextDecodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:
             paths=lifecycle.LifecycleTests().setup_paths(td,stack)
             for key,value in paths.items():stack.enter_context(mock.patch.object(m,key,value))
-            stack.enter_context(mock.patch.object(m,'MANAGED',tuple(paths[k] for k in ('CFG','STATE','CORE','CLI','SCRIPT','UNIT_FILE'))))
+            stack.enter_context(mock.patch.object(m,'MANAGED',tuple(paths[k] for k in ('CFG','STATE','CORE','CLI','GATEWAY','SCRIPT','UNIT_FILE'))))
             corrupt=b'\xff\xfe\x00invalid-state';binary=b'\x7fELF\x00\xff\xfe\xa0'
             paths['STATE'].write_bytes(corrupt);paths['CORE'].write_bytes(binary);paths['CLI'].write_bytes(binary+b'cli')
             paths['UNIT_FILE'].write_bytes(m.MARK.encode()+b'\n# non-utf8 comment \xff\n')

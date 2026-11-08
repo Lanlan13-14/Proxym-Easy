@@ -12,13 +12,23 @@ P=Path(__file__).resolve().parents[1]/'easytier-cf-debian.py'
 spec=importlib.util.spec_from_file_location('lifecycle_test_module',P)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
+FAKE_GATEWAY = b'\x7fELF\x02\x01' + b'private-test-gateway-bytes' * 8
+
+
+def fake_gateway_download(stage):
+    """download_gateway(stage)->(Path, validated Actions manifest); no network."""
+    target = Path(stage) / 'gateway-fixture'
+    target.write_bytes(FAKE_GATEWAY)
+    target.chmod(0o755)
+    return target,{'format':'easytier-gateway-build-v1','go':'1.27.3','cgo':False,'commit':'a'*40,'_validated_run':{}}
+
 
 class LifecycleTests(unittest.TestCase):
     def setup_paths(self,td,stack):
         root=Path(td)/'etc/easytier';root.mkdir(parents=True)
-        paths=dict(ROOT=root,BACKUPS=root/'backups',TMP=root/'tmp',CORE=root/'easytier-core',CLI=root/'easytier-cli',CFG=root/'config.toml',STATE=root/'settings.json',JOIN=root/'join.json',SCRIPT=root/'easytier-cf-debian.py',UNIT_FILE=root/'easytier-cf.service',UNIT_LINK=Path(td)/'systemd/easytier-cf.service',COMMAND=Path(td)/'bin/easytier-easy')
+        paths=dict(ROOT=root,BACKUPS=root/'backups',TMP=root/'tmp',CORE=root/'easytier-core',CLI=root/'easytier-cli',GATEWAY=root/'easytier-gateway',CFG=root/'config.toml',STATE=root/'settings.json',JOIN=root/'join.json',SCRIPT=root/'easytier-cf-debian.py',UNIT_FILE=root/'easytier-cf.service',UNIT_LINK=Path(td)/'systemd/easytier-cf.service',COMMAND=Path(td)/'bin/easytier-easy')
         for name,value in paths.items():stack.enter_context(mock.patch.object(m,name,value))
-        managed=tuple(paths[k] for k in ('CFG','STATE','CORE','CLI','SCRIPT','UNIT_FILE'))
+        managed=tuple(paths[k] for k in ('CFG','STATE','CORE','CLI','GATEWAY','SCRIPT','UNIT_FILE'))
         stack.enter_context(mock.patch.object(m,'MANAGED',managed))
         stack.enter_context(mock.patch.object(m.os,'geteuid',return_value=0))
         for path in managed:path.write_text('old-file')
@@ -47,7 +57,7 @@ class LifecycleTests(unittest.TestCase):
             run=stack.enter_context(mock.patch.object(m,'run',side_effect=self.run_ok))
             stack.enter_context(mock.patch.object(m,'svc_state',return_value={'active':False,'enabled':False}))
             m.uninstall()
-            for key in ('CFG','STATE','CORE','CLI','SCRIPT','UNIT_FILE','UNIT_LINK','COMMAND'):self.assertFalse(paths[key].exists(),key)
+            for key in ('CFG','STATE','CORE','CLI','GATEWAY','SCRIPT','UNIT_FILE','UNIT_LINK','COMMAND'):self.assertFalse(paths[key].exists(),key)
             self.assertEqual(unknown.read_text(),'keep')
             backups=list(paths['BACKUPS'].iterdir());self.assertEqual(len(backups),1)
             self.assertIn('s'*54,(backups[0]/'files/config.toml').read_text())
@@ -70,9 +80,12 @@ class LifecycleTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(m,'env_check'))
             stack.enter_context(mock.patch.object(m,'svc_state',return_value={'active':True,'enabled':True}))
             run=stack.enter_context(mock.patch.object(m,'run',side_effect=self.run_ok));health=stack.enter_context(mock.patch.object(m,'health'))
+            gateway=stack.enter_context(mock.patch.object(m,'download_gateway',side_effect=fake_gateway_download))
             m.repair_gateway()
+            gateway.assert_called_once()
+            self.assertEqual(paths['GATEWAY'].read_bytes(),FAKE_GATEWAY)
             for key,data in before.items():self.assertEqual(paths[key].read_bytes(),data)
-            state=json.loads(paths['STATE'].read_text());self.assertEqual(state['listen_port'],22222);self.assertEqual(state['gateway_version'],2)
+            state=json.loads(paths['STATE'].read_text());self.assertEqual(state['listen_port'],22222);self.assertEqual(state['gateway_version'],3)
             self.assertIn('--serve-gateway',paths['UNIT_FILE'].read_text());self.assertEqual(paths['SCRIPT'].read_bytes(),P.read_bytes())
             health.assert_called_once();self.assertIn(mock.call(['systemctl','restart',m.UNIT]),run.call_args_list)
             backup=next(paths['BACKUPS'].iterdir());self.assertEqual((backup/'files/easytier-cf-debian.py').read_text(),'old-file')

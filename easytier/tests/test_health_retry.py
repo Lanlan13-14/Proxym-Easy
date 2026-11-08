@@ -46,7 +46,7 @@ class HealthTests(unittest.TestCase):
 
     def test_server_needs_gateway_health_in_addition_to_core(self):
         clock,now,pause=self.clock()
-        with mock.patch.object(m,'run',return_value=subprocess.CompletedProcess([],0,'active','')),mock.patch.object(m,'cli_query',return_value=[]),mock.patch.object(m,'load_state',return_value={'role':'server','gateway_version':2}),mock.patch.object(m,'control_call',side_effect=[m.SetupError('not ready'),{'gateway_version':2}]) as control,mock.patch.object(m.time,'monotonic',side_effect=now),mock.patch.object(m.time,'sleep',side_effect=pause),contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.object(m,'run',return_value=subprocess.CompletedProcess([],0,'active','')),mock.patch.object(m,'cli_query',return_value=[]),mock.patch.object(m,'load_state',return_value={'role':'server','gateway_version':3}),mock.patch.object(m,'control_call',side_effect=[m.SetupError('not ready'),{'gateway_version':3}]) as control,mock.patch.object(m.time,'monotonic',side_effect=now),mock.patch.object(m.time,'sleep',side_effect=pause),contextlib.redirect_stdout(io.StringIO()):
             m.health()
         self.assertEqual(control.call_count,2)
 

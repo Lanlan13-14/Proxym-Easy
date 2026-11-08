@@ -2,18 +2,28 @@ name: build-easytier-gateway
 
 on:
   push:
+    branches:
+      - main
     paths:
       - 'easytier/gateway/**'
       - '.github/workflows/build-easytier-gateway.yml'
-    tags:
-      - 'easytier-gateway-v*'
-    branches:
-      - main
+      - 'easytier/easytier-cf-debian.py'
+      - 'easytier/tests/**'
+      - 'easytier/README.md'
+      - 'easytier/DEPLOY.md'
   pull_request:
     paths:
       - 'easytier/gateway/**'
       - '.github/workflows/build-easytier-gateway.yml'
+      - 'easytier/easytier-cf-debian.py'
+      - 'easytier/tests/**'
+      - 'easytier/README.md'
+      - 'easytier/DEPLOY.md'
   workflow_dispatch:
+
+concurrency:
+  group: easytier-gateway-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -30,6 +40,8 @@ jobs:
     defaults:
       run:
         working-directory: easytier/gateway
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,16 +57,47 @@ jobs:
       - name: Check pinned toolchain
         run: test "$(go env GOVERSION)" = "go${GO_VERSION}"
       - name: Unit tests including root control and supervisor
-        run: sudo env PATH="$PATH" GOTOOLCHAIN=local GOMAXPROCS=2 go test -count=1 -v ./...
+        run: |
+          set -euo pipefail
+          sudo env PATH="$PATH" GOTOOLCHAIN=local GOMAXPROCS=2 CGO_ENABLED=0 go test -count=1 -v ./...
       - name: Race detector including root control and supervisor
         run: sudo env PATH="$PATH" GOTOOLCHAIN=local GOMAXPROCS=2 CGO_ENABLED=1 go test -race -count=1 ./...
-      - name: Build native test binary
+      - name: Build native integration binary
         env:
           CGO_ENABLED: '0'
-        run: go build -trimpath -buildvcs=false -ldflags='-s -w' -o /tmp/easytier-gateway-linux-amd64 ./
-      - name: Smoke test
-        run: /tmp/easytier-gateway-linux-amd64 --version
-
+          GOMAXPROCS: '2'
+        run: |
+          set -eu
+          mkdir -p dist
+          go build -trimpath -buildvcs=false -ldflags='-s -w' -o dist/easytier-gateway-linux-amd64 .
+          install -m 0755 dist/easytier-gateway-linux-amd64 "$RUNNER_TEMP/easytier-gateway-test"
+          echo "EASYTIER_GATEWAY_BIN=$RUNNER_TEMP/easytier-gateway-test" >> "$GITHUB_ENV"
+      - name: Python installer regression tests
+        working-directory: .
+        env:
+          EASYTIER_GATEWAY_BIN: ${{ runner.temp }}/easytier-gateway-test
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: sudo env PATH="$PATH" EASYTIER_GATEWAY_BIN="$EASYTIER_GATEWAY_BIN" PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s easytier/tests -v
+      - name: Download pinned official EasyTier integration binaries
+        working-directory: .
+        run: |
+          archive=/tmp/easytier-linux-x86_64-v2.6.4.zip
+          curl -fLsS --retry 3 --connect-timeout 15 --max-time 180 \
+            https://github.com/EasyTier/EasyTier/releases/download/v2.6.4/easytier-linux-x86_64-v2.6.4.zip \
+            -o "$archive"
+          echo '61b659eaedba658fa66fe47d17e1426cdd77e5d02fa15fed447bb4357c09dfd6  '"$archive" | sha256sum -c -
+          unzip -q "$archive" -d /tmp/easytier-official
+      - name: Real Go gateway and official core integration
+        working-directory: .
+        env:
+          EASYTIER_GATEWAY_BIN: ${{ runner.temp }}/easytier-gateway-test
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          sudo env PATH="$PATH" EASYTIER_GATEWAY_BIN="$EASYTIER_GATEWAY_BIN" PYTHONDONTWRITEBYTECODE=1 \
+            python3 easytier/tests/check_go_gateway_runtime.py \
+              --gateway "$EASYTIER_GATEWAY_BIN" \
+              --core /tmp/easytier-official/easytier-linux-x86_64/easytier-core \
+              --cli /tmp/easytier-official/easytier-linux-x86_64/easytier-cli
   build:
     name: Cross-compile ${{ matrix.goarch }}
     needs: test
@@ -83,6 +126,7 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
+          GOMAXPROCS: '2'
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -102,40 +146,65 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  release:
-    name: Publish tagged gateway release
-    if: startsWith(github.ref, 'refs/tags/easytier-gateway-v')
+  stage-binaries:
+    name: Stage verified binaries in repository
     needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: easytier-gateway-stage-main
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download artifacts
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Download both architecture artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: easytier-gateway-linux-*
-          path: release
+          path: staged
           merge-multiple: true
-      - name: Verify release files
-        run: |
-          set -euo pipefail
-          test -f release/easytier-gateway-linux-amd64
-          test -f release/easytier-gateway-linux-arm64
-          test -f release/easytier-gateway-linux-amd64.sha256
-          test -f release/easytier-gateway-linux-arm64.sha256
-          (cd release && sha256sum -c easytier-gateway-linux-amd64.sha256 && sha256sum -c easytier-gateway-linux-arm64.sha256)
-      - name: Record build provenance
+      - name: Verify artifacts and commit beside installer
         env:
           SOURCE_SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          python3 -c 'import hashlib,json,os,pathlib; p=pathlib.Path("release"); a=[dict(name=x.name,size=x.stat().st_size,sha256=hashlib.sha256(x.read_bytes()).hexdigest()) for x in sorted(p.glob("easytier-gateway-linux-*")) if not x.name.endswith(".sha256")]; (p/"gateway-build.json").write_text(json.dumps(dict(format="easytier-gateway-build-v1",commit=os.environ["SOURCE_SHA"],go=os.environ["GO_VERSION"],cgo=False,run=os.environ["RUN_URL"],assets=a),indent=2)+"\n")'
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            release/easytier-gateway-linux-*
-            release/gateway-build.json
-          make_latest: false
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+          set -euo pipefail
+          test -f staged/easytier-gateway-linux-amd64.sha256
+          test -f staged/easytier-gateway-linux-arm64.sha256
+          (cd staged && sha256sum -c easytier-gateway-linux-amd64.sha256 && sha256sum -c easytier-gateway-linux-arm64.sha256)
+          for arch in amd64 arm64; do
+            test -x "staged/easytier-gateway-linux-$arch"
+            readelf -h "staged/easytier-gateway-linux-$arch" | rg -q 'Class:.*ELF64'
+            readelf -l "staged/easytier-gateway-linux-$arch" | if grep -q INTERP; then echo 'Dynamic gateway binary rejected' >&2; exit 1; else cat >/dev/null; fi
+          done
+          for arch in amd64 arm64; do
+            install -m 0755 "staged/easytier-gateway-linux-$arch" "easytier/easytier-gateway-linux-$arch"
+            cp "staged/easytier-gateway-linux-$arch.sha256" "easytier/easytier-gateway-linux-$arch.sha256"
+          done
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          p=pathlib.Path('easytier')
+          assets=[]
+          for name in ('easytier-gateway-linux-amd64','easytier-gateway-linux-arm64'):
+              f=p/name
+              assets.append(dict(name=name,size=f.stat().st_size,sha256=hashlib.sha256(f.read_bytes()).hexdigest()))
+          meta=dict(format='easytier-gateway-build-v1',commit=os.environ['SOURCE_SHA'],go=os.environ['GO_VERSION'],cgo=False,run=os.environ['RUN_URL'],assets=assets)
+          (p/'easytier-gateway-build.json').write_text(json.dumps(meta,indent=2)+'\n')
+          PY
+          git add easytier/easytier-gateway-linux-* easytier/easytier-gateway-build.json
+          if git diff --cached --quiet; then echo 'Verified binary outputs already current'; exit 0; fi
+          git fetch origin main --quiet
+          if [ "$(git rev-parse origin/main)" != "$SOURCE_SHA" ]; then
+            echo 'Source commit is no longer the exact main tip; refusing stale binary update.' >&2
+            exit 1
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "build(easytier): stage Go gateway ${SOURCE_SHA:0:12} [skip ci]"
+          git push origin HEAD:main

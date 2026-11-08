@@ -21,7 +21,7 @@ class ClientTransactionTests(unittest.TestCase):
     def setup_install(self,td,stack):
         paths=lifecycle.LifecycleTests().setup_paths(td,stack)
         for key,value in paths.items():stack.enter_context(mock.patch.object(m,key,value))
-        managed=tuple(paths[k] for k in ('CFG','STATE','CORE','CLI','SCRIPT','UNIT_FILE'))
+        managed=tuple(paths[k] for k in ('CFG','STATE','CORE','CLI','GATEWAY','SCRIPT','UNIT_FILE'))
         stack.enter_context(mock.patch.object(m,'MANAGED',managed))
         # First install, not a pre-existing instance: leave just bootstrap script.
         for path in managed:
@@ -30,6 +30,8 @@ class ClientTransactionTests(unittest.TestCase):
         paths['SCRIPT'].write_bytes(P.read_bytes())
         payload,rel=fixtures.release_zip()
         stack.enter_context(mock.patch.object(m,'env_check'))
+        gateway=stack.enter_context(mock.patch.object(m,'download_gateway',side_effect=AssertionError('client must never download a Go gateway')))
+        stack.callback(gateway.assert_not_called)
         stack.enter_context(mock.patch.object(m,'svc_state',return_value={'active':False,'enabled':False}))
         stack.enter_context(mock.patch.object(m.urllib.request,'urlopen',return_value=__import__('io').BytesIO(payload)))
         config=dict(role='client',name='client',ip='10.66.66.2/24',domain='mesh.example.test',network='test',secret='s'*54,subnet='10.66.66.0/24',server_name='custom-server')

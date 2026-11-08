@@ -1,16 +1,24 @@
-"""Independent stdlib tests for EasyTier one-time join credential handling."""
+"""Join regression migrated to native Go --config-fd, plus Python client parsing.
+
+Coverage mapping: the former build_gateway one-shot/concurrent/GET/HEAD tests
+below now cross the Go HTTP + Unix-control boundary. The old Python short-TTL
+expiry test is removed, not skipped: gateway/grant_test.go
+TestGrantOnceRotationRevocationExpiry uses a virtual clock to verify active at
+900s-1ns, expired at 900s, secret cleanup and rejected claims. No production TTL
+backdoor or 15-minute wall-clock wait is introduced into this Python suite.
+"""
 import concurrent.futures
 import http.client
 import importlib.util
 import json
 from pathlib import Path
-import re
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from unittest import mock
+
+from go_gateway_harness import GoGateway
 
 SCRIPT = Path(__file__).resolve().parents[1] / "easytier-cf-debian.py"
 spec = importlib.util.spec_from_file_location("easytier_cf_debian_under_test", SCRIPT)
@@ -44,61 +52,40 @@ def request(address, method, path, headers=None, timeout=2):
 
 
 class JoinOnceTests(unittest.TestCase):
-    def launch(self, ttl=900):
-        server=installer.build_gateway(0,1)
-        token=server.grant.issue(dict(PAYLOAD),ttl=ttl)['token']
-        thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':0.1},daemon=True)
-        thread.start()
-        class Consumed:
-            def is_set(self): return server.grant.status(token)=='consumed'
-            def wait(self,timeout): return self.is_set()
-        consumed=Consumed()
+    def launch(self):
+        gateway = self.enterContext(GoGateway(PAYLOAD))
+        token = gateway.issue()
         self.assertRegex(token, r"^[0-9a-f]{64}$")
-        self.assertEqual(server.server_address[0], "127.0.0.1", "join service must bind loopback only")
-        self.assertGreater(server.server_address[1], 0, "tests require an ephemeral bound port")
-        self.addCleanup(self.cleanup_server, server, thread)
-        return server, thread, token, consumed
+        self.assertEqual(gateway.address[0], "127.0.0.1", "join service must bind loopback only")
+        self.assertGreater(gateway.address[1], 0)
+        return gateway, token
 
-    @staticmethod
-    def cleanup_server(server, thread):
-        if thread.is_alive():
-            try:
-                server.shutdown()
-            except (OSError, RuntimeError):
-                pass
-            thread.join(timeout=2)
-        try:
-            server.server_close()
-        except OSError:
-            pass
-
-    def assert_gateway_alive(self, server, thread):
-        # Only the invitation closes: the shared origin must remain alive for mesh WS.
-        self.assertTrue(thread.is_alive(), 'redeeming a grant stopped the shared gateway')
-        self.assertGreaterEqual(server.fileno(),0)
+    def assert_gateway_alive(self, gateway):
+        self.assertIsNone(gateway.process.poll(), 'redemption stopped the native Go supervisor')
+        self.assertEqual(gateway.control('health')['gateway_version'], 3)
 
     def test_valid_token_returns_payload_once_and_preserves_gateway(self):
-        server, thread, token, consumed = self.launch()
+        server, token = self.launch()
         path = "/join/" + token
         headers = {"X-EasyTier-Join": "1", "Content-Length": "0"}
-        status, body = request(server.server_address, "POST", path, headers)
+        status, body = request(server.address, "POST", path, headers)
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), PAYLOAD)
-        self.assertTrue(consumed.wait(1), "consumed event was not signalled")
-        repeat_status, repeat_body = request(server.server_address, "POST", path, headers)
+        self.assertEqual(server.status(token), 'consumed')
+        repeat_status, repeat_body = request(server.address, "POST", path, headers)
         self.assertNotEqual(repeat_status, 200, "same token succeeded more than once")
         self.assertNotIn(PAYLOAD["secret"].encode(), repeat_body)
-        self.assert_gateway_alive(server, thread)
+        self.assert_gateway_alive(server)
 
     def test_two_concurrent_posts_have_exactly_one_success(self):
-        server, thread, token, consumed = self.launch()
+        server, token = self.launch()
         path = "/join/" + token
         barrier = threading.Barrier(3)
         headers = {"X-EasyTier-Join": "1", "Content-Length": "0"}
 
         def fetch():
             barrier.wait(timeout=3)
-            return request(server.server_address, "POST", path, headers)
+            return request(server.address, "POST", path, headers)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(fetch) for _ in range(2)]
@@ -108,38 +95,28 @@ class JoinOnceTests(unittest.TestCase):
         self.assertEqual(len(successes), 1, "expected exactly one concurrent redemption")
         if successes:
             self.assertEqual(json.loads(successes[0][1]), PAYLOAD)
-            self.assertTrue(consumed.wait(1))
-        self.assert_gateway_alive(server, thread)
+            self.assertEqual(server.status(token), 'consumed')
+        self.assert_gateway_alive(server)
 
     def test_wrong_path_and_head_do_not_consume_valid_token(self):
-        server, thread, token, consumed = self.launch()
-        wrong_status, wrong_body = request(server.server_address, "POST", "/join/" + "0" * 64,
+        server, token = self.launch()
+        wrong_status, wrong_body = request(server.address, "POST", "/join/" + "0" * 64,
                                            {"X-EasyTier-Join": "1", "Content-Length": "0"})
         self.assertNotEqual(wrong_status, 200)
         self.assertNotIn(PAYLOAD["secret"].encode(), wrong_body)
-        get_status, get_body = request(server.server_address, "GET", "/join/" + token)
+        get_status, get_body = request(server.address, "GET", "/join/" + token)
         self.assertEqual(get_status, 405, "GET must be rejected for safe link previews")
         self.assertNotIn(PAYLOAD["secret"].encode(), get_body)
-        head_status, head_body = request(server.server_address, "HEAD", "/join/" + token)
+        head_status, head_body = request(server.address, "HEAD", "/join/" + token)
         self.assertNotEqual(head_status, 200, "HEAD must not disclose or consume credentials")
         self.assertNotIn(PAYLOAD["secret"].encode(), head_body)
-        self.assertFalse(consumed.is_set(), "invalid path or HEAD consumed token")
-        status, body = request(server.server_address, "POST", "/join/" + token,
+        self.assertEqual(server.status(token), 'active', "invalid path or HEAD consumed token")
+        status, body = request(server.address, "POST", "/join/" + token,
                                {"X-EasyTier-Join": "1", "Content-Length": "0"})
         self.assertEqual(status, 200, "valid POST should still work after invalid path and HEAD")
         self.assertEqual(json.loads(body), PAYLOAD)
-        self.assertTrue(consumed.wait(1))
-        self.assert_gateway_alive(server, thread)
-
-    def test_expired_token_never_returns_secret_and_preserves_gateway(self):
-        server, thread, token, consumed = self.launch(ttl=0.15)
-        time.sleep(0.35)
-        status, body = request(server.server_address, "POST", "/join/" + token,
-                               {"X-EasyTier-Join": "1", "Content-Length": "0"})
-        self.assertNotEqual(status, 200, "expired token returned credentials")
-        self.assertNotIn(PAYLOAD["secret"].encode(), body)
-        self.assertFalse(consumed.is_set(), "expiry must not signal successful consumption")
-        self.assert_gateway_alive(server, thread)
+        self.assertEqual(server.status(token), 'consumed')
+        self.assert_gateway_alive(server)
 
 
 class JoinParsingTests(unittest.TestCase):

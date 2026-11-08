@@ -6,10 +6,11 @@ import io
 import json
 from pathlib import Path
 import tempfile
-import threading
 import types
 import unittest
 from unittest import mock
+
+from go_gateway_harness import GoGateway
 
 P=Path(__file__).resolve().parents[1]/'easytier-cf-debian.py'
 spec=importlib.util.spec_from_file_location('route_proof_regression',P)
@@ -17,16 +18,19 @@ m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 class RouteProofTests(unittest.TestCase):
     def test_real_http_proof_never_consumes_invitation(self):
-        gateway=m.build_gateway(0,1);t=threading.Thread(target=gateway.serve_forever,daemon=True);t.start()
+        # Coverage mapping: the former Python build_gateway proof now crosses
+        # the Go --config-fd HTTP/control boundary; other installer proofs stay.
         payload=dict(format='easytier-cf-join-v1',domain='mesh.example.test',network='test',secret='s'*54,subnet='10.20.0.0/24',server_name='vps')
-        token=gateway.grant.issue(payload)['token'];nonce='b'*32
-        try:
-            instance=m.probe_tunnel_endpoint('http://127.0.0.1:'+str(gateway.server_port)+'/join/check/'+nonce,nonce)
-            self.assertEqual(instance,gateway.instance_id);self.assertEqual(gateway.grant.status(token),'active')
-            connection=http.client.HTTPConnection('127.0.0.1',gateway.server_port,timeout=3)
-            connection.request('POST','/join/'+token,body=b'',headers={'X-EasyTier-Join':'1'})
-            r=connection.getresponse();self.assertEqual(r.status,200);self.assertEqual(json.loads(r.read()),payload);connection.close()
-        finally:gateway.shutdown();gateway.server_close();t.join(2)
+        with GoGateway(payload) as gateway:
+            token=gateway.issue();nonce='b'*32
+            instance=m.probe_tunnel_endpoint('http://127.0.0.1:'+str(gateway.address[1])+'/join/check/'+nonce,nonce)
+            self.assertEqual(instance,gateway.health['instance_id']);self.assertEqual(gateway.status(token),'active')
+            connection=http.client.HTTPConnection(*gateway.address,timeout=3)
+            try:
+                connection.request('POST','/join/'+token,body=b'',headers={'X-EasyTier-Join':'1'})
+                r=connection.getresponse();self.assertEqual(r.status,200);self.assertEqual(json.loads(r.read()),payload)
+            finally:connection.close()
+            self.assertEqual(gateway.status(token),'consumed')
 
     def test_check_binds_local_and_public_to_same_instance(self):
         local=dict(ok=True,domain='mesh.example.test',port=22333,instance_id='a'*32)
