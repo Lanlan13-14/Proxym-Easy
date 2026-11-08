@@ -456,6 +456,16 @@ def build_gateway(port,upstream_port,grant=None):
             self.send_header('Cache-Control','no-store'); self.send_header('Connection','close'); self.end_headers()
         def do_HEAD(self): self.reject(405 if self.path.startswith('/join/') else 404)
         def do_POST(self):
+            check=re.fullmatch(r'/join/check/([0-9a-f]{32})',self.path)
+            if (check and self.headers.get('X-EasyTier-Join')=='1'
+                    and self.headers.get('Content-Length','0')=='0' and not self.headers.get('Transfer-Encoding')):
+                # Non-secret route proof, completely independent from invitation state.
+                body=json.dumps({'format':'easytier-cf-gateway-v1','nonce':check.group(1),
+                                 'instance_id':self.server.instance_id},separators=(',',':')).encode()
+                self.send_response(200); self.send_header('Content-Type','application/json')
+                self.send_header('Content-Length',str(len(body))); self.send_header('Cache-Control','no-store')
+                self.send_header('X-Content-Type-Options','nosniff'); self.send_header('Connection','close')
+                self.end_headers(); self.wfile.write(body); self.wfile.flush(); return
             match=re.fullmatch(r'/join/([0-9a-f]{64})',self.path)
             if (not match or self.headers.get('X-EasyTier-Join')!='1'
                     or self.headers.get('Content-Length','0')!='0' or self.headers.get('Transfer-Encoding')):
@@ -525,6 +535,7 @@ def build_gateway(port,upstream_port,grant=None):
         daemon_threads=True; allow_reuse_address=True; request_queue_size=64
         def __init__(self,address):
             self.slots=threading.BoundedSemaphore(64); self.grant=grant or JoinGrant()
+            self.instance_id=secrets.token_hex(16)
             self.upstream_port=upstream_port; self.stopping=threading.Event()
             self.connections=set(); self.connections_lock=threading.Lock()
             super().__init__(address,Handler)
@@ -581,7 +592,7 @@ def make_control_server(gateway,payload_factory,domain):
                 raw=self.rfile.readline(4097)
                 if len(raw)>4096: return
                 request=json.loads(raw); command=request.get('command'); token=request.get('token')
-                if command=='health': response={'ok':True,'gateway_version':2,'port':gateway.server_port,'domain':domain}
+                if command=='health': response={'ok':True,'gateway_version':2,'port':gateway.server_port,'domain':domain,'instance_id':gateway.instance_id}
                 elif command=='issue': response=dict(ok=True,domain=domain,**gateway.grant.issue(payload_factory()))
                 elif command=='status': response={'ok':True,'status':gateway.grant.status(token)}
                 elif command=='revoke': response={'ok':True,'status':gateway.grant.revoke(token)}
@@ -595,13 +606,58 @@ def make_control_server(gateway,payload_factory,domain):
     return control
 
 
+def probe_tunnel_endpoint(url,nonce):
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self,*args,**kwargs): return None
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect)
+    request=urllib.request.Request(url,method='POST',data=b'',headers={
+        'User-Agent':HTTP_USER_AGENT,'Accept':'application/json','Cache-Control':'no-store','X-EasyTier-Join':'1'})
+    try:
+        with opener.open(request,timeout=10) as response:
+            raw=response.read(4097)
+    except urllib.error.HTTPError as exc:
+        raise SetupError('回源校验返回 HTTP '+str(exc.code)+'；未签发邀请，未修改 Tunnel。') from None
+    except (OSError,TimeoutError):
+        raise SetupError('回源校验连接失败或超时；未签发邀请，未修改 Tunnel。') from None
+    if not raw.strip(): raise SetupError('回源校验收到空 HTTP 200，未到可识别的领取网关；未签发邀请。')
+    try: proof=json.loads(raw)
+    except (ValueError,UnicodeError): raise SetupError('回源校验响应不是 JSON；未签发邀请。') from None
+    if (len(raw)>4096 or not isinstance(proof,dict) or proof.get('format')!='easytier-cf-gateway-v1'
+            or proof.get('nonce')!=nonce or not isinstance(proof.get('instance_id'),str)
+            or not re.fullmatch(r'[0-9a-f]{32}',proof['instance_id'])):
+        raise SetupError('回源校验响应不匹配；未签发邀请。')
+    return proof['instance_id']
+
+
+def check_tunnel():
+    if os.geteuid()!=0: raise SetupError('请用 root 执行 --check-tunnel。')
+    state=load_state()
+    if not state or state.get('role')!='server': raise SetupError('请在已安装的服务端执行回源校验。')
+    local=control_call('health')
+    instance=local.get('instance_id')
+    if not isinstance(instance,str) or not re.fullmatch(r'[0-9a-f]{32}',instance):
+        raise SetupError('服务仍是旧版网关；请先用新脚本 --repair，再生成邀请。')
+    port=parse_port(local['port']);nonce=secrets.token_hex(16);path='/join/check/'+nonce
+    if probe_tunnel_endpoint('http://127.0.0.1:'+str(port)+path,nonce)!=instance:
+        raise SetupError('本机回源端口不是当前实例，未签发邀请。')
+    domain=local.get('domain')
+    if domain!=state.get('domain'): raise SetupError('运行服务与保存域名不一致；请修复本机服务。')
+    if probe_tunnel_endpoint('https://'+domain+path,nonce)!=instance:
+        raise SetupError('公网域名指向其他网关实例；未签发邀请，请检查 Tunnel 回源。')
+    print('回源校验通过：正式 HTTPS 域名与本机 127.0.0.1:'+str(port)+' 是同一实例（未领取凭据，不等于跨节点 TUN 已通过）。',flush=True)
+    return local
+
+
 def issue_join_link():
     if os.geteuid()!=0: raise SetupError('请使用 sudo 运行。')
     state=load_state()
     if not state or state['role']!='server': raise SetupError('请先安装本机服务端，再生成一次性链接。')
+    print('签发前验证正式域名与本机网关（不消费邀请）…',flush=True)
+    check_tunnel()
     purge_legacy_join(); result=control_call('issue'); token=result['token']
     print('\n一次性链接（粘贴到已更新的客户端向导）：\nhttps://'+result['domain']+'/join/'+token,flush=True)
     print('复用你设置的 Tunnel 和回源端口；15 分钟内单次有效。保持窗口运行，Ctrl+C 撤销；不会关闭组网。',flush=True)
+    print('服务端虚拟 IP：'+state['ip']+'；客户端必须使用 '+state['subnet']+' 内未占用主机地址。',flush=True)
     try:
         while True:
             status=control_call('status',token)['status']
@@ -829,14 +885,17 @@ def install(args,rel):
             if not UNIT_LINK.exists():UNIT_LINK.symlink_to(UNIT_FILE)
             run(['systemctl','daemon-reload'])
             if was['active']:run(['systemctl','stop',UNIT])
-            run(['systemctl','enable',UNIT]);run(['systemctl','start',UNIT]);health()
+            run(['systemctl','enable',UNIT]);run(['systemctl','start',UNIT]);readiness=health()
             purge_legacy_join();install_shortcut()
             print('快捷管理：sudo easytier-easy（root 用户直接 easytier-easy）')
-            print(f"安装成功：EasyTier {rel['tag']}，{s['role']} {s['name']} / {s['ip']}")
+            if readiness=='management-blocked':
+                try: capture_failure_diagnostics(bak,'管理 RPC 来源被拒绝；保留进程与配置，未回滚。未确认公网连通。')
+                except Exception: print('诊断保存失败；保留已验证的运行核心，不因诊断失败回滚。',file=sys.stderr)
+            print(f"{'安装已保留（管理检查未通过）' if readiness=='management-blocked' else '安装成功'}：EasyTier {rel['tag']}，{s['role']} {s['name']} / {s['ip']}")
             if s['role']=='server':
                 print(f"CF Tunnel 你自己配置：回源 http://127.0.0.1:{s['listen_port']}，cloudflared 固定 --protocol http2。")
                 print('加入客户端：sudo python3 /etc/easytier/easytier-cf-debian.py --invite（生成一次性 HTTPS 链接，无需客户端 SSH 登录 VPS）。')
-            else:
+            elif readiness!='management-blocked':
                 try: print(peer_check())
                 except (SetupError,OSError): print('本地安装成功，公网 peer 状态暂不可用；保留已安装服务，不因此回滚。')
             print('状态：sudo python3 /etc/easytier/easytier-cf-debian.py --status')
@@ -859,6 +918,39 @@ def cli_query(command,timeout=4):
     except (ValueError,UnicodeError): return None
 
 
+def client_management_blocked():
+    """Allow a running client to survive *only* a freshly evidenced management ACL fault.
+
+    This is degraded installation, never a successful RPC or mesh test. Do not change ACLs.
+    """
+    try:
+        state=load_state()
+        if not state or state.get('role')!='client': return False
+        output=run(['systemctl','show',UNIT,'--no-pager','--property=MainPID,ActiveState,SubState'],timeout=3,check=False)
+        props=dict(line.split('=',1) for line in output.stdout.splitlines() if '=' in line)
+        pid=int(props.get('MainPID','0'))
+        if output.returncode or pid<1 or props.get('ActiveState')!='active' or props.get('SubState')!='running': return False
+        process=Path('/proc')/str(pid)
+        if not os.path.samefile(process/'exe',CORE): return False
+        command=(process/'cmdline').read_bytes().split(b'\0')
+        index=command.index(b'--rpc-portal')
+        if command[index+1]!=('127.0.0.1:'+str(RPC)).encode() or str(CFG).encode() not in command: return False
+        sockets=set()
+        for row in (process/'net/tcp').read_text().splitlines()[1:]:
+            fields=row.split()
+            if len(fields)>9 and fields[1]==f'0100007F:{RPC:04X}' and fields[3]=='0A': sockets.add(fields[9])
+        if not sockets or not any(link.is_symlink() and os.readlink(link) in {'socket:['+x+']' for x in sockets} for link in (process/'fd').iterdir()): return False
+        address=run(['ip','-j','addr','show','dev','etcf0'],timeout=3,check=False)
+        rows=json.loads(address.stdout); target=ipaddress.ip_interface(state['ip'])
+        if not isinstance(rows,list) or not any(isinstance(row,dict) and 'UP' in row.get('flags',[]) and
+                any(a.get('family')=='inet' and a.get('local')==str(target.ip) and a.get('prefixlen')==target.network.prefixlen
+                    for a in row.get('addr_info',[]) if isinstance(a,dict)) for row in rows): return False
+        logs=run(['journalctl','-u',UNIT,'_PID='+str(pid),'--since','-40 seconds','-n','40','--no-pager','-o','cat'],timeout=4,check=False)
+        if logs.returncode or not re.search(r'Rpc portal client IP \S+ not in whitelist:',logs.stdout): return False
+        return True
+    except (SetupError,OSError,ValueError,UnicodeError,IndexError,KeyError,TypeError): return False
+
+
 def health():
     deadline=time.monotonic()+30
     print('等待本机服务与管理 RPC 就绪（最多约 30 秒，不要求公网 peer 已连接）…',flush=True)
@@ -875,6 +967,9 @@ def health():
             # A startup probe is not a transaction failure. Retry within the outer deadline.
             pass
         if time.monotonic()<deadline: time.sleep(min(1,max(0,deadline-time.monotonic())))
+    if client_management_blocked():
+        print('警告：核心进程、专属回环 RPC 监听和虚拟网卡均存在，但当前进程日志证实管理来源被白名单拒绝。保留运行服务，不放宽白名单；RPC 与完整组网尚未验收。',flush=True)
+        return 'management-blocked'
     raise SetupError('本机服务/RPC 在约 30 秒内未就绪；不是已证实的公网 peer 失败。已触发安全回滚，请查看回滚前诊断。')
 
 
@@ -1002,8 +1097,10 @@ def uninstall():
 
 def main():
     p=argparse.ArgumentParser(description='Debian EasyTier 虚拟局域网；WSS/WS over TCP；不配置 Cloudflare Tunnel。')
-    p.add_argument('--serve-gateway',action='store_true',help=argparse.SUPPRESS);p.add_argument('--uninstall',action='store_true',help='确认后备份卸载，仅移除本脚本组件');p.add_argument('--repair',action='store_true',help='保留二进制和组网设置，修复/升级本机同域入口');p.add_argument('--role',choices=('server','client'));p.add_argument('--domain');p.add_argument('--listen-port',type=int,help='服务端回源 WS 端口，交互时询问，升级保留原值');p.add_argument('--ip');p.add_argument('--name');p.add_argument('--network');p.add_argument('--join');p.add_argument('--join-output',help=argparse.SUPPRESS);p.add_argument('--join-link');p.add_argument('--invite',action='store_true');p.add_argument('--no-prompt',action='store_true');p.add_argument('--update',action='store_true');p.add_argument('--dry-run',action='store_true');p.add_argument('--status',action='store_true');p.add_argument('--latest-version',action='store_true');p.add_argument('--rollback')
+    p.add_argument('--check-tunnel',action='store_true',help='只读核对正式域名与本机回源，不领取凭据');p.add_argument('--serve-gateway',action='store_true',help=argparse.SUPPRESS);p.add_argument('--uninstall',action='store_true',help='确认后备份卸载，仅移除本脚本组件');p.add_argument('--repair',action='store_true',help='保留二进制和组网设置，修复/升级本机同域入口');p.add_argument('--role',choices=('server','client'));p.add_argument('--domain');p.add_argument('--listen-port',type=int,help='服务端回源 WS 端口，交互时询问，升级保留原值');p.add_argument('--ip');p.add_argument('--name');p.add_argument('--network');p.add_argument('--join');p.add_argument('--join-output',help=argparse.SUPPRESS);p.add_argument('--join-link');p.add_argument('--invite',action='store_true');p.add_argument('--no-prompt',action='store_true');p.add_argument('--update',action='store_true');p.add_argument('--dry-run',action='store_true');p.add_argument('--status',action='store_true');p.add_argument('--latest-version',action='store_true');p.add_argument('--rollback')
     args=p.parse_args()
+    if args.check_tunnel:
+        check_tunnel();return 0
     if args.uninstall:
         uninstall();return 0
     if args.serve_gateway:

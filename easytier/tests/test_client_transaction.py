@@ -69,4 +69,16 @@ class ClientTransactionTests(unittest.TestCase):
             self.assertEqual(json.loads(paths['STATE'].read_text())['role'],'client')
             self.assertTrue(paths['COMMAND'].is_symlink())
 
+    def test_acl_blocked_but_independently_verified_client_keeps_programs(self):
+        with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:
+            paths,args,rel=self.setup_install(td,stack)
+            stack.enter_context(mock.patch.object(m,'health',return_value='management-blocked'))
+            stack.enter_context(mock.patch.object(m,'capture_failure_diagnostics',side_effect=OSError('disk diagnostics failed')))
+            peer=stack.enter_context(mock.patch.object(m,'peer_check'))
+            rollback=stack.enter_context(mock.patch.object(m,'rollback'))
+            m.install(args,rel)
+            rollback.assert_not_called();peer.assert_not_called()
+            self.assertTrue(paths['CORE'].is_file());self.assertTrue(paths['CLI'].is_file())
+            self.assertTrue(paths['COMMAND'].is_symlink())
+
 if __name__=='__main__':unittest.main()
