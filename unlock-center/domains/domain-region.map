@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 1764 (global=1150 regional=592 ai=22)
+# generated entries: 1766 (global=1152 regional=592 ai=22)
 # sources: unlock/all.txt + geosite + Rules Domain + 1-stream
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
@@ -892,6 +892,7 @@ hotstar.com	global	-
 hotstarext.com	global	-
 hoy.tv	regional	hk
 hsprepack.akamaized.net	global	-
+http-intake.logs.us5.datadoghq.com	global	-
 hu1u.com	global	-
 huasheng.cn	global	-
 huloo.cc	global	-
@@ -1287,6 +1288,7 @@ ntdofifreepc-tgc.cdn.hinet.net	regional	tw
 ntdofifreetv-tgc.cdn.hinet.net	regional	tw
 ntdofifreevcpc-tgc.cdn.hinet.net	regional	tw
 nxtv.jp	regional	jp
+o1158394.ingest.us.sentry.io	global	-
 o33249.ingest.sentry.io	global	-
 o33249.ingest.us.sentry.io	global	-
 oaistatic.com	ai	-

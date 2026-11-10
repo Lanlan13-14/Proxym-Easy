@@ -886,6 +886,7 @@ hotstar.com
 hotstarext.com
 hoy.tv
 hsprepack.akamaized.net
+http-intake.logs.us5.datadoghq.com
 hu1u.com
 huasheng.cn
 huloo.cc
@@ -1280,6 +1281,7 @@ ntdofifreepc-tgc.cdn.hinet.net
 ntdofifreetv-tgc.cdn.hinet.net
 ntdofifreevcpc-tgc.cdn.hinet.net
 nxtv.jp
+o1158394.ingest.us.sentry.io
 o33249.ingest.sentry.io
 o33249.ingest.us.sentry.io
 oaistatic.com

@@ -587,6 +587,7 @@ hotstar-labs.com
 hotstar.com
 hotstarext.com
 hsprepack.akamaized.net
+http-intake.logs.us5.datadoghq.com
 hu1u.com
 huasheng.cn
 huloo.cc
@@ -850,6 +851,7 @@ nicomanga.jp
 nicoseiga.jp
 nomadlandmovie.ch
 np-edge.itunes.apple.com
+o1158394.ingest.us.sentry.io
 o33249.ingest.sentry.io
 o33249.ingest.us.sentry.io
 oaistatsig.com
