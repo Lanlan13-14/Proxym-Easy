@@ -31,6 +31,8 @@ DEFAULT_CONFIG = {
     "billing_periods": 1,
     "expire": 0,
     "reset_at": 0,
+    "monthly_reset": False,
+    "monthly_reset_day": 0,
     "plan_name": "VPS",
     "app_url": "",
     "auto_renew": True,
@@ -79,6 +81,34 @@ def calc_expire(cfg):
     cycle = cfg.get("billing_cycle", "month")
     periods = max(1, int(cfg.get("billing_periods") or 1))
     return add_months(start, CYCLE_MONTHS.get(cycle, 1) * periods)
+
+
+def monthly_reset_day(cfg):
+    """每月清零日：0=跟随计费开始日。未开启返回 0。"""
+    if not cfg.get("monthly_reset", False):
+        return 0
+    day = int(cfg.get("monthly_reset_day") or 0)
+    if day:
+        return min(31, max(1, day))
+    start = int(cfg.get("billing_start") or 0)
+    if start:
+        return datetime.fromtimestamp(start).day
+    return 1
+
+
+def next_monthly_reset_ts(cfg):
+    day = monthly_reset_day(cfg)
+    if not day:
+        return 0
+    now = int(time.time())
+    dt = datetime.fromtimestamp(now)
+    day = min(day, calendar.monthrange(dt.year, dt.month)[1])
+    ts = int(datetime(dt.year, dt.month, day, 0, 0, 0).timestamp())
+    if ts <= now:
+        year, month = (dt.year + 1, 1) if dt.month == 12 else (dt.year, dt.month + 1)
+        day = min(monthly_reset_day(cfg), calendar.monthrange(year, month)[1])
+        ts = int(datetime(year, month, day, 0, 0, 0).timestamp())
+    return ts
 
 
 def load_config():
@@ -311,6 +341,11 @@ def show_status(cfg):
     print(f"已开通周期数 : {cfg.get('billing_periods')}")
     print(f"自动续订     : {'开启' if cfg.get('auto_renew') else '关闭'}")
     print(f"到期 expire  : {cfg.get('expire')} ({ts_text(cfg.get('expire'))})")
+    if monthly_reset_day(cfg):
+        print(f"每月清零     : 开启，每月 {monthly_reset_day(cfg)} 号 00:00（不影响到期时间）")
+        print(f"下次清零     : {next_monthly_reset_ts(cfg)} ({ts_text(next_monthly_reset_ts(cfg))})")
+    else:
+        print("每月清零     : 关闭")
     print(f"重置 reset_at: {cfg.get('reset_at')} ({ts_text(cfg.get('reset_at'))})")
     print(f"套餐名       : {cfg.get('plan_name')}")
     print(f"app_url      : {cfg.get('app_url')}")
@@ -385,6 +420,17 @@ def edit_billing(cfg):
     cfg["auto_reset_on_renewal"] = cfg["auto_renew"]
     cfg["expire"] = calc_expire(cfg)
     cfg["reset_at"] = input_int("额外 reset_at 重置 Unix 时间戳，0 表示不用", cfg.get("reset_at", 0))
+    print("\n每月清零：按月重置流量，不修改 expire，年付到期日保持不变。")
+    cfg["monthly_reset"] = input_bool("开启每月自动清零流量？y/n", bool(cfg.get("monthly_reset", False)))
+    if cfg["monthly_reset"]:
+        while True:
+            day = input_int("每月几号清零？1-31，0=跟随计费开始日", int(cfg.get("monthly_reset_day") or 0))
+            if 0 <= day <= 31:
+                cfg["monthly_reset_day"] = day
+                break
+            print("请输入 0-31 的整数")
+        save_config(ensure_admin_token(cfg))
+        print(f"每月清零日：{monthly_reset_day(cfg)} 号，下次清零：{ts_text(next_monthly_reset_ts(cfg))}")
     save_config(ensure_admin_token(cfg))
     print(f"已保存。当前计算出的 expire：{cfg['expire']} ({ts_text(cfg['expire'])})")
     pause()
@@ -400,6 +446,9 @@ def manual_reset(cfg):
         return
     state_file = cfg.get("state_file", DEFAULT_CONFIG["state_file"])
     try:
+        # 清零必须同时去掉手动起始已用流量，否则下次请求会把它重新加回。
+        cfg["manual_used_bytes"] = None
+        save_config(ensure_admin_token(cfg))
         if os.path.exists(state_file):
             backup = state_file + ".bak." + str(int(time.time()))
             shutil.copy2(state_file, backup)

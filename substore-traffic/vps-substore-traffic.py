@@ -17,6 +17,11 @@ vps-substore-traffic.py
 - 用户设置 billing_periods：初次已开通周期数。
 - expire = billing_start + billing_periods * billing_cycle。
 - auto_renew=true 且到期后，自动按 billing_cycle 往后延长 expire，并清零当前周期流量。
+- monthly_reset=true 时，每月在 monthly_reset_day 指定日期 00:00 清零流量；
+  monthly_reset_day=0 表示跟随 billing_start 的日（例如 6 月 19 日购买则每月 19 日清零）。
+  每月清零只清流量，不修改 billing_periods / expire，年付到期日保持不变。
+- 任何周期性清零（每月清零、到期续订、reset_at、手动清零）都会同时清除
+  manual_used_bytes，避免手动设置的起始已用流量在清零后被重新加回。
 
 Sub-Store 输出：
   upload=<upload>; download=<used>; total=<quota>; expire=<unix>; reset_day=<days>; plan_name=<name>; app_url=<url>
@@ -44,6 +49,8 @@ DEFAULT_CONFIG = {
     "billing_periods": 1,
     "expire": 0,
     "reset_at": 0,
+    "monthly_reset": False,
+    "monthly_reset_day": 0,
     "plan_name": "VPS",
     "app_url": "",
     "auto_renew": True,
@@ -139,6 +146,9 @@ def normalize_config(cfg):
     cfg["traffic_mode"] = str(cfg.get("traffic_mode") or "outbound").strip().lower()
     if cfg["traffic_mode"] not in VALID_MODES:
         cfg["traffic_mode"] = "outbound"
+    raw_monthly = cfg.get("monthly_reset", False)
+    cfg["monthly_reset"] = raw_monthly if isinstance(raw_monthly, bool) else str(raw_monthly).strip().lower() in ("1", "true", "yes", "y")
+    cfg["monthly_reset_day"] = min(31, max(0, parse_int_like(cfg.get("monthly_reset_day"), 0)))
     if "auto_renew" not in cfg:
         cfg["auto_renew"] = bool(cfg.get("auto_reset_on_renewal", True))
     if cfg["billing_start"]:
@@ -201,7 +211,56 @@ def days_until(ts):
     return max(0, int((int(ts) - now_ts() + 86399) // 86400))
 
 
+def monthly_reset_day(cfg):
+    """返回每月清零日（1-31）。未开启每月清零返回 0。"""
+    if not cfg.get("monthly_reset", False):
+        return 0
+    day = int(cfg.get("monthly_reset_day") or 0)
+    if day:
+        return day
+    start = int(cfg.get("billing_start") or 0)
+    if start:
+        return datetime.fromtimestamp(start).day
+    return 1
+
+
+def month_day_ts(year, month, day):
+    """某年某月清零日的本地 00:00 时间戳；日期超出当月天数时取月末。"""
+    d = min(int(day), calendar.monthrange(year, month)[1])
+    return int(datetime(year, month, d, 0, 0, 0).timestamp())
+
+
+def latest_monthly_reset_ts(cfg, now=None):
+    """最近一次应该已经发生的每月清零点。未开启返回 0。"""
+    day = monthly_reset_day(cfg)
+    if not day:
+        return 0
+    now = now_ts() if now is None else int(now)
+    dt = datetime.fromtimestamp(now)
+    ts = month_day_ts(dt.year, dt.month, day)
+    if ts > now:
+        year, month = (dt.year - 1, 12) if dt.month == 1 else (dt.year, dt.month - 1)
+        ts = month_day_ts(year, month, day)
+    return ts
+
+
+def next_monthly_reset_ts(cfg, now=None):
+    """下一次每月清零点。未开启返回 0。"""
+    day = monthly_reset_day(cfg)
+    if not day:
+        return 0
+    now = now_ts() if now is None else int(now)
+    dt = datetime.fromtimestamp(now)
+    ts = month_day_ts(dt.year, dt.month, day)
+    if ts <= now:
+        year, month = (dt.year + 1, 1) if dt.month == 12 else (dt.year, dt.month + 1)
+        ts = month_day_ts(year, month, day)
+    return ts
+
+
 def reset_reference_ts(cfg):
+    if monthly_reset_day(cfg):
+        return next_monthly_reset_ts(cfg)
     return int(cfg.get("reset_at") or cfg.get("expire") or 0)
 
 
@@ -215,6 +274,7 @@ def initial_state(cfg, counters, reason="init"):
         "cycle_started_at": now_ts(),
         "last_expire": int(cfg.get("expire") or 0),
         "last_reset_at": int(cfg.get("reset_at") or 0),
+        "last_monthly_reset_ts": latest_monthly_reset_ts(cfg),
         "last_traffic_mode": cfg.get("traffic_mode", "outbound"),
         "last_billing_periods": int(cfg.get("billing_periods") or 1),
         "last_reset_reason": reason
@@ -235,6 +295,11 @@ def update_state(cfg, st, counters, renewed=False):
 
     if renewed:
         return reset_state(cfg, counters, "billing_cycle_auto_renew")
+
+    # 每月清零：只重置流量，不改 billing_periods / expire。
+    monthly_ts = latest_monthly_reset_ts(cfg)
+    if monthly_ts and monthly_ts > int(st.get("last_monthly_reset_ts") or 0):
+        return reset_state(cfg, counters, "monthly_reset")
 
     if reset_at and now_ts() >= reset_at and reset_at != last_reset_at:
         return reset_state(cfg, counters, "scheduled_reset_at")
@@ -265,6 +330,21 @@ def update_state(cfg, st, counters, renewed=False):
 
 def calc_used(st, counters, mode):
     return int(st.get("carried_used_bytes") or 0) + used_delta(st, counters, mode)
+
+
+ZEROING_RESET_REASONS = {"monthly_reset", "billing_cycle_auto_renew", "scheduled_reset_at", "manual_api", "manual_panel"}
+
+
+def clear_manual_used_after_reset(cfg, st):
+    """周期性/手动清零后移除手动起始已用流量，否则下次请求会把它重新加回。"""
+    if cfg.get("manual_used_bytes") is None:
+        return False
+    if st.get("last_reset_reason") not in ZEROING_RESET_REASONS:
+        return False
+    if "manual_used_bytes_applied" in st:
+        return False
+    cfg["manual_used_bytes"] = None
+    return True
 
 
 def userinfo(cfg, st, counters):
@@ -309,6 +389,8 @@ class Handler(BaseHTTPRequestHandler):
         counters = read_iface_counters(cfg["iface"])
         st = load_json(cfg["state_file"], initial_state(cfg, counters))
         st = update_state(cfg, st, counters, renewed=renewed)
+        if clear_manual_used_after_reset(cfg, st):
+            save_json(self.server.config_path, cfg)
         save_json(cfg["state_file"], st)
         return cfg, st, counters
 
@@ -355,6 +437,9 @@ class Handler(BaseHTTPRequestHandler):
                 "auto_renew": bool(cfg.get("auto_renew", True)),
                 "expire": int(cfg.get("expire") or 0),
                 "reset_at": int(cfg.get("reset_at") or 0),
+                "monthly_reset": bool(cfg.get("monthly_reset", False)),
+                "monthly_reset_day": monthly_reset_day(cfg),
+                "next_monthly_reset": next_monthly_reset_ts(cfg),
                 "reset_day": days_until(reset_reference_ts(cfg)),
                 "state": st,
                 "subscription_userinfo": userinfo(cfg, st, counters)
@@ -376,6 +461,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             counters = read_iface_counters(cfg["iface"])
             st = reset_state(cfg, counters, "manual_api")
+            if clear_manual_used_after_reset(cfg, st):
+                save_json(self.server.config_path, cfg)
             save_json(cfg["state_file"], st)
             body = b"ok\n"
             self.send_response(200)

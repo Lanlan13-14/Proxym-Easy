@@ -19,7 +19,8 @@
 - 用户手动输入计费开始时间 Unix 时间戳。
 - 用户手动输入初次设置时已经开通了几个计费周期。
 - 开启自动续订后，到期会按设置的周期自动往后延长，并清零当前周期流量。
-- 支持额外设置 `reset_at` Unix 时间戳，到点自动清零。
+- 每月自动清零流量：可指定每月几号清零，默认跟随计费开始日；只清流量，不修改到期时间，年付套餐也能按月重置。
+- 支持额外设置 `reset_at` Unix 时间戳，到点自动清零（一次性）。
 - 流量单位输入支持 `10KB`、`500MB`、`1GB`、`1TB`。
 
 换算按 1024 进率：
@@ -61,7 +62,7 @@ sudo sh uninstall.sh
 1. 修改监听端口 / 监听地址 / 网卡
 2. 选择统计方式：仅出站 / 入站 / 双向 / 出入取大
 3. 设置套餐流量 / 手动已用流量 / plan_name
-4. 设置续费周期 / 开始时间 / 初始周期数 / 自动续订
+4. 设置续费周期 / 开始时间 / 初始周期数 / 自动续订 / 每月清零
 5. 手动清零当前周期流量
 6. 安装或更新 systemd 服务
 7. 重启服务
@@ -138,6 +139,35 @@ billing_cycle = year
 
 每次自动续订会往后延长 12 个月。
 
+## 每月清零
+
+在面板选项 4 里开启：
+
+```json
+"monthly_reset": true,
+"monthly_reset_day": 0
+```
+
+- `monthly_reset_day` 为 `1-31`：每月这一天 00:00（VPS 本地时间）清零流量。
+- `monthly_reset_day` 为 `0`：跟随 `billing_start` 的日。例如 6 月 19 日购买，每月 19 日清零。
+- 日期超出当月天数时取月末，例如设为 31 号，2 月会在 28/29 日清零。
+- 每月清零**只清流量**，不修改 `billing_periods` 和 `expire`。年付套餐（`billing_cycle = year`）到期日保持不动，流量照样每月重置。
+- 开启后 `subscription-userinfo` 里的 `reset_day` 变为距离下一次每月清零的天数。
+- 首次开启或刚手动设置已用流量时，不会立刻补一次清零，从下一个清零日开始生效。
+- 每月清零、到期续订、`reset_at`、手动清零都会同时把 `manual_used_bytes` 置空，避免手动设置的起始已用流量在清零后被重新加回。
+
+典型年付 + 每月流量套餐：
+
+```json
+"billing_start": 1781798400,
+"billing_cycle": "year",
+"billing_periods": 1,
+"monthly_reset": true,
+"monthly_reset_day": 0
+```
+
+即 2026-06-19 购买、2027-06-19 到期（Asia/Shanghai），每月 19 日清零。
+
 ## Sub-Store 填写
 
 如果监听端口是 `8899`：
@@ -182,6 +212,8 @@ upload=0; download=10240; total=1099511627776; expire=4115721600; reset_day=14; 
   "billing_periods": 1,
   "expire": 1769904000,
   "reset_at": 0,
+  "monthly_reset": false,
+  "monthly_reset_day": 0,
   "plan_name": "VIP1",
   "app_url": "http://a.com",
   "auto_renew": true,
@@ -205,12 +237,20 @@ upload=0; download=10240; total=1099511627776; expire=4115721600; reset_day=14; 
 | `billing_cycle` | 续费周期：`month` / `quarter` / `year` |
 | `billing_periods` | 已开通周期数 |
 | `expire` | 根据开始时间、周期、周期数计算出的到期 Unix 时间戳 |
-| `reset_at` | 额外自动重置 Unix 时间戳，0 表示不用 |
+| `reset_at` | 额外自动重置 Unix 时间戳，0 表示不用（一次性） |
+| `monthly_reset` | 是否每月自动清零流量 |
+| `monthly_reset_day` | 每月清零日 1-31，0 表示跟随 `billing_start` 的日 |
 | `plan_name` | 套餐名称 |
 | `app_url` | Sub-Store 可点击跳转链接 |
 | `auto_renew` | 到期后是否自动按周期续订并清零 |
 
 ## 测试
+
+单元测试（含每月清零、年付到期不变、手动已用流量不复活等 14 项）：
+
+```bash
+python3 tests/test_monthly_reset.py
+```
 
 ```bash
 curl -i http://127.0.0.1:8899/sub-userinfo
