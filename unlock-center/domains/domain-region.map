@@ -2,7 +2,7 @@
 # format: domain<TAB>class<TAB>region
 # class: global | regional | ai
 # region: area id or - for global/ai
-# generated entries: 1766 (global=1152 regional=592 ai=22)
+# generated entries: 1767 (global=1153 regional=592 ai=22)
 # sources: unlock/all.txt + geosite + Rules Domain + 1-stream
 0c86e2d1-madman-com-au.akamaized.net	regional	au
 10.com.au	regional	au
@@ -578,6 +578,7 @@ f1prodlive.akamaized.net	regional	us
 f1tv.com	global	-
 f3b7q2p3.ssl.hwcdn.net	global	-
 failoverstarhub.akamaized.net	regional	sg
+fanza.jp	global	-
 fast.com	global	-
 favoritescc-hamivideo2.cdn.hinet.net	regional	tw
 ff1be285-madman-com-au.akamaized.net	regional	au

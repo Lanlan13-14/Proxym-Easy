@@ -336,6 +336,7 @@ ext-twitch.tv
 f1.com
 f1tv.com
 f3b7q2p3.ssl.hwcdn.net
+fanza.jp
 fast.com
 findyourlimits.com
 fout.jp

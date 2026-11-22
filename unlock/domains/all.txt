@@ -572,6 +572,7 @@ f1prodlive.akamaized.net
 f1tv.com
 f3b7q2p3.ssl.hwcdn.net
 failoverstarhub.akamaized.net
+fanza.jp
 fast.com
 favoritescc-hamivideo2.cdn.hinet.net
 ff1be285-madman-com-au.akamaized.net
